@@ -1,0 +1,41 @@
+# Cabal build artifacts
+dist-newstyle/
+dist/
+cabal.project.local
+cabal.project.local~
+.ghc.environment.*
+
+# Nix
+result
+result-*
+
+# Editor files
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Config with secrets
+config.yaml
+*.env
+
+# Haskell
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+*.hp
+*.prof
+*.aux
+*.eventlog
+
+# HLS
+.hie/
+
+# Stack (if used)
+.stack-work/
+
+# Tags
+TAGS
+tags

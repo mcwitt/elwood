@@ -1,0 +1,11 @@
+packages: .
+
+-- Use latest versions where possible
+index-state: 2024-12-01T00:00:00Z
+
+-- Optimization settings for development
+optimization: 1
+
+-- Allow newer versions of dependencies if needed
+allow-newer:
+    co-log-core:base

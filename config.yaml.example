@@ -1,0 +1,24 @@
+# Elwood Configuration Example
+# Copy this to config.yaml and customize
+
+# Directory for persistent state (conversation history, etc.)
+stateDir: /var/lib/assistant
+
+# Directory containing SOUL.md, AGENTS.md, etc.
+workspaceDir: /var/lib/assistant/workspace
+
+# Telegram chat IDs allowed to interact with the bot
+# Find your chat ID by messaging @userinfobot on Telegram
+allowedChatIds:
+  - 123456789
+
+# Claude model to use
+model: claude-sonnet-4-20250514
+
+# Heartbeat/proactive check settings
+heartbeat:
+  intervalMinutes: 30
+  activeHoursStart: 8
+  activeHoursEnd: 22
+
+# Note: TELEGRAM_BOT_TOKEN must be set as an environment variable
