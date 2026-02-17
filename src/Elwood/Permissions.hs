@@ -20,7 +20,7 @@ module Elwood.Permissions
 
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.FilePath (makeRelative, normalise, (</>))
+import System.FilePath (makeRelative, normalise)
 import Text.Regex.TDFA ((=~))
 
 -- | Configuration for permissions
@@ -126,33 +126,29 @@ checkCommand checker cmd
 -- | Check if a file path is allowed for reading/writing
 checkFilePath :: PermissionChecker -> FilePath -> PermissionResult
 checkFilePath checker path
+  | escapesWorkspace = Denied "Path escapes workspace directory"
   | isUnderAllowedPath = Allowed
-  | otherwise = Denied $ "Path not under allowed directories: " <> T.pack path
+  | otherwise = Denied $ "Path not under allowed directories: " <> T.pack relPath
   where
     workspace = pcWorkspaceDir checker
     config = pcConfig checker
 
-    -- Normalise the path and make it relative to workspace
-    normPath = normalise path
-    relPath = makeRelative workspace normPath
+    -- Make path relative to workspace
+    relPath = makeRelative workspace (normalise path)
 
-    -- Check if the path is under any allowed directory
-    isUnderAllowedPath =
-      -- Path must not escape workspace (no leading ..)
-      not (".." `T.isPrefixOf` T.pack relPath)
-        && any (isUnderDir relPath) (pcAllowedPaths config)
+    -- Check for directory traversal attacks
+    escapesWorkspace = ".." `T.isPrefixOf` T.pack relPath
 
-    isUnderDir :: FilePath -> FilePath -> Bool
-    isUnderDir _targetPath allowedDir =
-      let normAllowed = normalise (workspace </> allowedDir)
-          normTarget = normalise (workspace </> relPath)
-       in normAllowed `isPrefixOfPath` normTarget
-          || relPath == allowedDir
-          || ("." `T.isPrefixOf` T.pack relPath && "." `elem` pcAllowedPaths config)
+    -- Check if path falls under any allowed directory
+    isUnderAllowedPath = any isUnderAllowed (pcAllowedPaths config)
 
-    isPrefixOfPath :: FilePath -> FilePath -> Bool
-    isPrefixOfPath prefix target =
-      T.pack prefix `T.isPrefixOf` T.pack target
+    isUnderAllowed :: FilePath -> Bool
+    isUnderAllowed allowedDir
+      | allowedDir == "." = True  -- "." means entire workspace is allowed
+      | otherwise = allowedDir == relPath || (allowedDir ++ "/") `isPrefixOf` relPath
+
+    isPrefixOf :: String -> String -> Bool
+    isPrefixOf prefix str = take (length prefix) str == prefix
 
 -- | Instance for checking different operation types
 instance Show PermissionChecker where
