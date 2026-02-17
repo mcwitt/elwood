@@ -18,6 +18,7 @@ module Elwood.Permissions
   , checkPathPermission
   ) where
 
+import Data.List (isPrefixOf)
 import Data.Text (Text)
 import qualified Data.Text as T
 import System.FilePath (makeRelative, normalise)
@@ -146,9 +147,6 @@ checkFilePath checker path
     isUnderAllowed allowedDir
       | allowedDir == "." = True  -- "." means entire workspace is allowed
       | otherwise = allowedDir == relPath || (allowedDir ++ "/") `isPrefixOf` relPath
-
-    isPrefixOf :: String -> String -> Bool
-    isPrefixOf prefix str = take (length prefix) str == prefix
 
 -- | Instance for checking different operation types
 instance Show PermissionChecker where

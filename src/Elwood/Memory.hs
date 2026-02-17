@@ -13,6 +13,9 @@ module Elwood.Memory
 
     -- * Types
   , MemoryResult (..)
+
+    -- * Exported for testing
+  , sanitizeKey
   ) where
 
 import Control.Exception (SomeException, catch)

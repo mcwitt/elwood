@@ -11,6 +11,7 @@ module Elwood.Logging
   ) where
 
 import Colog.Core (LogAction (..))
+import Control.Monad (when)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -52,7 +53,7 @@ formatContext ctx =
 
 -- | Create a new logger that writes to stdout
 newLogger :: LogLevel -> IO Logger
-newLogger minLevel = pure $ LogAction $ \msg -> do
+newLogger minLevel = pure $ LogAction $ \msg ->
   when (logLevel msg >= minLevel) $ do
     timestamp <- getCurrentTime
     let timeStr = T.pack $ formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%S" timestamp
@@ -65,9 +66,6 @@ newLogger minLevel = pure $ LogAction $ \msg -> do
             ]
     TIO.putStrLn line
     hFlush stdout
-  where
-    when True action = action
-    when False _ = pure ()
 
 -- | Log a message with the given level and context
 logMsg :: Logger -> LogLevel -> Text -> [(Text, Text)] -> IO ()

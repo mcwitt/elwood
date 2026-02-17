@@ -3,11 +3,14 @@
 module Elwood.Scheduler
   ( SchedulerEnv (..)
   , runScheduler
+  -- * Exported for testing
+  , isWithinActiveHours
+  , hashJobName
   ) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, catch)
-import Data.Bits (xor)
+import Data.Bits (shiftL, xor)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -103,6 +106,11 @@ schedulerLoop env lastHeartbeat cronChecks = do
   -- Continue the loop
   schedulerLoop env newLastHeartbeat newCronChecks
 
+-- | Check if a given hour is within active hours (pure function for testing)
+isWithinActiveHours :: Int -> Int -> Int -> Bool
+isWithinActiveHours startHour endHour currentHour =
+  currentHour >= startHour && currentHour < endHour
+
 -- | Check if current time is within active hours
 withinActiveHours :: HeartbeatConfig -> IO Bool
 withinActiveHours config = do
@@ -110,7 +118,7 @@ withinActiveHours config = do
   tz <- getCurrentTimeZone
   let localTime = utcToLocalTime tz now
       hour = todHour (localTimeOfDay localTime)
-  pure $ hour >= hbActiveHoursStart config && hour < hbActiveHoursEnd config
+  pure $ isWithinActiveHours (hbActiveHoursStart config) (hbActiveHoursEnd config) hour
 
 -- | Run the heartbeat check
 runHeartbeat :: SchedulerEnv -> IO ()
@@ -194,10 +202,10 @@ runCronJob env job = do
 
   logInfo logger "Running cron job" [("job", jobName)]
 
-  -- Determine session ID - use a simple hash for isolated jobs
+  -- Determine session ID - use hash for isolated jobs
   let sessionId =
         if cjIsolated job
-          then negate (fromIntegral (simpleHash jobName) + 2) -- Unique negative ID per job
+          then negate (fromIntegral (abs (hashJobName jobName)) + 2) -- Unique negative ID per job
           else heartbeatChatId
 
   let userMsg = ClaudeMessage User [TextBlock (cjPrompt job)]
@@ -233,9 +241,13 @@ runCronJob env job = do
     AgentError err -> do
       logError logger "Cron job failed" [("job", jobName), ("error", err)]
 
--- | Simple hash function for Text to avoid Hashable dependency
-simpleHash :: Text -> Int
-simpleHash = T.foldl' (\h c -> h `xor` fromEnum c) 0
+-- | DJB2 hash function for Text (better distribution than XOR)
+-- Used to generate unique session IDs for isolated cron jobs
+hashJobName :: Text -> Int
+hashJobName = T.foldl' step 5381
+  where
+    step :: Int -> Char -> Int
+    step h c = ((h `shiftL` 5) + h) `xor` fromEnum c
 
 -- | Safely send notification, catching any errors
 notifySafe :: SchedulerEnv -> Int64 -> Text -> IO ()

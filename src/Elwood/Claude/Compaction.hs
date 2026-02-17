@@ -7,6 +7,10 @@ module Elwood.Claude.Compaction
 
     -- * Re-export config
   , CompactionConfig (..)
+
+    -- * Exported for testing
+  , extractText
+  , formatMessagesForSummary
   ) where
 
 import Data.Aeson (encode)
