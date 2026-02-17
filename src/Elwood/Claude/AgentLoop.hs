@@ -9,6 +9,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 
 import Elwood.Claude.Client (ClaudeClient, sendMessages)
+import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Types
 import Elwood.Logging (Logger, logInfo, logWarn, logError)
 import Elwood.Tools.Registry (ToolRegistry, lookupTool, toolSchemas)
@@ -32,6 +33,7 @@ runAgentTurn
   -> ClaudeClient
   -> ToolRegistry
   -> ToolEnv
+  -> CompactionConfig
   -> Maybe Text
   -- ^ System prompt
   -> Text
@@ -41,9 +43,11 @@ runAgentTurn
   -> ClaudeMessage
   -- ^ New user message
   -> IO AgentResult
-runAgentTurn logger client registry toolEnv systemPrompt model history userMessage = do
-  let messages = history ++ [userMessage]
-  agentLoop logger client registry toolEnv systemPrompt model messages 0
+runAgentTurn logger client registry toolEnv compactionConfig systemPrompt model history userMessage = do
+  -- Compact history if needed before adding new message
+  compactedHistory <- compactIfNeeded logger client compactionConfig history
+  let messages = compactedHistory ++ [userMessage]
+  agentLoop logger client registry toolEnv compactionConfig systemPrompt model messages 0
 
 -- | The main agent loop
 agentLoop
@@ -51,12 +55,13 @@ agentLoop
   -> ClaudeClient
   -> ToolRegistry
   -> ToolEnv
+  -> CompactionConfig
   -> Maybe Text
   -> Text
   -> [ClaudeMessage]
   -> Int
   -> IO AgentResult
-agentLoop logger client registry toolEnv systemPrompt model messages iteration
+agentLoop logger client registry toolEnv compactionConfig systemPrompt model messages iteration
   | iteration >= maxIterations = do
       logError logger "Agent loop exceeded max iterations" []
       pure $ AgentError "I've been thinking in circles. Let me try a different approach."
@@ -92,7 +97,7 @@ agentLoop logger client registry toolEnv systemPrompt model messages iteration
             , ("content_blocks", T.pack (show (length (mresContent response))))
             ]
 
-          handleResponse logger client registry toolEnv systemPrompt model messages response iteration
+          handleResponse logger client registry toolEnv compactionConfig systemPrompt model messages response iteration
 
 -- | Handle Claude's response
 handleResponse
@@ -100,13 +105,14 @@ handleResponse
   -> ClaudeClient
   -> ToolRegistry
   -> ToolEnv
+  -> CompactionConfig
   -> Maybe Text
   -> Text
   -> [ClaudeMessage]
   -> MessagesResponse
   -> Int
   -> IO AgentResult
-handleResponse logger client registry toolEnv systemPrompt model messages response iteration =
+handleResponse logger client registry toolEnv compactionConfig systemPrompt model messages response iteration =
   case mresStopReason response of
     Just "end_turn" -> do
       -- Normal completion - extract text and return
@@ -134,7 +140,7 @@ handleResponse logger client registry toolEnv systemPrompt model messages respon
           newMessages = messages ++ [assistantMsg, userMsg]
 
       -- Continue the loop
-      agentLoop logger client registry toolEnv systemPrompt model newMessages (iteration + 1)
+      agentLoop logger client registry toolEnv compactionConfig systemPrompt model newMessages (iteration + 1)
 
     Just "max_tokens" -> do
       -- Hit token limit - return what we have

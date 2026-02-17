@@ -22,17 +22,20 @@ library
         Elwood.App
         Elwood.Claude.AgentLoop
         Elwood.Claude.Client
+        Elwood.Claude.Compaction
         Elwood.Claude.Conversation
         Elwood.Claude.Handler
         Elwood.Claude.Types
         Elwood.Config
         Elwood.Logging
+        Elwood.Memory
         Elwood.Permissions
         Elwood.Telegram.Client
         Elwood.Telegram.Polling
         Elwood.Telegram.Types
         Elwood.Tools.Command
         Elwood.Tools.FileSystem
+        Elwood.Tools.Memory
         Elwood.Tools.Registry
         Elwood.Tools.Types
         Elwood.Tools.Web

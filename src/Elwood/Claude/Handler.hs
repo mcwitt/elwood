@@ -13,6 +13,7 @@ import System.Directory (doesFileExist)
 
 import Elwood.Claude.AgentLoop (runAgentTurn, AgentResult (..))
 import Elwood.Claude.Client (ClaudeClient)
+import Elwood.Claude.Compaction (CompactionConfig)
 import Elwood.Claude.Conversation
 import Elwood.Claude.Types
 import Elwood.Logging (Logger, logInfo, logError)
@@ -41,13 +42,14 @@ claudeHandler
   -> ConversationStore
   -> ToolRegistry
   -> ToolEnv
+  -> CompactionConfig
   -> Maybe Text
   -- ^ System prompt
   -> Text
   -- ^ Model name
   -> Message
   -> IO (Maybe Text)
-claudeHandler logger client store registry toolEnv systemPrompt model msg =
+claudeHandler logger client store registry toolEnv compactionConfig systemPrompt model msg =
   case text msg of
     Nothing -> pure Nothing
     Just txt
@@ -85,6 +87,7 @@ claudeHandler logger client store registry toolEnv systemPrompt model msg =
         client
         registry
         toolEnv
+        compactionConfig
         systemPrompt
         model
         (convMessages conv)

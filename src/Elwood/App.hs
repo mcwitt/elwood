@@ -14,11 +14,13 @@ import Elwood.Claude.Conversation
 import Elwood.Claude.Handler
 import Elwood.Config
 import Elwood.Logging
+import Elwood.Memory (newMemoryStore)
 import Elwood.Permissions (newPermissionChecker)
 import Elwood.Telegram.Client
 import Elwood.Telegram.Polling
 import Elwood.Tools.Command (runCommandTool)
 import Elwood.Tools.FileSystem (readFileTool, writeFileTool)
+import Elwood.Tools.Memory (saveMemoryTool, searchMemoryTool)
 import Elwood.Tools.Registry
 import Elwood.Tools.Types (ToolEnv (..))
 import Elwood.Tools.Web (webSearchTool, webFetchTool)
@@ -75,6 +77,10 @@ runApp config = do
   -- Initialize HTTP manager for web tools
   httpManager <- newManager tlsManagerSettings
 
+  -- Initialize memory store
+  memoryStore <- newMemoryStore (cfgStateDir config)
+  logInfo logger "Memory store initialized" []
+
   -- Create tool environment
   let toolEnv =
         ToolEnv
@@ -84,6 +90,7 @@ runApp config = do
           , tePermissions = permChecker
           , teHttpManager = httpManager
           , teBraveApiKey = cfgBraveApiKey config
+          , teMemoryStore = memoryStore
           }
 
   -- Initialize tool registry with built-in tools
@@ -93,7 +100,12 @@ runApp config = do
         registerTool writeFileTool $
         registerTool webSearchTool $
         registerTool webFetchTool $
+        registerTool saveMemoryTool $
+        registerTool searchMemoryTool $
         newToolRegistry
+
+  -- Get compaction config from main config
+  let compactionConfig = cfgCompaction config
 
   logInfo
     logger
@@ -128,4 +140,4 @@ runApp config = do
     logger
     telegram
     (cfgAllowedChatIds config)
-    (claudeHandler logger claude conversations registry toolEnv systemPrompt (cfgModel config))
+    (claudeHandler logger claude conversations registry toolEnv compactionConfig systemPrompt (cfgModel config))

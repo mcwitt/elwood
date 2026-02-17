@@ -16,6 +16,7 @@ import Data.Text (Text)
 import Network.HTTP.Client (Manager)
 
 import Elwood.Logging (Logger)
+import Elwood.Memory (MemoryStore)
 import Elwood.Permissions (PermissionChecker)
 
 -- | Result of executing a tool
@@ -40,6 +41,8 @@ data ToolEnv = ToolEnv
   -- ^ Shared HTTP manager for web tools
   , teBraveApiKey :: Maybe Text
   -- ^ Brave Search API key (optional)
+  , teMemoryStore :: MemoryStore
+  -- ^ Persistent memory store
   }
 
 -- | A tool that can be used by Claude

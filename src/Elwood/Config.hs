@@ -3,6 +3,7 @@
 module Elwood.Config
   ( Config (..)
   , HeartbeatConfig (..)
+  , CompactionConfig (..)
   , PermissionConfigFile (..)
   , loadConfig
   ) where
@@ -40,6 +41,8 @@ data Config = Config
   -- ^ Heartbeat/proactive check configuration
   , cfgPermissions :: PermissionConfig
   -- ^ Permission configuration for tools
+  , cfgCompaction :: CompactionConfig
+  -- ^ Context compaction configuration
   }
   deriving stock (Show, Generic)
 
@@ -54,6 +57,15 @@ data HeartbeatConfig = HeartbeatConfig
   }
   deriving stock (Show, Generic)
 
+-- | Configuration for context compaction
+data CompactionConfig = CompactionConfig
+  { ccTokenThreshold :: Int
+  -- ^ Compact when estimated tokens exceed this
+  , ccCompactionModel :: Text
+  -- ^ Model to use for summarization (e.g., "claude-3-5-haiku-20241022")
+  }
+  deriving stock (Show, Generic)
+
 -- | YAML file configuration (without secrets)
 data ConfigFile = ConfigFile
   { cfStateDir :: Maybe FilePath
@@ -63,6 +75,7 @@ data ConfigFile = ConfigFile
   , cfMaxHistory :: Maybe Int
   , cfHeartbeat :: Maybe HeartbeatConfigFile
   , cfPermissions :: Maybe PermissionConfigFile
+  , cfCompaction :: Maybe CompactionConfigFile
   }
   deriving stock (Show, Generic)
 
@@ -81,6 +94,13 @@ data PermissionConfigFile = PermissionConfigFile
   }
   deriving stock (Show, Generic)
 
+-- | Compaction configuration from YAML file
+data CompactionConfigFile = CompactionConfigFile
+  { ccfTokenThreshold :: Maybe Int
+  , ccfCompactionModel :: Maybe Text
+  }
+  deriving stock (Show, Generic)
+
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v ->
     ConfigFile
@@ -91,6 +111,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "maxHistory"
       <*> v .:? "heartbeat"
       <*> v .:? "permissions"
+      <*> v .:? "compaction"
 
 instance FromJSON HeartbeatConfigFile where
   parseJSON = withObject "HeartbeatConfigFile" $ \v ->
@@ -106,6 +127,12 @@ instance FromJSON PermissionConfigFile where
       <*> v .:? "dangerousPatterns"
       <*> v .:? "allowedPaths"
 
+instance FromJSON CompactionConfigFile where
+  parseJSON = withObject "CompactionConfigFile" $ \v ->
+    CompactionConfigFile
+      <$> v .:? "tokenThreshold"
+      <*> v .:? "compactionModel"
+
 -- | Default heartbeat configuration
 defaultHeartbeat :: HeartbeatConfig
 defaultHeartbeat =
@@ -113,6 +140,14 @@ defaultHeartbeat =
     { hbIntervalMinutes = 30
     , hbActiveHoursStart = 8
     , hbActiveHoursEnd = 22
+    }
+
+-- | Default compaction configuration
+defaultCompaction :: CompactionConfig
+defaultCompaction =
+  CompactionConfig
+    { ccTokenThreshold = 80000
+    , ccCompactionModel = "claude-3-5-haiku-20241022"
     }
 
 -- | Load configuration from a YAML file and environment variables
@@ -155,6 +190,14 @@ loadConfig path = do
             , pcAllowedPaths = fromMaybe (pcAllowedPaths defaultPermissionConfig) (pcfAllowedPaths pcf)
             }
 
+  let compaction = case cfCompaction configFile of
+        Nothing -> defaultCompaction
+        Just ccf ->
+          CompactionConfig
+            { ccTokenThreshold = fromMaybe (ccTokenThreshold defaultCompaction) (ccfTokenThreshold ccf)
+            , ccCompactionModel = fromMaybe (ccCompactionModel defaultCompaction) (ccfCompactionModel ccf)
+            }
+
   pure
     Config
       { cfgStateDir = fromMaybe "/var/lib/assistant" (cfStateDir configFile)
@@ -167,4 +210,5 @@ loadConfig path = do
       , cfgMaxHistory = fromMaybe 50 (cfMaxHistory configFile)
       , cfgHeartbeat = heartbeat
       , cfgPermissions = permissions
+      , cfgCompaction = compaction
       }
