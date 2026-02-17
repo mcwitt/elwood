@@ -3,6 +3,7 @@
 module Elwood.Config
   ( Config (..)
   , HeartbeatConfig (..)
+  , PermissionConfigFile (..)
   , loadConfig
   ) where
 
@@ -15,6 +16,8 @@ import qualified Data.Yaml as Yaml
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
 
+import Elwood.Permissions (PermissionConfig (..), defaultPermissionConfig)
+
 -- | Main configuration for Elwood
 data Config = Config
   { cfgStateDir :: FilePath
@@ -25,6 +28,8 @@ data Config = Config
   -- ^ Telegram bot token (loaded from environment)
   , cfgAnthropicApiKey :: Text
   -- ^ Anthropic API key (loaded from environment)
+  , cfgBraveApiKey :: Maybe Text
+  -- ^ Brave Search API key (optional, from environment)
   , cfgAllowedChatIds :: [Int64]
   -- ^ List of chat IDs allowed to interact with the bot
   , cfgModel :: Text
@@ -33,6 +38,8 @@ data Config = Config
   -- ^ Maximum messages to keep per conversation
   , cfgHeartbeat :: HeartbeatConfig
   -- ^ Heartbeat/proactive check configuration
+  , cfgPermissions :: PermissionConfig
+  -- ^ Permission configuration for tools
   }
   deriving stock (Show, Generic)
 
@@ -55,6 +62,7 @@ data ConfigFile = ConfigFile
   , cfModel :: Maybe Text
   , cfMaxHistory :: Maybe Int
   , cfHeartbeat :: Maybe HeartbeatConfigFile
+  , cfPermissions :: Maybe PermissionConfigFile
   }
   deriving stock (Show, Generic)
 
@@ -62,6 +70,14 @@ data HeartbeatConfigFile = HeartbeatConfigFile
   { hcIntervalMinutes :: Maybe Int
   , hcActiveHoursStart :: Maybe Int
   , hcActiveHoursEnd :: Maybe Int
+  }
+  deriving stock (Show, Generic)
+
+-- | Permission configuration from YAML file
+data PermissionConfigFile = PermissionConfigFile
+  { pcfSafeCommands :: Maybe [Text]
+  , pcfDangerousPatterns :: Maybe [Text]
+  , pcfAllowedPaths :: Maybe [FilePath]
   }
   deriving stock (Show, Generic)
 
@@ -74,6 +90,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "model"
       <*> v .:? "maxHistory"
       <*> v .:? "heartbeat"
+      <*> v .:? "permissions"
 
 instance FromJSON HeartbeatConfigFile where
   parseJSON = withObject "HeartbeatConfigFile" $ \v ->
@@ -81,6 +98,13 @@ instance FromJSON HeartbeatConfigFile where
       <$> v .:? "intervalMinutes"
       <*> v .:? "activeHoursStart"
       <*> v .:? "activeHoursEnd"
+
+instance FromJSON PermissionConfigFile where
+  parseJSON = withObject "PermissionConfigFile" $ \v ->
+    PermissionConfigFile
+      <$> v .:? "safeCommands"
+      <*> v .:? "dangerousPatterns"
+      <*> v .:? "allowedPaths"
 
 -- | Default heartbeat configuration
 defaultHeartbeat :: HeartbeatConfig
@@ -109,6 +133,9 @@ loadConfig path = do
       Nothing -> fail "ANTHROPIC_API_KEY environment variable is required"
       Just k -> pure (T.pack k)
 
+  -- Load Brave Search API key from environment (optional)
+  braveApiKey <- fmap T.pack <$> lookupEnv "BRAVE_SEARCH_API_KEY"
+
   -- Build final config with defaults
   let heartbeat = case cfHeartbeat configFile of
         Nothing -> defaultHeartbeat
@@ -119,14 +146,25 @@ loadConfig path = do
             , hbActiveHoursEnd = fromMaybe (hbActiveHoursEnd defaultHeartbeat) (hcActiveHoursEnd hbf)
             }
 
+  let permissions = case cfPermissions configFile of
+        Nothing -> defaultPermissionConfig
+        Just pcf ->
+          PermissionConfig
+            { pcSafeCommands = fromMaybe (pcSafeCommands defaultPermissionConfig) (pcfSafeCommands pcf)
+            , pcDangerousPatterns = fromMaybe (pcDangerousPatterns defaultPermissionConfig) (pcfDangerousPatterns pcf)
+            , pcAllowedPaths = fromMaybe (pcAllowedPaths defaultPermissionConfig) (pcfAllowedPaths pcf)
+            }
+
   pure
     Config
       { cfgStateDir = fromMaybe "/var/lib/assistant" (cfStateDir configFile)
       , cfgWorkspaceDir = fromMaybe "/var/lib/assistant/workspace" (cfWorkspaceDir configFile)
       , cfgTelegramToken = telegramToken
       , cfgAnthropicApiKey = anthropicApiKey
+      , cfgBraveApiKey = braveApiKey
       , cfgAllowedChatIds = fromMaybe [] (cfAllowedChatIds configFile)
       , cfgModel = fromMaybe "claude-sonnet-4-20250514" (cfModel configFile)
       , cfgMaxHistory = fromMaybe 50 (cfMaxHistory configFile)
       , cfgHeartbeat = heartbeat
+      , cfgPermissions = permissions
       }

@@ -1,4 +1,5 @@
 {-# LANGUAGE StrictData #-}
+{-# OPTIONS_GHC -Wno-partial-fields #-}
 
 module Elwood.Claude.Types
   ( -- * Message Types
@@ -6,10 +7,13 @@ module Elwood.Claude.Types
   , ClaudeMessage (..)
   , Conversation (..)
 
+    -- * Content Blocks
+  , ContentBlock (..)
+
     -- * API Request/Response
   , MessagesRequest (..)
   , MessagesResponse (..)
-  , ContentBlock (..)
+  , ToolSchema (..)
   , Usage (..)
 
     -- * Errors
@@ -37,10 +41,69 @@ instance FromJSON Role where
     "assistant" -> pure Assistant
     other -> fail $ "Unknown role: " <> show other
 
+-- | Content block in a message - can be text, tool use, or tool result
+data ContentBlock
+  = TextBlock Text
+  | ToolUseBlock
+      { tubId :: Text
+      -- ^ Tool use ID (e.g., "toolu_...")
+      , tubName :: Text
+      -- ^ Tool name
+      , tubInput :: Value
+      -- ^ JSON arguments
+      }
+  | ToolResultBlock
+      { trbToolUseId :: Text
+      -- ^ ID of the tool use this is a result for
+      , trbContent :: Text
+      -- ^ Result content
+      , trbIsError :: Bool
+      -- ^ Whether this is an error result
+      }
+  deriving stock (Show, Eq, Generic)
+
+instance ToJSON ContentBlock where
+  toJSON (TextBlock t) =
+    object
+      [ "type" .= ("text" :: Text)
+      , "text" .= t
+      ]
+  toJSON (ToolUseBlock tid name input) =
+    object
+      [ "type" .= ("tool_use" :: Text)
+      , "id" .= tid
+      , "name" .= name
+      , "input" .= input
+      ]
+  toJSON (ToolResultBlock tid content isErr) =
+    object $
+      [ "type" .= ("tool_result" :: Text)
+      , "tool_use_id" .= tid
+      , "content" .= content
+      ]
+        ++ ["is_error" .= True | isErr]
+
+instance FromJSON ContentBlock where
+  parseJSON = withObject "ContentBlock" $ \v -> do
+    blockType <- v .: "type"
+    case blockType :: Text of
+      "text" -> TextBlock <$> v .: "text"
+      "tool_use" ->
+        ToolUseBlock
+          <$> v .: "id"
+          <*> v .: "name"
+          <*> v .: "input"
+      "tool_result" ->
+        ToolResultBlock
+          <$> v .: "tool_use_id"
+          <*> v .: "content"
+          <*> v .:? "is_error" .!= False
+      other -> fail $ "Unknown content block type: " <> show other
+
 -- | A message in a Claude conversation
 data ClaudeMessage = ClaudeMessage
   { cmRole :: Role
-  , cmContent :: Text
+  , cmContent :: [ContentBlock]
   }
   deriving stock (Show, Eq, Generic)
 
@@ -83,6 +146,25 @@ instance FromJSON Conversation where
       <*> v .: "messages"
       <*> v .: "lastUpdated"
 
+-- | Tool schema for API requests
+data ToolSchema = ToolSchema
+  { tsName :: Text
+  -- ^ Tool name
+  , tsDescription :: Text
+  -- ^ Tool description
+  , tsInputSchema :: Value
+  -- ^ JSON Schema for input parameters
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance ToJSON ToolSchema where
+  toJSON ts =
+    object
+      [ "name" .= tsName ts
+      , "description" .= tsDescription ts
+      , "input_schema" .= tsInputSchema ts
+      ]
+
 -- | Request to the Claude Messages API
 data MessagesRequest = MessagesRequest
   { mrModel :: Text
@@ -93,6 +175,8 @@ data MessagesRequest = MessagesRequest
   -- ^ System prompt (optional)
   , mrMessages :: [ClaudeMessage]
   -- ^ Conversation messages
+  , mrTools :: [ToolSchema]
+  -- ^ Available tools
   }
   deriving stock (Show, Generic)
 
@@ -104,19 +188,7 @@ instance ToJSON MessagesRequest where
       , "messages" .= mrMessages req
       ]
         ++ maybe [] (\s -> ["system" .= s]) (mrSystem req)
-
--- | A content block in a response
-data ContentBlock = ContentBlock
-  { cbType :: Text
-  , cbText :: Maybe Text
-  }
-  deriving stock (Show, Generic)
-
-instance FromJSON ContentBlock where
-  parseJSON = withObject "ContentBlock" $ \v ->
-    ContentBlock
-      <$> v .: "type"
-      <*> v .:? "text"
+        ++ (if null (mrTools req) then [] else ["tools" .= mrTools req])
 
 -- | Token usage information
 data Usage = Usage
@@ -138,7 +210,7 @@ data MessagesResponse = MessagesResponse
   , mresContent :: [ContentBlock]
   -- ^ Response content blocks
   , mresStopReason :: Maybe Text
-  -- ^ Why the model stopped (end_turn, max_tokens, etc.)
+  -- ^ Why the model stopped (end_turn, max_tokens, tool_use, etc.)
   , mresUsage :: Usage
   -- ^ Token usage
   }

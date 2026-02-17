@@ -5,6 +5,7 @@ module Elwood.Claude.Conversation
   , newConversationStore
   , getConversation
   , appendMessage
+  , updateConversation
   , clearConversation
   ) where
 
@@ -126,6 +127,28 @@ saveConversation store conv = do
       -- Silently ignore write errors for now
       -- In a production system we'd want better error handling
       pure ()
+
+-- | Update conversation with a complete message list
+-- Used by agent loop to persist full conversation including tool interactions
+updateConversation :: ConversationStore -> Int64 -> [ClaudeMessage] -> IO ()
+updateConversation store chatId messages = do
+  now <- getCurrentTime
+
+  let trimmed = takeEnd (csMaxHistory store) messages
+      conv =
+        Conversation
+          { convChatId = chatId
+          , convMessages = trimmed
+          , convLastUpdated = now
+          }
+
+  -- Update cache and persist
+  modifyMVar_ (csCache store) $ \c ->
+    pure $ Map.insert chatId conv c
+
+  saveConversation store conv
+  where
+    takeEnd n xs = drop (max 0 (length xs - n)) xs
 
 -- | Clear a conversation's history
 clearConversation :: ConversationStore -> Int64 -> IO ()

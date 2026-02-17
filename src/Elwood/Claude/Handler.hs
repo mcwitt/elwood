@@ -11,11 +11,14 @@ import Control.Exception (catch, SomeException)
 import System.FilePath ((</>))
 import System.Directory (doesFileExist)
 
-import Elwood.Claude.Client
+import Elwood.Claude.AgentLoop (runAgentTurn, AgentResult (..))
+import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Conversation
 import Elwood.Claude.Types
-import Elwood.Logging
+import Elwood.Logging (Logger, logInfo, logError)
 import Elwood.Telegram.Types (Message (..), Chat (..))
+import Elwood.Tools.Registry (ToolRegistry)
+import Elwood.Tools.Types (ToolEnv)
 
 -- | Load system prompt from SOUL.md file
 loadSystemPrompt :: FilePath -> IO (Maybe Text)
@@ -31,18 +34,20 @@ loadSystemPrompt workspaceDir = do
         else pure (Just content)
     else pure Nothing
 
--- | Create a Claude message handler
+-- | Create a Claude message handler with tool support
 claudeHandler
   :: Logger
   -> ClaudeClient
   -> ConversationStore
+  -> ToolRegistry
+  -> ToolEnv
   -> Maybe Text
   -- ^ System prompt
   -> Text
   -- ^ Model name
   -> Message
   -> IO (Maybe Text)
-claudeHandler logger client store systemPrompt model msg =
+claudeHandler logger client store registry toolEnv systemPrompt model msg =
   case text msg of
     Nothing -> pure Nothing
     Just txt
@@ -68,72 +73,43 @@ claudeHandler logger client store systemPrompt model msg =
         , ("text_length", T.pack (show (T.length userText)))
         ]
 
-      -- Add user message to history
-      let userMsg = ClaudeMessage {cmRole = User, cmContent = userText}
-      conv <- appendMessage store chatIdVal userMsg
+      -- Get existing conversation
+      conv <- getConversation store chatIdVal
 
-      -- Build request
-      let request =
-            MessagesRequest
-              { mrModel = model
-              , mrMaxTokens = 4096
-              , mrSystem = systemPrompt
-              , mrMessages = convMessages conv
-              }
+      -- Create user message with content blocks
+      let userMsg = ClaudeMessage User [TextBlock userText]
 
-      -- Call Claude
-      result <- sendMessages client request
+      -- Run the agent turn (handles tool use loop internally)
+      result <- runAgentTurn
+        logger
+        client
+        registry
+        toolEnv
+        systemPrompt
+        model
+        (convMessages conv)
+        userMsg
 
       case result of
-        Left err -> handleError err
-        Right response -> handleSuccess response
+        AgentSuccess responseText allMessages -> do
+          -- Update conversation with all messages (including tool interactions)
+          updateConversation store chatIdVal allMessages
 
-    handleSuccess :: MessagesResponse -> IO (Maybe Text)
-    handleSuccess response = do
-      -- Extract text from response
-      let responseText = extractText (mresContent response)
-          usage = mresUsage response
+          logInfo
+            logger
+            "Agent turn completed"
+            [ ("chat_id", T.pack (show chatIdVal))
+            , ("response_length", T.pack (show (T.length responseText)))
+            , ("message_count", T.pack (show (length allMessages)))
+            ]
 
-      -- Log token usage
-      logInfo
-        logger
-        "Claude response received"
-        [ ("chat_id", T.pack (show chatIdVal))
-        , ("input_tokens", T.pack (show (usageInputTokens usage)))
-        , ("output_tokens", T.pack (show (usageOutputTokens usage)))
-        ]
+          pure (Just responseText)
 
-      -- Add assistant response to history
-      let assistantMsg = ClaudeMessage {cmRole = Assistant, cmContent = responseText}
-      _ <- appendMessage store chatIdVal assistantMsg
-
-      pure (Just responseText)
-
-    handleError :: ClaudeError -> IO (Maybe Text)
-    handleError err = do
-      logError
-        logger
-        "Claude API error"
-        [ ("chat_id", T.pack (show chatIdVal))
-        , ("error", T.pack (show err))
-        ]
-
-      let userMessage = case err of
-            ClaudeRateLimited ->
-              "I'm being rate limited right now. Please try again in a moment."
-            ClaudeOverloaded ->
-              "Claude is currently overloaded. Please try again in a few minutes."
-            ClaudeApiError errType errMsg ->
-              "Sorry, I encountered an error: " <> errType <> " - " <> errMsg
-            ClaudeHttpError status _ ->
-              "Sorry, there was a connection error (HTTP " <> T.pack (show status) <> "). Please try again."
-            ClaudeParseError _ ->
-              "Sorry, I received an unexpected response. Please try again."
-
-      pure (Just userMessage)
-
--- | Extract text content from response blocks
-extractText :: [ContentBlock] -> Text
-extractText blocks =
-  T.intercalate "\n" $
-    [t | ContentBlock {cbType = "text", cbText = Just t} <- blocks]
+        AgentError errorMsg -> do
+          logError
+            logger
+            "Agent turn failed"
+            [ ("chat_id", T.pack (show chatIdVal))
+            , ("error", errorMsg)
+            ]
+          pure (Just errorMsg)
