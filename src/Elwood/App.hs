@@ -3,11 +3,15 @@ module Elwood.App
   , runApp
   ) where
 
+import Control.Concurrent.Async (concurrently_)
+import Control.Exception (SomeException, catch)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 import Network.HTTP.Client (newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.FilePath ((</>))
 
 import Elwood.Claude.Client
 import Elwood.Claude.Conversation
@@ -16,6 +20,7 @@ import Elwood.Config
 import Elwood.Logging
 import Elwood.Memory (newMemoryStore)
 import Elwood.Permissions (newPermissionChecker)
+import Elwood.Scheduler (SchedulerEnv (..), runScheduler)
 import Elwood.Telegram.Client
 import Elwood.Telegram.Polling
 import Elwood.Tools.Command (runCommandTool)
@@ -135,9 +140,53 @@ runApp config = do
     Just _ -> logInfo logger "Brave Search API key configured" []
     Nothing -> logWarn logger "No Brave Search API key, web_search will be unavailable" []
 
-  -- Start polling loop with Claude handler
-  runPolling
-    logger
-    telegram
-    (cfgAllowedChatIds config)
-    (claudeHandler logger claude conversations registry toolEnv compactionConfig systemPrompt (cfgModel config))
+  -- Load HEARTBEAT.md
+  heartbeatPrompt <- loadHeartbeatPrompt (cfgWorkspaceDir config)
+  case heartbeatPrompt of
+    Just _ -> logInfo logger "Heartbeat prompt loaded from HEARTBEAT.md" []
+    Nothing -> logInfo logger "No HEARTBEAT.md found, heartbeat will be inactive" []
+
+  -- Log cron jobs
+  let cronJobs = cfgCronJobs config
+  logInfo logger "Cron jobs configured" [("count", T.pack (show (length cronJobs)))]
+
+  -- Create scheduler environment
+  let schedulerEnv =
+        SchedulerEnv
+          { seLogger = logger
+          , seTelegram = telegram
+          , seClaude = claude
+          , seConversations = conversations
+          , seRegistry = registry
+          , seToolEnv = toolEnv
+          , seCompaction = compactionConfig
+          , seSystemPrompt = systemPrompt
+          , seModel = cfgModel config
+          , seHeartbeatConfig = cfgHeartbeat config
+          , seHeartbeatPrompt = heartbeatPrompt
+          , seNotifyChatIds = cfgAllowedChatIds config
+          , seCronJobs = cronJobs
+          }
+
+  -- Run polling and scheduler concurrently
+  concurrently_
+    (runPolling
+      logger
+      telegram
+      (cfgAllowedChatIds config)
+      (claudeHandler logger claude conversations registry toolEnv compactionConfig systemPrompt (cfgModel config)))
+    (runScheduler schedulerEnv)
+
+-- | Load heartbeat prompt from HEARTBEAT.md file
+loadHeartbeatPrompt :: FilePath -> IO (Maybe Text)
+loadHeartbeatPrompt workspaceDir = do
+  let heartbeatPath = workspaceDir </> "HEARTBEAT.md"
+  exists <- doesFileExist heartbeatPath
+  if exists
+    then do
+      content <- TIO.readFile heartbeatPath
+        `catch` \(_ :: SomeException) -> pure ""
+      if T.null content
+        then pure Nothing
+        else pure (Just content)
+    else pure Nothing

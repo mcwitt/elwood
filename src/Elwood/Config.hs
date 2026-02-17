@@ -4,6 +4,7 @@ module Elwood.Config
   ( Config (..)
   , HeartbeatConfig (..)
   , CompactionConfig (..)
+  , CronJob (..)
   , PermissionConfigFile (..)
   , loadConfig
   ) where
@@ -43,17 +44,34 @@ data Config = Config
   -- ^ Permission configuration for tools
   , cfgCompaction :: CompactionConfig
   -- ^ Context compaction configuration
+  , cfgCronJobs :: [CronJob]
+  -- ^ Scheduled cron jobs
   }
   deriving stock (Show, Generic)
 
 -- | Configuration for heartbeat/proactive functionality
 data HeartbeatConfig = HeartbeatConfig
-  { hbIntervalMinutes :: Int
+  { hbEnabled :: Bool
+  -- ^ Whether heartbeat is enabled
+  , hbIntervalMinutes :: Int
   -- ^ How often to check for proactive actions (in minutes)
   , hbActiveHoursStart :: Int
   -- ^ Start of active hours (0-23)
   , hbActiveHoursEnd :: Int
   -- ^ End of active hours (0-23)
+  }
+  deriving stock (Show, Generic)
+
+-- | Configuration for a scheduled cron job
+data CronJob = CronJob
+  { cjName :: Text
+  -- ^ Job identifier
+  , cjIntervalMinutes :: Int
+  -- ^ Simple interval (no cron expressions for M5)
+  , cjPrompt :: Text
+  -- ^ Message to send to agent
+  , cjIsolated :: Bool
+  -- ^ Use fresh session (True) or shared heartbeat session (False)
   }
   deriving stock (Show, Generic)
 
@@ -76,13 +94,23 @@ data ConfigFile = ConfigFile
   , cfHeartbeat :: Maybe HeartbeatConfigFile
   , cfPermissions :: Maybe PermissionConfigFile
   , cfCompaction :: Maybe CompactionConfigFile
+  , cfCronJobs :: Maybe [CronJobFile]
   }
   deriving stock (Show, Generic)
 
 data HeartbeatConfigFile = HeartbeatConfigFile
-  { hcIntervalMinutes :: Maybe Int
+  { hcEnabled :: Maybe Bool
+  , hcIntervalMinutes :: Maybe Int
   , hcActiveHoursStart :: Maybe Int
   , hcActiveHoursEnd :: Maybe Int
+  }
+  deriving stock (Show, Generic)
+
+data CronJobFile = CronJobFile
+  { cjfName :: Text
+  , cjfIntervalMinutes :: Int
+  , cjfPrompt :: Text
+  , cjfIsolated :: Maybe Bool
   }
   deriving stock (Show, Generic)
 
@@ -112,13 +140,23 @@ instance FromJSON ConfigFile where
       <*> v .:? "heartbeat"
       <*> v .:? "permissions"
       <*> v .:? "compaction"
+      <*> v .:? "cronJobs"
 
 instance FromJSON HeartbeatConfigFile where
   parseJSON = withObject "HeartbeatConfigFile" $ \v ->
     HeartbeatConfigFile
-      <$> v .:? "intervalMinutes"
+      <$> v .:? "enabled"
+      <*> v .:? "intervalMinutes"
       <*> v .:? "activeHoursStart"
       <*> v .:? "activeHoursEnd"
+
+instance FromJSON CronJobFile where
+  parseJSON = withObject "CronJobFile" $ \v ->
+    CronJobFile
+      <$> v .: "name"
+      <*> v .: "intervalMinutes"
+      <*> v .: "prompt"
+      <*> v .:? "isolated"
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v ->
@@ -137,7 +175,8 @@ instance FromJSON CompactionConfigFile where
 defaultHeartbeat :: HeartbeatConfig
 defaultHeartbeat =
   HeartbeatConfig
-    { hbIntervalMinutes = 30
+    { hbEnabled = True
+    , hbIntervalMinutes = 30
     , hbActiveHoursStart = 8
     , hbActiveHoursEnd = 22
     }
@@ -176,10 +215,23 @@ loadConfig path = do
         Nothing -> defaultHeartbeat
         Just hbf ->
           HeartbeatConfig
-            { hbIntervalMinutes = fromMaybe (hbIntervalMinutes defaultHeartbeat) (hcIntervalMinutes hbf)
+            { hbEnabled = fromMaybe (hbEnabled defaultHeartbeat) (hcEnabled hbf)
+            , hbIntervalMinutes = fromMaybe (hbIntervalMinutes defaultHeartbeat) (hcIntervalMinutes hbf)
             , hbActiveHoursStart = fromMaybe (hbActiveHoursStart defaultHeartbeat) (hcActiveHoursStart hbf)
             , hbActiveHoursEnd = fromMaybe (hbActiveHoursEnd defaultHeartbeat) (hcActiveHoursEnd hbf)
             }
+
+  let cronJobs = case cfCronJobs configFile of
+        Nothing -> []
+        Just cjfs ->
+          [ CronJob
+              { cjName = cjfName cjf
+              , cjIntervalMinutes = cjfIntervalMinutes cjf
+              , cjPrompt = cjfPrompt cjf
+              , cjIsolated = fromMaybe False (cjfIsolated cjf)
+              }
+          | cjf <- cjfs
+          ]
 
   let permissions = case cfPermissions configFile of
         Nothing -> defaultPermissionConfig
@@ -211,4 +263,5 @@ loadConfig path = do
       , cfgHeartbeat = heartbeat
       , cfgPermissions = permissions
       , cfgCompaction = compaction
+      , cfgCronJobs = cronJobs
       }

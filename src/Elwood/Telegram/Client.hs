@@ -6,6 +6,7 @@ module Elwood.Telegram.Client
   , newTelegramClient
   , getUpdates
   , sendMessage
+  , notify
   ) where
 
 import Control.Exception (Exception, throwIO)
@@ -18,6 +19,7 @@ import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Status (statusCode)
 
+import Elwood.Logging (Logger, logInfo)
 import Elwood.Telegram.Types
 
 -- | Telegram API client
@@ -124,3 +126,9 @@ sendMessage client chatId msgText = do
       Right resp
         | smresOk resp -> pure ()
         | otherwise -> throwIO $ TelegramApiError "sendMessage returned ok=false"
+
+-- | Send a proactive notification with logging
+notify :: Logger -> TelegramClient -> Int64 -> Text -> IO ()
+notify logger client chatId msgText = do
+  logInfo logger "Sending notification" [("chat_id", T.pack (show chatId))]
+  sendMessage client chatId msgText

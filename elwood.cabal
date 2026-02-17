@@ -30,6 +30,7 @@ library
         Elwood.Logging
         Elwood.Memory
         Elwood.Permissions
+        Elwood.Scheduler
         Elwood.Telegram.Client
         Elwood.Telegram.Polling
         Elwood.Telegram.Types
