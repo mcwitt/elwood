@@ -108,10 +108,15 @@ formatApprovalRequest toolName inputSummary =
     [ "🔐 *Tool Approval Required*",
       "",
       "*Tool:* `" <> toolName <> "`",
-      "*Input:* " <> inputSummary,
-      "",
+      "*Input:*",
+      "```",
+      escapeCodeBlock inputSummary,
+      "```",
       "Do you want to allow this action?"
     ]
+  where
+    -- Escape triple backticks inside code blocks
+    escapeCodeBlock = T.replace "```" "\\`\\`\\`"
 
 -- | Parse callback data to extract approval decision and request ID
 --
