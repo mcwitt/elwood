@@ -96,23 +96,29 @@
           in
           pkgs.writeShellScriptBin "pre-commit-run" script;
 
-        checks = {
-          pre-commit-check = git-hooks.lib.${system}.run {
-            src = ./.;
-            hooks = {
-              cabal-fmt.enable = true;
-              hlint.enable = true;
-              ormolu.enable = true;
-              nixfmt.enable = true;
+        checks =
+          let
+            # NixOS module tests (only on Linux)
+            nixosTests = if pkgs.stdenv.isLinux then import ./modules/tests { inherit pkgs self; } else { };
+          in
+          {
+            pre-commit-check = git-hooks.lib.${system}.run {
+              src = ./.;
+              hooks = {
+                cabal-fmt.enable = true;
+                hlint.enable = true;
+                ormolu.enable = true;
+                nixfmt.enable = true;
+              };
             };
-          };
 
-          weeder = pkgs.weeder-nix.makeWeederCheck {
-            haskellPackages = haskellPackages;
-            packages = [ "elwood" ];
-            weederToml = ./weeder.toml;
-          };
-        };
+            weeder = pkgs.weeder-nix.makeWeederCheck {
+              haskellPackages = haskellPackages;
+              packages = [ "elwood" ];
+              weederToml = ./weeder.toml;
+            };
+          }
+          // nixosTests;
       }
     )
     // {

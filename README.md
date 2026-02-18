@@ -11,6 +11,7 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 **Key features:**
 
 - **Telegram integration** — Chat with your assistant from anywhere
+- **Webhook endpoints** — Trigger agent actions from external systems (Home Assistant, n8n, etc.)
 - **Tool execution** — Run commands, read/write files, search the web
 - **MCP support** — Extend capabilities with Model Context Protocol servers
 - **Persistent memory** — Cross-session knowledge store
@@ -18,26 +19,29 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Tool approval flow** — Approve sensitive operations via inline keyboard
 - **Image support** — Send photos and Claude can see them
 - **Context compaction** — Automatic summarization for long conversations
-- **NixOS module** — Declarative deployment with systemd hardening
+- **NixOS module** — Multi-agent support with systemd hardening
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    System Service                       │
-│                  (systemd, NixOS)                       │
-│                                                         │
-│  ┌──────────┐   ┌────────────┐   ┌──────────────────┐  │
-│  │ Channels │──▶│   Agent    │──▶│  Tool Dispatch   │  │
-│  │(Telegram)│◀──│   Loop     │◀──│  (built-in +     │  │
-│  └──────────┘   │            │   │   MCP servers)   │  │
-│                 │  ┌───────┐ │   └──────────────────┘  │
-│  ┌──────────┐   │  │Session│ │   ┌──────────────────┐  │
-│  │Scheduler │──▶│  │Store  │ │   │     Memory       │  │
-│  │(heartbeat│   │  │(JSON) │ │   │  (file-based)    │  │
-│  │ + cron)  │   │  └───────┘ │   └──────────────────┘  │
-│  └──────────┘   └────────────┘                         │
-└─────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                     System Service                        │
+│                   (systemd, NixOS)                        │
+│                                                           │
+│  ┌──────────┐                                             │
+│  │ Telegram │───┐                                         │
+│  └──────────┘   │                                         │
+│  ┌──────────┐   │  ┌────────────┐   ┌──────────────────┐  │
+│  │ Webhooks │───┼─▶│   Event    │──▶│  Tool Dispatch   │  │
+│  │ (HTTP)   │   │  │  Handler   │◀──│  (built-in +     │  │
+│  └──────────┘   │  │            │   │   MCP servers)   │  │
+│  ┌──────────┐   │  │  ┌───────┐ │   └──────────────────┘  │
+│  │Scheduler │───┘  │  │Session│ │   ┌──────────────────┐  │
+│  │(heartbeat│      │  │Store  │ │   │     Memory       │  │
+│  │ + cron)  │      │  │(JSON) │ │   │  (file-based)    │  │
+│  └──────────┘      │  └───────┘ │   └──────────────────┘  │
+│                    └────────────┘                         │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ## Building
@@ -107,6 +111,19 @@ permissions:
   defaultPolicy: allow
   approvalTimeoutSeconds: 300
 
+# Webhook server (optional)
+webhook:
+  enabled: true
+  port: 8080
+  globalSecret: "your-webhook-secret"
+  endpoints:
+    - name: doorbell
+      promptTemplate: |
+        Motion detected at front door at {{.timestamp}}.
+        Please describe what you see.
+      session: isolated
+      deliver: [telegram]
+
 # MCP Server configurations (optional)
 mcpServers:
   filesystem:
@@ -145,16 +162,53 @@ Add the flake to your NixOS configuration:
       modules = [
         elwood.nixosModules.default
         {
-          services.assistant = {
+          # Multiple agents can be configured
+          services.assistant.agents.elwood = {
             enable = true;
             allowedChatIds = [ 123456789 ];
             environmentFile = "/run/secrets/elwood-env";
-            workspaceDir = "/etc/elwood/workspace";
+            workspaceDir = "/var/lib/assistant/elwood/workspace";
+
             heartbeat = {
+              enable = true;
               intervalMinutes = 30;
               activeHoursStart = 8;
               activeHoursEnd = 22;
             };
+
+            # Webhook server for external integrations
+            webhook = {
+              enable = true;
+              port = 8080;
+              globalSecret = "your-secret";
+              endpoints."daily-report" = {
+                promptTemplate = "Generate daily report for {{.date}}";
+                session = "isolated";
+                deliver = [ "telegram" ];
+              };
+            };
+
+            # Cron jobs via systemd timers
+            cronJobs.daily-summary = {
+              prompt = "Generate my daily summary";
+              useSystemdTimer = true;
+              schedule = "08:00";
+              isolated = true;
+            };
+
+            permissions = {
+              safeCommands = [ "ls" "cat" "git status" ];
+              dangerousPatterns = [ "\\brm\\b" "\\bsudo\\b" ];
+              defaultPolicy = "ask";
+            };
+          };
+
+          # Run a second agent with different config
+          services.assistant.agents.career-coach = {
+            enable = true;
+            allowedChatIds = [ 123456789 ];
+            environmentFile = "/run/secrets/career-coach-env";
+            model = "claude-sonnet-4-20250514";
           };
         }
       ];
@@ -163,7 +217,7 @@ Add the flake to your NixOS configuration:
 }
 ```
 
-The service runs with systemd hardening (restricted capabilities, protected system paths, etc.).
+Each agent runs as a separate systemd service (`assistant-<name>.service`) with hardening (restricted capabilities, protected system paths, etc.). Cron jobs with `useSystemdTimer = true` create systemd timers that trigger webhooks.
 
 ## Built-in Tools
 
