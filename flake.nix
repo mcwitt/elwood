@@ -5,6 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     flake-utils.url = "github:numtide/flake-utils";
     git-hooks.url = "github:cachix/git-hooks.nix";
+    weeder-nix.url = "github:NorfairKing/weeder-nix";
   };
 
   outputs =
@@ -13,15 +14,35 @@
       nixpkgs,
       flake-utils,
       git-hooks,
+      weeder-nix,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        # Overlay to add elwood to haskellPackages
+        haskellOverlay = final: prev: {
+          haskell = prev.haskell // {
+            packages = prev.haskell.packages // {
+              ghc96 = prev.haskell.packages.ghc96.extend (
+                hfinal: hprev: {
+                  elwood = hfinal.callCabal2nix "elwood" ./. { };
+                }
+              );
+            };
+          };
+        };
+
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [
+            haskellOverlay
+            weeder-nix.overlays.${system}
+          ];
+        };
 
         haskellPackages = pkgs.haskell.packages.ghc96;
 
-        elwood = haskellPackages.callCabal2nix "elwood" ./. { };
+        elwood = haskellPackages.elwood;
 
       in
       {
@@ -35,7 +56,7 @@
             inherit (self.checks.${system}) pre-commit-check;
           in
           haskellPackages.shellFor {
-            packages = p: [ elwood ];
+            packages = p: [ p.elwood ];
 
             buildInputs =
               with pkgs;
@@ -45,6 +66,7 @@
                 haskellPackages.haskell-language-server
                 haskellPackages.hlint
                 haskellPackages.ormolu
+                haskellPackages.weeder
 
                 # System tools
                 pkg-config
@@ -83,6 +105,12 @@
               ormolu.enable = true;
               nixfmt.enable = true;
             };
+          };
+
+          weeder = pkgs.weeder-nix.makeWeederCheck {
+            haskellPackages = haskellPackages;
+            packages = [ "elwood" ];
+            weederToml = ./weeder.toml;
           };
         };
       }

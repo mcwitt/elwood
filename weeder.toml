@@ -1,0 +1,20 @@
+# Weeder configuration for dead code detection
+# Run: cabal build --ghc-options="-fwrite-ide-info -hiedir=.hie" && weeder
+
+# Root symbols that are considered "alive" (entry points)
+roots = [
+  "^Main.main$",
+  # Exported module functions (public API)
+  "^Elwood\\.App\\..*",
+  "^Elwood\\.Claude\\.Conversation\\..*",
+  "^Elwood\\.Claude\\.Types\\..*",
+  "^Elwood\\.Config\\..*",
+  "^Elwood\\.Memory\\..*",
+  "^Elwood\\.Telegram\\.Client\\..*",
+  "^Elwood\\.Tools\\.Types\\..*",
+  # Test exports
+  "^Test\\..*\\.tests$",
+]
+
+# Type class instances are often not directly referenced
+type-class-roots = true
