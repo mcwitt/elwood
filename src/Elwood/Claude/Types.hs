@@ -42,9 +42,15 @@ instance FromJSON Role where
     "assistant" -> pure Assistant
     other -> fail $ "Unknown role: " <> show other
 
--- | Content block in a message - can be text, tool use, or tool result
+-- | Content block in a message - can be text, image, tool use, or tool result
 data ContentBlock
   = TextBlock Text
+  | ImageBlock
+      { -- | Media type (e.g., "image/jpeg", "image/png")
+        ibMediaType :: Text,
+        -- | Base64-encoded image data
+        ibData :: Text
+      }
   | ToolUseBlock
       { -- | Tool use ID (e.g., "toolu_...")
         tubId :: Text,
@@ -69,6 +75,16 @@ instance ToJSON ContentBlock where
       [ "type" .= ("text" :: Text),
         "text" .= t
       ]
+  toJSON (ImageBlock mediaType imageData) =
+    object
+      [ "type" .= ("image" :: Text),
+        "source"
+          .= object
+            [ "type" .= ("base64" :: Text),
+              "media_type" .= mediaType,
+              "data" .= imageData
+            ]
+      ]
   toJSON (ToolUseBlock tid name input) =
     object
       [ "type" .= ("tool_use" :: Text),
@@ -89,6 +105,11 @@ instance FromJSON ContentBlock where
     blockType <- v .: "type"
     case blockType :: Text of
       "text" -> TextBlock <$> v .: "text"
+      "image" -> do
+        source <- v .: "source"
+        ImageBlock
+          <$> source .: "media_type"
+          <*> source .: "data"
       "tool_use" ->
         ToolUseBlock
           <$> v .: "id"

@@ -11,6 +11,8 @@ module Elwood.Telegram.Client
     answerCallbackQuery,
     editMessageReplyMarkup,
     notify,
+    getFile,
+    downloadFile,
   )
 where
 
@@ -25,12 +27,14 @@ import Elwood.Logging (Logger, logInfo)
 import Elwood.Telegram.Types
   ( AnswerCallbackQueryRequest (..),
     EditMessageReplyMarkupRequest (..),
+    GetFileResponse (..),
     GetUpdatesResponse (..),
     InlineKeyboardMarkup,
     Message (messageId),
     SendMessageRequest (..),
     SendMessageResponse (..),
     SendMessageWithKeyboardRequest (..),
+    TelegramFile (..),
     Update,
   )
 import Network.HTTP.Client
@@ -235,3 +239,37 @@ notify :: Logger -> TelegramClient -> Int64 -> Text -> IO ()
 notify logger client chatIdVal msgText = do
   logInfo logger "Sending notification" [("chat_id", T.pack (show chatIdVal))]
   sendMessage client chatIdVal msgText
+
+-- | Get file information for downloading
+getFile :: TelegramClient -> Text -> IO (Maybe TelegramFile)
+getFile client fileId = do
+  req <- buildRequest client "getFile"
+  let body = encode $ object ["file_id" .= fileId]
+      req' =
+        req
+          { method = "POST",
+            requestBody = RequestBodyLBS body
+          }
+
+  response <- httpLbs req' (tcManager client)
+
+  let status = statusCode $ responseStatus response
+  if status /= 200
+    then throwIO $ TelegramHttpError status (responseBody response)
+    else case eitherDecode (responseBody response) :: Either String GetFileResponse of
+      Left err -> throwIO $ TelegramParseError err
+      Right resp
+        | gfrOk resp -> pure (gfrResult resp)
+        | otherwise -> pure Nothing
+
+-- | Download file content as raw bytes
+downloadFile :: TelegramClient -> Text -> IO ByteString
+downloadFile client filePath = do
+  let url = "https://api.telegram.org/file/bot" <> T.unpack (tcToken client) <> "/" <> T.unpack filePath
+  req <- parseRequest url
+  response <- httpLbs req (tcManager client)
+
+  let status = statusCode $ responseStatus response
+  if status /= 200
+    then throwIO $ TelegramHttpError status (responseBody response)
+    else pure (responseBody response)

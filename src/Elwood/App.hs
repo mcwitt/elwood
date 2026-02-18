@@ -233,7 +233,7 @@ runApp config = do
             logger
             telegram
             (cfgAllowedChatIds config)
-            (claudeHandlerWithApproval logger claude conversations registry mkToolEnvWithApproval compactionConfig systemPrompt (cfgModel config))
+            (claudeHandlerWithApproval logger claude telegram conversations registry mkToolEnvWithApproval compactionConfig systemPrompt (cfgModel config))
             callbackHandler
         )
         (runScheduler schedulerEnv)
@@ -262,6 +262,7 @@ loadHeartbeatPrompt workspaceDir = do
 claudeHandlerWithApproval ::
   Logger ->
   ClaudeClient ->
+  TelegramClient ->
   ConversationStore ->
   ToolRegistry ->
   (Int64 -> ToolEnv) ->
@@ -270,10 +271,10 @@ claudeHandlerWithApproval ::
   Text ->
   Message ->
   IO (Maybe Text)
-claudeHandlerWithApproval logger client store registry mkToolEnv compactionConfig systemPrompt model msg = do
+claudeHandlerWithApproval logger client telegram store registry mkToolEnv compactionConfig systemPrompt model msg = do
   let cid = chatId (chat msg)
       toolEnvForChat = mkToolEnv cid
-  claudeHandler logger client store registry toolEnvForChat compactionConfig systemPrompt model msg
+  claudeHandler logger client telegram store registry toolEnvForChat compactionConfig systemPrompt model msg
 
 -- | Request tool approval via Telegram inline keyboard
 requestToolApproval ::

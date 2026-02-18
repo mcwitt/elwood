@@ -5,9 +5,12 @@ module Elwood.Telegram.Types
     Message (..),
     Chat (..),
     User (..),
+    PhotoSize (..),
+    TelegramFile (..),
     SendMessageRequest (..),
     GetUpdatesResponse (..),
     SendMessageResponse (..),
+    GetFileResponse (..),
 
     -- * Callback Query Types
     CallbackQuery (..),
@@ -44,6 +47,30 @@ instance FromJSON Update where
       <*> v .:? "message"
       <*> v .:? "callback_query"
 
+-- | A photo size variant (Telegram sends multiple sizes)
+data PhotoSize = PhotoSize
+  { -- | Identifier for this file
+    psFileId :: Text,
+    -- | Unique file identifier (consistent across bots)
+    psFileUniqueId :: Text,
+    -- | Photo width
+    psWidth :: Int,
+    -- | Photo height
+    psHeight :: Int,
+    -- | File size in bytes (optional)
+    psFileSize :: Maybe Int
+  }
+  deriving stock (Show, Generic)
+
+instance FromJSON PhotoSize where
+  parseJSON = withObject "PhotoSize" $ \v ->
+    PhotoSize
+      <$> v .: "file_id"
+      <*> v .: "file_unique_id"
+      <*> v .: "width"
+      <*> v .: "height"
+      <*> v .:? "file_size"
+
 -- | A Telegram message
 data Message = Message
   { -- | Unique message identifier
@@ -53,7 +80,11 @@ data Message = Message
     -- | Text content of the message
     text :: Maybe Text,
     -- | Sender of the message
-    from :: Maybe User
+    from :: Maybe User,
+    -- | Photos attached to the message (multiple sizes)
+    photo :: Maybe [PhotoSize],
+    -- | Caption for media messages
+    caption :: Maybe Text
   }
   deriving stock (Show, Generic)
 
@@ -64,6 +95,8 @@ instance FromJSON Message where
       <*> v .: "chat"
       <*> v .:? "text"
       <*> v .:? "from"
+      <*> v .:? "photo"
+      <*> v .:? "caption"
 
 -- | A Telegram chat
 data Chat = Chat
@@ -140,6 +173,40 @@ data SendMessageResponse = SendMessageResponse
 instance FromJSON SendMessageResponse where
   parseJSON = withObject "SendMessageResponse" $ \v ->
     SendMessageResponse
+      <$> v .: "ok"
+      <*> v .:? "result"
+
+-- | File information from Telegram getFile API
+data TelegramFile = TelegramFile
+  { -- | Identifier for this file
+    tfFileId :: Text,
+    -- | Unique file identifier
+    tfFileUniqueId :: Text,
+    -- | File size in bytes (optional)
+    tfFileSize :: Maybe Int,
+    -- | File path for download (optional, use with file download URL)
+    tfFilePath :: Maybe Text
+  }
+  deriving stock (Show, Generic)
+
+instance FromJSON TelegramFile where
+  parseJSON = withObject "TelegramFile" $ \v ->
+    TelegramFile
+      <$> v .: "file_id"
+      <*> v .: "file_unique_id"
+      <*> v .:? "file_size"
+      <*> v .:? "file_path"
+
+-- | Response for getFile API
+data GetFileResponse = GetFileResponse
+  { gfrOk :: Bool,
+    gfrResult :: Maybe TelegramFile
+  }
+  deriving stock (Show, Generic)
+
+instance FromJSON GetFileResponse where
+  parseJSON = withObject "GetFileResponse" $ \v ->
+    GetFileResponse
       <$> v .: "ok"
       <*> v .:? "result"
 
