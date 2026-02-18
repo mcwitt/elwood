@@ -6,10 +6,12 @@ module Elwood.Claude.AgentLoop
   )
 where
 
-import Data.Aeson (Value)
+import Data.Aeson (Value, encode)
+import Data.ByteString.Lazy qualified as LBS
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Client (ClaudeClient, sendMessages)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Types
@@ -199,7 +201,7 @@ executeToolUse logger registry toolEnv (ToolUseBlock tid name input) = do
               executeToolWithLogging logger tool toolEnv name input
             Just requestApproval -> do
               logInfo logger "Requesting approval for tool" [("tool", name)]
-              let inputSummary = T.take 200 (T.pack (show input))
+              let inputSummary = T.take 200 (decodeUtf8 (LBS.toStrict (encode input)))
               result <- requestApproval name inputSummary
               case result of
                 ApprovalGranted -> do
