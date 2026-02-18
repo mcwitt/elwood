@@ -15,9 +15,6 @@ import Control.Exception (SomeException, catch)
 import Data.Aeson (eitherDecodeFileStrict, encodeFile)
 import Data.Int (Int64)
 import Data.Map.Strict qualified as Map
-import Data.Set (Set)
-import Data.Set qualified as Set
-import Data.Text (Text)
 import Data.Time (getCurrentTime)
 import Elwood.Claude.Types
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -75,10 +72,7 @@ loadOrCreateConversation store chatId = do
       then do
         result <- eitherDecodeFileStrict path
         case result of
-          Right loadedConv -> do
-            -- Sanitize to remove orphaned tool_result blocks
-            let sanitized = sanitizeConversation loadedConv
-            pure sanitized
+          Right loadedConv -> pure loadedConv
           Left _err -> createEmptyConversation chatId
       else createEmptyConversation chatId
 
@@ -99,19 +93,16 @@ createEmptyConversation chatId = do
         convLastUpdated = now
       }
 
--- | Append a message to a conversation
--- Trims to maxHistory and persists to disk
+-- | Append a message to a conversation and persist to disk
+-- Note: Context limits are managed by compaction, not message trimming
 appendMessage :: ConversationStore -> Int64 -> ClaudeMessage -> IO Conversation
 appendMessage store chatId msg = do
   conv <- getConversation store chatId
   now <- getCurrentTime
 
-  let messages = convMessages conv ++ [msg]
-      -- Keep only the last maxHistory messages
-      trimmed = takeEnd (csMaxHistory store) messages
-      conv' =
+  let conv' =
         conv
-          { convMessages = trimmed,
+          { convMessages = convMessages conv ++ [msg],
             convLastUpdated = now
           }
 
@@ -121,8 +112,6 @@ appendMessage store chatId msg = do
 
   saveConversation store conv'
   pure conv'
-  where
-    takeEnd n xs = drop (max 0 (length xs - n)) xs
 
 -- | Save a conversation to disk
 saveConversation :: ConversationStore -> Conversation -> IO ()
@@ -136,15 +125,15 @@ saveConversation store conv = do
 
 -- | Update conversation with a complete message list
 -- Used by agent loop to persist full conversation including tool interactions
+-- Note: Context limits are managed by compaction, not message trimming
 updateConversation :: ConversationStore -> Int64 -> [ClaudeMessage] -> IO ()
 updateConversation store chatId messages = do
   now <- getCurrentTime
 
-  let trimmed = takeEnd (csMaxHistory store) messages
-      conv =
+  let conv =
         Conversation
           { convChatId = chatId,
-            convMessages = trimmed,
+            convMessages = messages,
             convLastUpdated = now
           }
 
@@ -153,8 +142,6 @@ updateConversation store chatId messages = do
     pure $ Map.insert chatId conv c
 
   saveConversation store conv
-  where
-    takeEnd n xs = drop (max 0 (length xs - n)) xs
 
 -- | Clear a conversation's history
 clearConversation :: ConversationStore -> Int64 -> IO ()
@@ -167,43 +154,3 @@ clearConversation store chatId = do
 
   -- Persist empty conversation
   saveConversation store conv
-
--- | Sanitize a conversation to remove orphaned tool_result blocks
---
--- This fixes a bug where trimming history could leave tool_result blocks
--- without their corresponding tool_use blocks, causing Claude API errors.
-sanitizeConversation :: Conversation -> Conversation
-sanitizeConversation conv =
-  conv {convMessages = sanitizeMessages (convMessages conv)}
-
--- | Sanitize messages to remove orphaned tool_result blocks
-sanitizeMessages :: [ClaudeMessage] -> [ClaudeMessage]
-sanitizeMessages messages =
-  let -- First pass: collect all tool_use IDs
-      toolUseIds = collectToolUseIds messages
-   in -- Second pass: filter out orphaned tool_result blocks
-      filterOrphanedResults toolUseIds messages
-
--- | Collect all tool_use IDs from messages
-collectToolUseIds :: [ClaudeMessage] -> Set Text
-collectToolUseIds = foldr collectFromMessage Set.empty
-  where
-    collectFromMessage :: ClaudeMessage -> Set Text -> Set Text
-    collectFromMessage msg acc =
-      foldr collectFromBlock acc (cmContent msg)
-
-    collectFromBlock :: ContentBlock -> Set Text -> Set Text
-    collectFromBlock (ToolUseBlock tid _ _) acc = Set.insert tid acc
-    collectFromBlock _ acc = acc
-
--- | Filter out tool_result blocks that don't have a matching tool_use
-filterOrphanedResults :: Set Text -> [ClaudeMessage] -> [ClaudeMessage]
-filterOrphanedResults validIds = map filterMessage
-  where
-    filterMessage :: ClaudeMessage -> ClaudeMessage
-    filterMessage msg =
-      msg {cmContent = filter isValidBlock (cmContent msg)}
-
-    isValidBlock :: ContentBlock -> Bool
-    isValidBlock (ToolResultBlock tid _ _) = tid `Set.member` validIds
-    isValidBlock _ = True
