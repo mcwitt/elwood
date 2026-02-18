@@ -23,6 +23,7 @@ library
   import:             warnings
   exposed-modules:
     Elwood.App
+    Elwood.Approval
     Elwood.Claude.AgentLoop
     Elwood.Claude.Client
     Elwood.Claude.Compaction
@@ -66,6 +67,7 @@ library
     , tagsoup          >=0.14 && <0.15
     , text             >=2.0  && <2.2
     , time             >=1.12 && <1.15
+    , uuid             >=1.3  && <1.4
     , vector           >=0.13 && <0.14
     , yaml             >=0.11 && <0.14
 

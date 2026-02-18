@@ -8,6 +8,16 @@ module Elwood.Telegram.Types
     SendMessageRequest (..),
     GetUpdatesResponse (..),
     SendMessageResponse (..),
+
+    -- * Callback Query Types
+    CallbackQuery (..),
+
+    -- * Inline Keyboard Types
+    InlineKeyboardButton (..),
+    InlineKeyboardMarkup (..),
+    SendMessageWithKeyboardRequest (..),
+    AnswerCallbackQueryRequest (..),
+    EditMessageReplyMarkupRequest (..),
   )
 where
 
@@ -21,7 +31,9 @@ data Update = Update
   { -- | Unique update identifier
     updateId :: Int,
     -- | New incoming message (if any)
-    message :: Maybe Message
+    message :: Maybe Message,
+    -- | Callback query from inline keyboard button press
+    callbackQuery :: Maybe CallbackQuery
   }
   deriving stock (Show, Generic)
 
@@ -30,6 +42,7 @@ instance FromJSON Update where
     Update
       <$> v .: "update_id"
       <*> v .:? "message"
+      <*> v .:? "callback_query"
 
 -- | A Telegram message
 data Message = Message
@@ -129,3 +142,99 @@ instance FromJSON SendMessageResponse where
     SendMessageResponse
       <$> v .: "ok"
       <*> v .:? "result"
+
+-- | Callback query from pressing an inline keyboard button
+data CallbackQuery = CallbackQuery
+  { -- | Unique callback query identifier
+    cqId :: Text,
+    -- | User who pressed the button
+    cqFrom :: User,
+    -- | Message with the callback button (if available)
+    cqMessage :: Maybe Message,
+    -- | Data associated with the callback button
+    cqData :: Maybe Text
+  }
+  deriving stock (Show, Generic)
+
+instance FromJSON CallbackQuery where
+  parseJSON = withObject "CallbackQuery" $ \v ->
+    CallbackQuery
+      <$> v .: "id"
+      <*> v .: "from"
+      <*> v .:? "message"
+      <*> v .:? "data"
+
+-- | Inline keyboard button
+data InlineKeyboardButton = InlineKeyboardButton
+  { -- | Button text
+    ikbText :: Text,
+    -- | Data to be sent in callback query
+    ikbCallbackData :: Text
+  }
+  deriving stock (Show, Generic)
+
+instance ToJSON InlineKeyboardButton where
+  toJSON btn =
+    object
+      [ "text" .= ikbText btn,
+        "callback_data" .= ikbCallbackData btn
+      ]
+
+-- | Inline keyboard markup (array of button rows)
+newtype InlineKeyboardMarkup = InlineKeyboardMarkup
+  { ikmInlineKeyboard :: [[InlineKeyboardButton]]
+  }
+  deriving stock (Show, Generic)
+
+instance ToJSON InlineKeyboardMarkup where
+  toJSON markup =
+    object ["inline_keyboard" .= ikmInlineKeyboard markup]
+
+-- | Request body for sendMessage with inline keyboard
+data SendMessageWithKeyboardRequest = SendMessageWithKeyboardRequest
+  { smkChatId :: Int64,
+    smkText :: Text,
+    smkParseMode :: Maybe Text,
+    smkReplyMarkup :: InlineKeyboardMarkup
+  }
+  deriving stock (Show, Generic)
+
+instance ToJSON SendMessageWithKeyboardRequest where
+  toJSON req =
+    object $
+      [ "chat_id" .= smkChatId req,
+        "text" .= smkText req,
+        "reply_markup" .= smkReplyMarkup req
+      ]
+        ++ maybe [] (\pm -> ["parse_mode" .= pm]) (smkParseMode req)
+
+-- | Request body for answerCallbackQuery
+data AnswerCallbackQueryRequest = AnswerCallbackQueryRequest
+  { acqCallbackQueryId :: Text,
+    acqText :: Maybe Text,
+    acqShowAlert :: Bool
+  }
+  deriving stock (Show, Generic)
+
+instance ToJSON AnswerCallbackQueryRequest where
+  toJSON req =
+    object $
+      ["callback_query_id" .= acqCallbackQueryId req]
+        ++ maybe [] (\t -> ["text" .= t]) (acqText req)
+        ++ ["show_alert" .= acqShowAlert req | acqShowAlert req]
+
+-- | Request body for editMessageReplyMarkup
+data EditMessageReplyMarkupRequest = EditMessageReplyMarkupRequest
+  { emrChatId :: Int64,
+    emrMessageId :: Int,
+    emrReplyMarkup :: Maybe InlineKeyboardMarkup
+  }
+  deriving stock (Show, Generic)
+
+instance ToJSON EditMessageReplyMarkupRequest where
+  toJSON req =
+    object $
+      [ "chat_id" .= emrChatId req,
+        "message_id" .= emrMessageId req
+      ]
+        ++ maybe [] (\rm -> ["reply_markup" .= rm]) (emrReplyMarkup req)

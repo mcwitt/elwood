@@ -1,5 +1,6 @@
 module Elwood.Telegram.Polling
   ( MessageHandler,
+    CallbackHandler,
     runPolling,
   )
 where
@@ -9,27 +10,34 @@ import Control.Exception (SomeException, catch)
 import Data.Foldable (for_)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Logging
-import Elwood.Telegram.Client
-import Elwood.Telegram.Types
+import Elwood.Telegram.Client (TelegramClient, getUpdatesAllowed, sendMessage)
+import Elwood.Telegram.Types (CallbackQuery (..), Chat (..), Message (..), Update (..), User (..))
 
 -- | Handler for incoming messages
 -- Returns Just reply to send a response, Nothing to skip
 type MessageHandler = Message -> IO (Maybe Text)
 
+-- | Handler for callback queries (inline keyboard button presses)
+-- Takes the callback query and returns Nothing (response is handled separately)
+type CallbackHandler = CallbackQuery -> IO ()
+
 -- | Run the Telegram long-polling loop
 --
 -- This function blocks indefinitely, polling for updates and dispatching
 -- messages to the handler. Only messages from allowed chat IDs are processed.
+-- Callback queries are dispatched to the callback handler.
 runPolling ::
   Logger ->
   TelegramClient ->
   [Int64] ->
   MessageHandler ->
+  CallbackHandler ->
   IO ()
-runPolling logger client allowedChats handler = do
+runPolling logger client allowedChats handler callbackHandler = do
   logInfo logger "Starting Telegram polling loop" []
   offsetRef <- newIORef 0
   loop offsetRef
@@ -40,7 +48,7 @@ runPolling logger client allowedChats handler = do
 
       -- Poll for updates with error handling
       updates <-
-        getUpdates client offset `catch` \(e :: SomeException) -> do
+        getUpdatesWithCallbacks client offset `catch` \(e :: SomeException) -> do
           logError logger "Error fetching updates" [("error", T.pack (show e))]
           -- Wait before retrying on error
           threadDelay (5 * 1000000)
@@ -55,8 +63,42 @@ runPolling logger client allowedChats handler = do
         -- Process message if present
         for_ (message update) processMessage
 
+        -- Process callback query if present
+        for_ (callbackQuery update) processCallback
+
       -- Continue polling
       loop offsetRef
+
+    processCallback :: CallbackQuery -> IO ()
+    processCallback cq = do
+      let userName = firstName (cqFrom cq)
+      logInfo
+        logger
+        "Received callback query"
+        [ ("callback_id", cqId cq),
+          ("user", userName),
+          ("data", fromMaybe "<no data>" (cqData cq))
+        ]
+
+      -- Check if user is from an allowed chat
+      case cqMessage cq of
+        Just msg ->
+          let cid = chatId (chat msg)
+           in if cid `notElem` allowedChats
+                then
+                  logWarn
+                    logger
+                    "Ignoring callback from unauthorized chat"
+                    [("chat_id", T.pack (show cid))]
+                else do
+                  callbackHandler cq `catch` \(e :: SomeException) ->
+                    logError logger "Callback handler error" [("error", T.pack (show e))]
+        Nothing ->
+          logWarn logger "Callback query without message" []
+
+    -- Extended getUpdates that includes callback_query in allowed_updates
+    getUpdatesWithCallbacks :: TelegramClient -> Int -> IO [Update]
+    getUpdatesWithCallbacks c o = getUpdatesAllowed c o ["message", "callback_query"]
 
     processMessage :: Message -> IO ()
     processMessage msg = do

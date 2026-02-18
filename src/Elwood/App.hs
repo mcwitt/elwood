@@ -6,10 +6,21 @@ where
 
 import Control.Concurrent.Async (concurrently_)
 import Control.Exception (SomeException, catch, finally)
+import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Elwood.Claude.Client
+import Data.UUID qualified as UUID
+import Elwood.Approval
+  ( ApprovalCoordinator,
+    ApprovalResult (..),
+    formatApprovalRequest,
+    newApprovalCoordinator,
+    parseCallbackData,
+    requestApproval,
+    respondToApproval,
+  )
+import Elwood.Claude.Client (ClaudeClient, newClaudeClient)
 import Elwood.Claude.Conversation
 import Elwood.Claude.Handler
 import Elwood.Config
@@ -17,15 +28,28 @@ import Elwood.Logging
 import Elwood.MCP.Client (stopMCPServer)
 import Elwood.MCP.Registry (startMCPServers)
 import Elwood.Memory (newMemoryStore)
-import Elwood.Permissions (newPermissionChecker)
+import Elwood.Permissions (newPermissionChecker, pcApprovalTimeoutSeconds)
 import Elwood.Scheduler (SchedulerEnv (..), runScheduler)
 import Elwood.Telegram.Client
+  ( TelegramClient,
+    answerCallbackQuery,
+    editMessageReplyMarkup,
+    newTelegramClient,
+    sendMessageWithKeyboard,
+  )
 import Elwood.Telegram.Polling
+import Elwood.Telegram.Types
+  ( CallbackQuery (..),
+    Chat (..),
+    InlineKeyboardButton (..),
+    InlineKeyboardMarkup (..),
+    Message (..),
+  )
 import Elwood.Tools.Command (runCommandTool)
 import Elwood.Tools.FileSystem (readFileTool, writeFileTool)
 import Elwood.Tools.Memory (saveMemoryTool, searchMemoryTool)
 import Elwood.Tools.Registry
-import Elwood.Tools.Types (ToolEnv (..))
+import Elwood.Tools.Types (ApprovalOutcome (..), ToolEnv (..))
 import Elwood.Tools.Web (webFetchTool, webSearchTool)
 import Network.HTTP.Client (newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
@@ -88,8 +112,13 @@ runApp config = do
   memoryStore <- newMemoryStore (cfgStateDir config)
   logInfo logger "Memory store initialized" []
 
-  -- Create tool environment
-  let toolEnv =
+  -- Initialize approval coordinator
+  let timeoutSeconds = pcApprovalTimeoutSeconds (cfgPermissions config)
+  approvalCoordinator <- newApprovalCoordinator timeoutSeconds
+  logInfo logger "Approval coordinator initialized" [("timeout_seconds", T.pack (show timeoutSeconds))]
+
+  -- Create base tool environment (without per-chat approval function)
+  let baseToolEnv =
         ToolEnv
           { teLogger = logger,
             teWorkspaceDir = cfgWorkspaceDir config,
@@ -97,7 +126,17 @@ runApp config = do
             tePermissions = permChecker,
             teHttpManager = httpManager,
             teBraveApiKey = cfgBraveApiKey config,
-            teMemoryStore = memoryStore
+            teMemoryStore = memoryStore,
+            teChatId = Nothing,
+            teRequestApproval = Nothing
+          }
+
+  -- Helper to create tool environment with approval function for a specific chat
+  let mkToolEnvWithApproval :: Int64 -> ToolEnv
+      mkToolEnvWithApproval cid =
+        baseToolEnv
+          { teChatId = Just cid,
+            teRequestApproval = Just (requestToolApproval logger telegram approvalCoordinator cid)
           }
 
   -- Initialize tool registry with built-in tools
@@ -142,7 +181,7 @@ runApp config = do
             appConversations = conversations,
             appSystemPrompt = systemPrompt,
             appToolRegistry = registry,
-            appToolEnv = toolEnv
+            appToolEnv = baseToolEnv
           }
 
   -- Log allowed chats
@@ -166,7 +205,7 @@ runApp config = do
   let cronJobs = cfgCronJobs config
   logInfo logger "Cron jobs configured" [("count", T.pack (show (length cronJobs)))]
 
-  -- Create scheduler environment
+  -- Create scheduler environment (uses base toolEnv without approval, since scheduler is not interactive)
   let schedulerEnv =
         SchedulerEnv
           { seLogger = logger,
@@ -174,7 +213,7 @@ runApp config = do
             seClaude = claude,
             seConversations = conversations,
             seRegistry = registry,
-            seToolEnv = toolEnv,
+            seToolEnv = baseToolEnv,
             seCompaction = compactionConfig,
             seSystemPrompt = systemPrompt,
             seModel = cfgModel config,
@@ -184,6 +223,9 @@ runApp config = do
             seCronJobs = cronJobs
           }
 
+  -- Create callback handler for approval responses
+  let callbackHandler = handleApprovalCallback logger telegram approvalCoordinator
+
   -- Run polling and scheduler concurrently, with MCP cleanup on exit
   finally
     ( concurrently_
@@ -191,7 +233,8 @@ runApp config = do
             logger
             telegram
             (cfgAllowedChatIds config)
-            (claudeHandler logger claude conversations registry toolEnv compactionConfig systemPrompt (cfgModel config))
+            (claudeHandlerWithApproval logger claude conversations registry mkToolEnvWithApproval compactionConfig systemPrompt (cfgModel config))
+            callbackHandler
         )
         (runScheduler schedulerEnv)
     )
@@ -214,3 +257,105 @@ loadHeartbeatPrompt workspaceDir = do
         then pure Nothing
         else pure (Just content)
     else pure Nothing
+
+-- | Claude handler that injects per-chat approval function into ToolEnv
+claudeHandlerWithApproval ::
+  Logger ->
+  ClaudeClient ->
+  ConversationStore ->
+  ToolRegistry ->
+  (Int64 -> ToolEnv) ->
+  CompactionConfig ->
+  Maybe Text ->
+  Text ->
+  Message ->
+  IO (Maybe Text)
+claudeHandlerWithApproval logger client store registry mkToolEnv compactionConfig systemPrompt model msg = do
+  let cid = chatId (chat msg)
+      toolEnvForChat = mkToolEnv cid
+  claudeHandler logger client store registry toolEnvForChat compactionConfig systemPrompt model msg
+
+-- | Request tool approval via Telegram inline keyboard
+requestToolApproval ::
+  Logger ->
+  TelegramClient ->
+  ApprovalCoordinator ->
+  Int64 ->
+  Text ->
+  Text ->
+  IO ApprovalOutcome
+requestToolApproval logger telegram coordinator cid toolName inputSummary = do
+  -- Create approval request and get UUID
+  (requestId, waitForResult) <- requestApproval coordinator
+
+  -- Build the approval message with inline keyboard
+  let messageText = formatApprovalRequest toolName inputSummary
+      keyboard =
+        InlineKeyboardMarkup
+          [ [ InlineKeyboardButton "✅ Approve" ("approve:" <> UUID.toText requestId),
+              InlineKeyboardButton "❌ Deny" ("deny:" <> UUID.toText requestId)
+            ]
+          ]
+
+  -- Send the message with keyboard
+  msgId <- sendMessageWithKeyboard telegram cid messageText keyboard
+  logInfo
+    logger
+    "Sent approval request"
+    [ ("tool", toolName),
+      ("request_id", UUID.toText requestId),
+      ("message_id", T.pack (show msgId))
+    ]
+
+  -- Wait for result (blocks until approval, denial, or timeout)
+  result <- waitForResult
+
+  -- Convert to ApprovalOutcome
+  case result of
+    Approved -> pure ApprovalGranted
+    Denied -> pure ApprovalDenied
+    TimedOut -> pure ApprovalTimeout
+
+-- | Handle callback queries for approval buttons
+handleApprovalCallback ::
+  Logger ->
+  TelegramClient ->
+  ApprovalCoordinator ->
+  CallbackQuery ->
+  IO ()
+handleApprovalCallback logger telegram coordinator cq = do
+  case cqData cq of
+    Nothing -> do
+      logWarn logger "Callback query without data" []
+      answerCallbackQuery telegram (cqId cq) (Just "Invalid callback")
+    Just callbackData -> do
+      case parseCallbackData callbackData of
+        Nothing -> do
+          logWarn logger "Failed to parse callback data" [("data", callbackData)]
+          answerCallbackQuery telegram (cqId cq) (Just "Invalid callback data")
+        Just (isApproved, requestId) -> do
+          let result = if isApproved then Approved else Denied
+          success <- respondToApproval coordinator requestId result
+
+          if success
+            then do
+              let responseText = if isApproved then "✅ Approved" else "❌ Denied"
+              logInfo
+                logger
+                "Approval response received"
+                [ ("request_id", UUID.toText requestId),
+                  ("approved", T.pack (show isApproved))
+                ]
+
+              -- Acknowledge the callback
+              answerCallbackQuery telegram (cqId cq) (Just responseText)
+
+              -- Remove the inline keyboard from the message
+              case cqMessage cq of
+                Just msg -> do
+                  let cid = chatId (chat msg)
+                  editMessageReplyMarkup telegram cid (messageId msg) Nothing
+                Nothing -> pure ()
+            else do
+              logWarn logger "Approval request not found or already responded" [("request_id", UUID.toText requestId)]
+              answerCallbackQuery telegram (cqId cq) (Just "Request expired or already responded")

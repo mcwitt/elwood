@@ -5,12 +5,17 @@ module Elwood.Telegram.Client
     TelegramError (..),
     newTelegramClient,
     getUpdates,
+    getUpdatesAllowed,
     sendMessage,
+    sendMessageWithKeyboard,
+    answerCallbackQuery,
+    editMessageReplyMarkup,
     notify,
   )
 where
 
 import Control.Exception (Exception, throwIO)
+import Control.Monad (when)
 import Data.Aeson (eitherDecode, encode, object, (.=))
 import Data.ByteString.Lazy (ByteString)
 import Data.Int (Int64)
@@ -18,6 +23,16 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Logging (Logger, logInfo)
 import Elwood.Telegram.Types
+  ( AnswerCallbackQueryRequest (..),
+    EditMessageReplyMarkupRequest (..),
+    GetUpdatesResponse (..),
+    InlineKeyboardMarkup,
+    Message (messageId),
+    SendMessageRequest (..),
+    SendMessageResponse (..),
+    SendMessageWithKeyboardRequest (..),
+    Update,
+  )
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Status (statusCode)
@@ -71,14 +86,25 @@ buildRequest client method = do
 --
 -- Returns a list of updates
 getUpdates :: TelegramClient -> Int -> IO [Update]
-getUpdates client offset = do
+getUpdates client offset = getUpdatesAllowed client offset ["message"]
+
+-- | Get updates with custom allowed update types
+--
+-- Parameters:
+--   - client: The Telegram client
+--   - offset: Update offset (use last update_id + 1)
+--   - allowedUpdates: List of update types to receive (e.g., ["message", "callback_query"])
+--
+-- Returns a list of updates
+getUpdatesAllowed :: TelegramClient -> Int -> [Text] -> IO [Update]
+getUpdatesAllowed client offset allowedUpdates = do
   req <- buildRequest client "getUpdates"
   let body =
         encode $
           object
             [ "offset" .= offset,
               "timeout" .= (30 :: Int),
-              "allowed_updates" .= (["message"] :: [Text])
+              "allowed_updates" .= allowedUpdates
             ]
       req' =
         req
@@ -127,8 +153,85 @@ sendMessage client chatId msgText = do
         | smresOk resp -> pure ()
         | otherwise -> throwIO $ TelegramApiError "sendMessage returned ok=false"
 
+-- | Send a message with an inline keyboard
+sendMessageWithKeyboard :: TelegramClient -> Int64 -> Text -> InlineKeyboardMarkup -> IO Int
+sendMessageWithKeyboard client chatIdVal msgText keyboard = do
+  req <- buildRequest client "sendMessage"
+  let body =
+        encode
+          SendMessageWithKeyboardRequest
+            { smkChatId = chatIdVal,
+              smkText = msgText,
+              smkParseMode = Just "Markdown",
+              smkReplyMarkup = keyboard
+            }
+      req' =
+        req
+          { method = "POST",
+            requestBody = RequestBodyLBS body
+          }
+
+  response <- httpLbs req' (tcManager client)
+
+  let status = statusCode $ responseStatus response
+  if status /= 200
+    then throwIO $ TelegramHttpError status (responseBody response)
+    else case eitherDecode (responseBody response) :: Either String SendMessageResponse of
+      Left err -> throwIO $ TelegramParseError err
+      Right resp
+        | smresOk resp -> pure $ maybe 0 messageId (smresResult resp)
+        | otherwise -> throwIO $ TelegramApiError "sendMessage with keyboard returned ok=false"
+
+-- | Answer a callback query (acknowledge button press)
+answerCallbackQuery :: TelegramClient -> Text -> Maybe Text -> IO ()
+answerCallbackQuery client callbackQueryId responseText = do
+  req <- buildRequest client "answerCallbackQuery"
+  let body =
+        encode
+          AnswerCallbackQueryRequest
+            { acqCallbackQueryId = callbackQueryId,
+              acqText = responseText,
+              acqShowAlert = False
+            }
+      req' =
+        req
+          { method = "POST",
+            requestBody = RequestBodyLBS body
+          }
+
+  response <- httpLbs req' (tcManager client)
+
+  let status = statusCode $ responseStatus response
+  when (status /= 200) $
+    throwIO $
+      TelegramHttpError status (responseBody response)
+
+-- | Edit the reply markup of a message (to remove buttons after response)
+editMessageReplyMarkup :: TelegramClient -> Int64 -> Int -> Maybe InlineKeyboardMarkup -> IO ()
+editMessageReplyMarkup client chatIdVal msgId newMarkup = do
+  req <- buildRequest client "editMessageReplyMarkup"
+  let body =
+        encode
+          EditMessageReplyMarkupRequest
+            { emrChatId = chatIdVal,
+              emrMessageId = msgId,
+              emrReplyMarkup = newMarkup
+            }
+      req' =
+        req
+          { method = "POST",
+            requestBody = RequestBodyLBS body
+          }
+
+  response <- httpLbs req' (tcManager client)
+
+  let status = statusCode $ responseStatus response
+  when (status /= 200) $
+    throwIO $
+      TelegramHttpError status (responseBody response)
+
 -- | Send a proactive notification with logging
 notify :: Logger -> TelegramClient -> Int64 -> Text -> IO ()
-notify logger client chatId msgText = do
-  logInfo logger "Sending notification" [("chat_id", T.pack (show chatId))]
-  sendMessage client chatId msgText
+notify logger client chatIdVal msgText = do
+  logInfo logger "Sending notification" [("chat_id", T.pack (show chatIdVal))]
+  sendMessage client chatIdVal msgText

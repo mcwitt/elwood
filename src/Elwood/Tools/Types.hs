@@ -5,6 +5,7 @@ module Elwood.Tools.Types
     Tool (..),
     ToolResult (..),
     ToolEnv (..),
+    ApprovalOutcome (..),
 
     -- * Result Helpers
     toolSuccess,
@@ -13,6 +14,7 @@ module Elwood.Tools.Types
 where
 
 import Data.Aeson (Value)
+import Data.Int (Int64)
 import Data.Text (Text)
 import Elwood.Logging (Logger)
 import Elwood.Memory (MemoryStore)
@@ -42,8 +44,19 @@ data ToolEnv = ToolEnv
     -- | Brave Search API key (optional)
     teBraveApiKey :: Maybe Text,
     -- | Persistent memory store
-    teMemoryStore :: MemoryStore
+    teMemoryStore :: MemoryStore,
+    -- | Chat ID for the current conversation (for approval requests)
+    teChatId :: Maybe Int64,
+    -- | Approval request function (sends Telegram message, returns result)
+    teRequestApproval :: Maybe (Text -> Text -> IO ApprovalOutcome)
   }
+
+-- | Outcome of an approval request (simplified for ToolEnv)
+data ApprovalOutcome
+  = ApprovalGranted
+  | ApprovalDenied
+  | ApprovalTimeout
+  deriving stock (Show, Eq)
 
 -- | A tool that can be used by Claude
 data Tool = Tool

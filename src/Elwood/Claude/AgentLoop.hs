@@ -6,6 +6,7 @@ module Elwood.Claude.AgentLoop
   )
 where
 
+import Data.Aeson (Value)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -13,8 +14,9 @@ import Elwood.Claude.Client (ClaudeClient, sendMessages)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Types
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
+import Elwood.Permissions (ToolPolicy (..), getToolPolicy, pcConfig)
 import Elwood.Tools.Registry (ToolRegistry, lookupTool, toolSchemas)
-import Elwood.Tools.Types (Tool (..), ToolEnv, ToolResult (..))
+import Elwood.Tools.Types (ApprovalOutcome (..), Tool (..), ToolEnv (..), ToolResult (..))
 
 -- | Result of running an agent turn
 data AgentResult
@@ -168,7 +170,7 @@ extractToolUses = filter isToolUse
     isToolUse (ToolUseBlock {}) = True
     isToolUse _ = False
 
--- | Execute a single tool use
+-- | Execute a single tool use with policy checking
 executeToolUse :: Logger -> ToolRegistry -> ToolEnv -> ContentBlock -> IO ToolResult
 executeToolUse logger registry toolEnv (ToolUseBlock tid name input) = do
   logInfo logger "Executing tool" [("tool", name), ("id", tid)]
@@ -178,14 +180,49 @@ executeToolUse logger registry toolEnv (ToolUseBlock tid name input) = do
       logWarn logger "Unknown tool" [("tool", name)]
       pure $ ToolError $ "Unknown tool: " <> name
     Just tool -> do
-      result <- toolExecute tool toolEnv input
-      case result of
-        ToolSuccess output ->
-          logInfo logger "Tool succeeded" [("tool", name), ("output_length", T.pack (show (T.length output)))]
-        ToolError err ->
-          logWarn logger "Tool failed" [("tool", name), ("error", err)]
-      pure result
+      -- Check tool policy before execution
+      let permConfig = pcConfig (tePermissions toolEnv)
+          policy = getToolPolicy permConfig name
+
+      case policy of
+        PolicyDeny -> do
+          logWarn logger "Tool denied by policy" [("tool", name)]
+          pure $ ToolError $ "Tool '" <> name <> "' is not allowed by policy"
+        PolicyAllow -> do
+          executeToolWithLogging logger tool toolEnv name input
+        PolicyAsk -> do
+          -- Request approval before execution
+          case teRequestApproval toolEnv of
+            Nothing -> do
+              -- No approval mechanism configured, fall back to allow
+              logWarn logger "No approval mechanism, allowing tool" [("tool", name)]
+              executeToolWithLogging logger tool toolEnv name input
+            Just requestApproval -> do
+              logInfo logger "Requesting approval for tool" [("tool", name)]
+              let inputSummary = T.take 200 (T.pack (show input))
+              result <- requestApproval name inputSummary
+              case result of
+                ApprovalGranted -> do
+                  logInfo logger "Tool approved by user" [("tool", name)]
+                  executeToolWithLogging logger tool toolEnv name input
+                ApprovalDenied -> do
+                  logInfo logger "Tool denied by user" [("tool", name)]
+                  pure $ ToolError "Action denied by user"
+                ApprovalTimeout -> do
+                  logWarn logger "Tool approval timed out" [("tool", name)]
+                  pure $ ToolError "Approval request timed out"
 executeToolUse _ _ _ _ = pure $ ToolError "Invalid tool use block"
+
+-- | Execute a tool and log the result
+executeToolWithLogging :: Logger -> Tool -> ToolEnv -> Text -> Value -> IO ToolResult
+executeToolWithLogging logger tool toolEnv name input = do
+  result <- toolExecute tool toolEnv input
+  case result of
+    ToolSuccess output ->
+      logInfo logger "Tool succeeded" [("tool", name), ("output_length", T.pack (show (T.length output)))]
+    ToolError err ->
+      logWarn logger "Tool failed" [("tool", name), ("error", err)]
+  pure result
 
 -- | Make a tool result block from a tool use and its result
 makeResultBlock :: ContentBlock -> ToolResult -> ContentBlock

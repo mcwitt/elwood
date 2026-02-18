@@ -16,14 +16,30 @@ module Elwood.Permissions
     -- * Permission Checks
     checkCommandPermission,
     checkPathPermission,
+
+    -- * Tool Policies
+    ToolPolicy (..),
+    getToolPolicy,
   )
 where
 
 import Data.List (isPrefixOf)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.FilePath (makeRelative, normalise)
 import Text.Regex.TDFA ((=~))
+
+-- | Policy for tool execution
+data ToolPolicy
+  = -- | Tool can be executed without approval
+    PolicyAllow
+  | -- | Tool requires user approval before execution
+    PolicyAsk
+  | -- | Tool is not allowed to be executed
+    PolicyDeny
+  deriving stock (Show, Eq)
 
 -- | Configuration for permissions
 data PermissionConfig = PermissionConfig
@@ -32,7 +48,13 @@ data PermissionConfig = PermissionConfig
     -- | Regex patterns that are always blocked
     pcDangerousPatterns :: [Text],
     -- | Relative paths allowed for file operations (relative to workspace)
-    pcAllowedPaths :: [FilePath]
+    pcAllowedPaths :: [FilePath],
+    -- | Per-tool policies (tool name -> policy)
+    pcToolPolicies :: Map Text ToolPolicy,
+    -- | Default policy for tools not in pcToolPolicies
+    pcDefaultPolicy :: ToolPolicy,
+    -- | Timeout in seconds for approval requests
+    pcApprovalTimeoutSeconds :: Int
   }
   deriving stock (Show, Eq)
 
@@ -72,7 +94,10 @@ defaultPermissionConfig =
         [ "workspace",
           "scratch",
           "."
-        ]
+        ],
+      pcToolPolicies = Map.empty,
+      pcDefaultPolicy = PolicyAllow,
+      pcApprovalTimeoutSeconds = 300
     }
 
 -- | Result of a permission check
@@ -166,3 +191,10 @@ checkPathPermission = checkFilePath
 -- Re-export as part of PermissionChecker usage pattern
 -- Users call: checkCommandPermission checker "ls -la"
 -- or: checkPathPermission checker "/some/path"
+
+-- | Get the policy for a specific tool
+--
+-- Looks up the tool in pcToolPolicies, falls back to pcDefaultPolicy
+getToolPolicy :: PermissionConfig -> Text -> ToolPolicy
+getToolPolicy config toolName =
+  Map.findWithDefault (pcDefaultPolicy config) toolName (pcToolPolicies config)

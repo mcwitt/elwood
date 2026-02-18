@@ -19,7 +19,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Yaml qualified as Yaml
-import Elwood.Permissions (PermissionConfig (..), defaultPermissionConfig)
+import Elwood.Permissions (PermissionConfig (..), ToolPolicy (..), defaultPermissionConfig)
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
 
@@ -139,7 +139,10 @@ data CronJobFile = CronJobFile
 data PermissionConfigFile = PermissionConfigFile
   { pcfSafeCommands :: Maybe [Text],
     pcfDangerousPatterns :: Maybe [Text],
-    pcfAllowedPaths :: Maybe [FilePath]
+    pcfAllowedPaths :: Maybe [FilePath],
+    pcfToolPolicies :: Maybe (Map Text Text),
+    pcfDefaultPolicy :: Maybe Text,
+    pcfApprovalTimeoutSeconds :: Maybe Int
   }
   deriving stock (Show, Generic)
 
@@ -195,6 +198,9 @@ instance FromJSON PermissionConfigFile where
       <$> v .:? "safeCommands"
       <*> v .:? "dangerousPatterns"
       <*> v .:? "allowedPaths"
+      <*> v .:? "toolPolicies"
+      <*> v .:? "defaultPolicy"
+      <*> v .:? "approvalTimeoutSeconds"
 
 instance FromJSON CompactionConfigFile where
   parseJSON = withObject "CompactionConfigFile" $ \v ->
@@ -272,13 +278,27 @@ loadConfig path = do
           | cjf <- cjfs
           ]
 
+  -- Helper to parse tool policy from string
+  let parseToolPolicy :: Text -> Maybe ToolPolicy
+      parseToolPolicy t = case T.toLower t of
+        "allow" -> Just PolicyAllow
+        "ask" -> Just PolicyAsk
+        "deny" -> Just PolicyDeny
+        _ -> Nothing
+
+      parseToolPolicyOrDefault :: Text -> ToolPolicy
+      parseToolPolicyOrDefault t = fromMaybe PolicyAllow (parseToolPolicy t)
+
   let permissions = case cfPermissions configFile of
         Nothing -> defaultPermissionConfig
         Just pcf ->
           PermissionConfig
             { pcSafeCommands = fromMaybe (pcSafeCommands defaultPermissionConfig) (pcfSafeCommands pcf),
               pcDangerousPatterns = fromMaybe (pcDangerousPatterns defaultPermissionConfig) (pcfDangerousPatterns pcf),
-              pcAllowedPaths = fromMaybe (pcAllowedPaths defaultPermissionConfig) (pcfAllowedPaths pcf)
+              pcAllowedPaths = fromMaybe (pcAllowedPaths defaultPermissionConfig) (pcfAllowedPaths pcf),
+              pcToolPolicies = maybe Map.empty (Map.mapMaybe parseToolPolicy) (pcfToolPolicies pcf),
+              pcDefaultPolicy = maybe (pcDefaultPolicy defaultPermissionConfig) parseToolPolicyOrDefault (pcfDefaultPolicy pcf),
+              pcApprovalTimeoutSeconds = fromMaybe (pcApprovalTimeoutSeconds defaultPermissionConfig) (pcfApprovalTimeoutSeconds pcf)
             }
 
   let compaction = case cfCompaction configFile of
