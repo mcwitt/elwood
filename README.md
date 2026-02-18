@@ -140,6 +140,7 @@ Set required environment variables:
 export TELEGRAM_BOT_TOKEN="your-bot-token"
 export ANTHROPIC_API_KEY="your-api-key"
 export BRAVE_SEARCH_API_KEY="your-brave-key"  # optional, for web search
+export WEBHOOK_SECRET="your-webhook-secret"   # optional, overrides config file
 ```
 
 ## Workspace Files

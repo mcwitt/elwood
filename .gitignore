@@ -19,6 +19,16 @@ result-*
 # Config with secrets
 config.yaml
 *.env
+.envrc
+
+# Claude Code
+.claude/
+
+# Conversations (runtime state)
+conversations/
+
+# Pre-commit symlink
+.pre-commit-config.yaml
 
 # Haskell
 *.hi

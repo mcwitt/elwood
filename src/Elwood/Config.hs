@@ -15,6 +15,7 @@ module Elwood.Config
   )
 where
 
+import Control.Applicative ((<|>))
 import Data.Aeson
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
@@ -270,6 +271,9 @@ loadConfig path = do
   -- Load Brave Search API key from environment (optional)
   braveApiKey <- fmap T.pack <$> lookupEnv "BRAVE_SEARCH_API_KEY"
 
+  -- Load webhook secret from environment (optional, overrides config file)
+  webhookSecretEnv <- fmap T.pack <$> lookupEnv "WEBHOOK_SECRET"
+
   -- Build final config with defaults
   let heartbeat = case cfHeartbeat configFile of
         Nothing -> defaultHeartbeat
@@ -352,13 +356,16 @@ loadConfig path = do
         "log" -> Just LogOnly
         "logonly" -> Just LogOnly
         _ -> Nothing -- Skip unknown targets
+        -- Webhook secret: env var takes precedence over config file
+  let webhookGlobalSecret = webhookSecretEnv <|> (cfWebhook configFile >>= wscfGlobalSecret)
+
   let webhook = case cfWebhook configFile of
-        Nothing -> defaultWebhookServerConfig
+        Nothing -> defaultWebhookServerConfig {wscGlobalSecret = webhookGlobalSecret}
         Just wscf ->
           WebhookServerConfig
             { wscEnabled = fromMaybe False (wscfEnabled wscf),
               wscPort = fromMaybe 8080 (wscfPort wscf),
-              wscGlobalSecret = wscfGlobalSecret wscf,
+              wscGlobalSecret = webhookGlobalSecret,
               wscWebhooks = case wscfEndpoints wscf of
                 Nothing -> []
                 Just endpoints ->
