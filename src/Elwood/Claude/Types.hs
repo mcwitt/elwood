@@ -254,10 +254,10 @@ data ClaudeError
     ClaudeParseError String
   | -- | API error with type and message
     ClaudeApiError Text Text
-  | -- | Rate limited by the API
-    ClaudeRateLimited
-  | -- | API is overloaded
-    ClaudeOverloaded
+  | -- | Rate limited by the API (with optional retry-after seconds)
+    ClaudeRateLimited (Maybe Int)
+  | -- | API is overloaded (with optional retry-after seconds)
+    ClaudeOverloaded (Maybe Int)
   deriving stock (Show, Eq)
 
 instance Exception ClaudeError

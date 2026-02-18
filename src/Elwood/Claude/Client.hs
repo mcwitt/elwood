@@ -4,12 +4,17 @@ module Elwood.Claude.Client
   ( ClaudeClient (..),
     newClaudeClient,
     sendMessages,
+    sendMessagesWithRetry,
+    RetryConfig (..),
+    defaultRetryConfig,
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Data.Aeson (eitherDecode, encode, withObject, (.:))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (parseMaybe)
+import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy (ByteString)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Text (Text)
@@ -17,7 +22,9 @@ import Data.Text.Encoding qualified as TE
 import Elwood.Claude.Types
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
+import Network.HTTP.Types.Header (hRetryAfter)
 import Network.HTTP.Types.Status (statusCode)
+import Text.Read (readMaybe)
 
 -- | Claude API client
 data ClaudeClient = ClaudeClient
@@ -28,6 +35,28 @@ data ClaudeClient = ClaudeClient
     -- | Base URL for API calls
     ccBaseUrl :: String
   }
+
+-- | Retry configuration for API calls
+data RetryConfig = RetryConfig
+  { -- | Maximum number of retry attempts
+    rcMaxRetries :: Int,
+    -- | Base delay for exponential backoff (seconds) when no retry-after header
+    rcBaseDelay :: Int,
+    -- | Maximum delay cap (seconds)
+    rcMaxDelay :: Int,
+    -- | Callback for retry notifications (retry number, wait seconds, error)
+    rcOnRetry :: Maybe (Int -> Int -> ClaudeError -> IO ())
+  }
+
+-- | Default retry configuration
+defaultRetryConfig :: RetryConfig
+defaultRetryConfig =
+  RetryConfig
+    { rcMaxRetries = 3,
+      rcBaseDelay = 5,
+      rcMaxDelay = 60,
+      rcOnRetry = Nothing
+    }
 
 -- | Create a new Claude client
 newClaudeClient :: Text -> IO ClaudeClient
@@ -40,7 +69,7 @@ newClaudeClient apiKey = do
         ccBaseUrl = "https://api.anthropic.com"
       }
 
--- | Send a messages request to Claude
+-- | Send a messages request to Claude (single attempt, no retry)
 sendMessages :: ClaudeClient -> MessagesRequest -> IO (Either ClaudeError MessagesResponse)
 sendMessages client req = do
   httpReq <- buildRequest client
@@ -54,8 +83,51 @@ sendMessages client req = do
   response <- httpLbs httpReq' (ccManager client)
   let status = statusCode $ responseStatus response
       respBody = responseBody response
+      retryAfter = parseRetryAfter response
 
-  pure $ parseResponse status respBody
+  pure $ parseResponse status respBody retryAfter
+
+-- | Send a messages request with automatic retry on rate limits
+sendMessagesWithRetry ::
+  ClaudeClient ->
+  RetryConfig ->
+  MessagesRequest ->
+  IO (Either ClaudeError MessagesResponse)
+sendMessagesWithRetry client config req = go 0
+  where
+    go attempt = do
+      result <- sendMessages client req
+      case result of
+        Right resp -> pure (Right resp)
+        Left err
+          | isRetryable err && attempt < rcMaxRetries config -> do
+              let waitSeconds = getWaitTime err attempt
+              -- Notify about retry if callback is configured
+              case rcOnRetry config of
+                Just notify -> notify (attempt + 1) waitSeconds err
+                Nothing -> pure ()
+              -- Wait and retry
+              threadDelay (waitSeconds * 1000000)
+              go (attempt + 1)
+          | otherwise -> pure (Left err)
+
+    isRetryable (ClaudeRateLimited _) = True
+    isRetryable (ClaudeOverloaded _) = True
+    isRetryable _ = False
+
+    getWaitTime err attempt =
+      case err of
+        ClaudeRateLimited (Just secs) -> min secs (rcMaxDelay config)
+        ClaudeOverloaded (Just secs) -> min secs (rcMaxDelay config)
+        _ ->
+          -- Exponential backoff: baseDelay * 2^attempt, capped at maxDelay
+          min (rcBaseDelay config * (2 ^ attempt)) (rcMaxDelay config)
+
+-- | Parse the retry-after header from response
+parseRetryAfter :: Response a -> Maybe Int
+parseRetryAfter response =
+  lookup hRetryAfter (responseHeaders response)
+    >>= readMaybe . BS8.unpack
 
 -- | Build the HTTP request with proper headers
 buildRequest :: ClaudeClient -> IO Request
@@ -71,16 +143,16 @@ buildRequest client = do
       }
 
 -- | Parse the API response, handling errors appropriately
-parseResponse :: Int -> ByteString -> Either ClaudeError MessagesResponse
-parseResponse status body
+parseResponse :: Int -> ByteString -> Maybe Int -> Either ClaudeError MessagesResponse
+parseResponse status body retryAfter
   | status == 200 =
       case eitherDecode body of
         Left err -> Left $ ClaudeParseError err
         Right resp -> Right resp
   | status == 429 =
-      Left ClaudeRateLimited
+      Left $ ClaudeRateLimited retryAfter
   | status == 529 =
-      Left ClaudeOverloaded
+      Left $ ClaudeOverloaded retryAfter
   | otherwise =
       Left $ parseApiError status body
 

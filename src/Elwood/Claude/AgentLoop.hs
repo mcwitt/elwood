@@ -12,7 +12,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
-import Elwood.Claude.Client (ClaudeClient, sendMessages)
+import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Types
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
@@ -88,7 +88,20 @@ agentLoop logger client registry toolEnv compactionConfig systemPrompt model mes
           ("message_count", T.pack (show (length messages)))
         ]
 
-      result <- sendMessages client request
+      -- Configure retry with logging callback
+      let retryConfig =
+            defaultRetryConfig
+              { rcOnRetry = Just $ \attemptNum waitSecs err ->
+                  logWarn
+                    logger
+                    "Rate limited, retrying"
+                    [ ("attempt", T.pack (show attemptNum)),
+                      ("wait_seconds", T.pack (show waitSecs)),
+                      ("error", T.pack (show err))
+                    ]
+              }
+
+      result <- sendMessagesWithRetry client retryConfig request
 
       case result of
         Left err -> do
@@ -239,10 +252,18 @@ makeResultBlock _ _ =
 
 -- | Format an error for user display
 formatError :: ClaudeError -> Text
-formatError ClaudeRateLimited =
-  "I'm being rate limited right now. Please try again in a moment."
-formatError ClaudeOverloaded =
-  "Claude is currently overloaded. Please try again in a few minutes."
+formatError (ClaudeRateLimited retryAfter) =
+  "I'm being rate limited right now. "
+    <> maybe
+      "Please try again in a moment."
+      (\secs -> "Retry after " <> T.pack (show secs) <> " seconds.")
+      retryAfter
+formatError (ClaudeOverloaded retryAfter) =
+  "Claude is currently overloaded. "
+    <> maybe
+      "Please try again in a few minutes."
+      (\secs -> "Retry after " <> T.pack (show secs) <> " seconds.")
+      retryAfter
 formatError (ClaudeApiError errType errMsg) =
   "Sorry, I encountered an error: " <> errType <> " - " <> errMsg
 formatError (ClaudeHttpError status _) =
