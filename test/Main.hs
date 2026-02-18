@@ -8,6 +8,7 @@ import qualified Test.Elwood.Config
 import qualified Test.Elwood.Scheduler
 import qualified Test.Elwood.Claude.Types
 import qualified Test.Elwood.Claude.Compaction
+import qualified Test.Elwood.MCP
 
 main :: IO ()
 main = defaultMain tests
@@ -20,4 +21,5 @@ tests = testGroup "Elwood Tests"
   , Test.Elwood.Scheduler.tests
   , Test.Elwood.Claude.Types.tests
   , Test.Elwood.Claude.Compaction.tests
+  , Test.Elwood.MCP.tests
   ]

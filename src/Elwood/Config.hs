@@ -5,12 +5,15 @@ module Elwood.Config
   , HeartbeatConfig (..)
   , CompactionConfig (..)
   , CronJob (..)
+  , MCPServerConfig (..)
   , PermissionConfigFile (..)
   , loadConfig
   ) where
 
 import Data.Aeson
 import Data.Int (Int64)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -46,6 +49,8 @@ data Config = Config
   -- ^ Context compaction configuration
   , cfgCronJobs :: [CronJob]
   -- ^ Scheduled cron jobs
+  , cfgMCPServers :: [MCPServerConfig]
+  -- ^ MCP server configurations
   }
   deriving stock (Show, Generic)
 
@@ -84,6 +89,21 @@ data CompactionConfig = CompactionConfig
   }
   deriving stock (Show, Generic)
 
+-- | Configuration for an MCP server
+data MCPServerConfig = MCPServerConfig
+  { mscName :: Text
+  -- ^ Server identifier for namespacing tools
+  , mscCommand :: Text
+  -- ^ Command to run (e.g., "npx")
+  , mscArgs :: [Text]
+  -- ^ Command arguments
+  , mscEnv :: Maybe [(Text, Text)]
+  -- ^ Optional environment variables
+  , mscStartupDelay :: Int
+  -- ^ Milliseconds to wait after spawning before sending initialize (default: 0)
+  }
+  deriving stock (Show, Generic)
+
 -- | YAML file configuration (without secrets)
 data ConfigFile = ConfigFile
   { cfStateDir :: Maybe FilePath
@@ -95,6 +115,7 @@ data ConfigFile = ConfigFile
   , cfPermissions :: Maybe PermissionConfigFile
   , cfCompaction :: Maybe CompactionConfigFile
   , cfCronJobs :: Maybe [CronJobFile]
+  , cfMCPServers :: Maybe (Map Text MCPServerConfigFile)
   }
   deriving stock (Show, Generic)
 
@@ -129,6 +150,15 @@ data CompactionConfigFile = CompactionConfigFile
   }
   deriving stock (Show, Generic)
 
+-- | MCP server configuration from YAML file
+data MCPServerConfigFile = MCPServerConfigFile
+  { mcfCommand :: Text
+  , mcfArgs :: Maybe [Text]
+  , mcfEnv :: Maybe (Map Text Text)
+  , mcfStartupDelay :: Maybe Int
+  }
+  deriving stock (Show, Generic)
+
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v ->
     ConfigFile
@@ -141,6 +171,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "permissions"
       <*> v .:? "compaction"
       <*> v .:? "cronJobs"
+      <*> v .:? "mcpServers"
 
 instance FromJSON HeartbeatConfigFile where
   parseJSON = withObject "HeartbeatConfigFile" $ \v ->
@@ -170,6 +201,14 @@ instance FromJSON CompactionConfigFile where
     CompactionConfigFile
       <$> v .:? "tokenThreshold"
       <*> v .:? "compactionModel"
+
+instance FromJSON MCPServerConfigFile where
+  parseJSON = withObject "MCPServerConfigFile" $ \v ->
+    MCPServerConfigFile
+      <$> v .: "command"
+      <*> v .:? "args"
+      <*> v .:? "env"
+      <*> v .:? "startupDelay"
 
 -- | Default heartbeat configuration
 defaultHeartbeat :: HeartbeatConfig
@@ -250,6 +289,19 @@ loadConfig path = do
             , ccCompactionModel = fromMaybe (ccCompactionModel defaultCompaction) (ccfCompactionModel ccf)
             }
 
+  let mcpServers = case cfMCPServers configFile of
+        Nothing -> []
+        Just serverMap ->
+          [ MCPServerConfig
+              { mscName = name
+              , mscCommand = mcfCommand mcf
+              , mscArgs = fromMaybe [] (mcfArgs mcf)
+              , mscEnv = Map.toList <$> mcfEnv mcf
+              , mscStartupDelay = fromMaybe 0 (mcfStartupDelay mcf)
+              }
+          | (name, mcf) <- Map.toList serverMap
+          ]
+
   pure
     Config
       { cfgStateDir = fromMaybe "/var/lib/assistant" (cfStateDir configFile)
@@ -264,4 +316,5 @@ loadConfig path = do
       , cfgPermissions = permissions
       , cfgCompaction = compaction
       , cfgCronJobs = cronJobs
+      , cfgMCPServers = mcpServers
       }

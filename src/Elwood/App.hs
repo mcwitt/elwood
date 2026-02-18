@@ -4,7 +4,7 @@ module Elwood.App
   ) where
 
 import Control.Concurrent.Async (concurrently_)
-import Control.Exception (SomeException, catch)
+import Control.Exception (SomeException, catch, finally)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -18,6 +18,8 @@ import Elwood.Claude.Conversation
 import Elwood.Claude.Handler
 import Elwood.Config
 import Elwood.Logging
+import Elwood.MCP.Client (stopMCPServer)
+import Elwood.MCP.Registry (startMCPServers)
 import Elwood.Memory (newMemoryStore)
 import Elwood.Permissions (newPermissionChecker)
 import Elwood.Scheduler (SchedulerEnv (..), runScheduler)
@@ -99,7 +101,7 @@ runApp config = do
           }
 
   -- Initialize tool registry with built-in tools
-  let registry =
+  let builtinRegistry =
         registerTool runCommandTool $
         registerTool readFileTool $
         registerTool writeFileTool $
@@ -108,6 +110,19 @@ runApp config = do
         registerTool saveMemoryTool $
         registerTool searchMemoryTool $
         newToolRegistry
+
+  logInfo
+    logger
+    "Built-in tools registered"
+    [("tool_count", T.pack (show (length (allTools builtinRegistry))))]
+
+  -- Initialize MCP servers and merge tools
+  (registry, mcpServers) <- startMCPServers logger (cfgMCPServers config) builtinRegistry
+
+  logInfo
+    logger
+    "MCP initialized"
+    [("servers", T.pack (show (length mcpServers)))]
 
   -- Get compaction config from main config
   let compactionConfig = cfgCompaction config
@@ -168,14 +183,18 @@ runApp config = do
           , seCronJobs = cronJobs
           }
 
-  -- Run polling and scheduler concurrently
-  concurrently_
-    (runPolling
-      logger
-      telegram
-      (cfgAllowedChatIds config)
-      (claudeHandler logger claude conversations registry toolEnv compactionConfig systemPrompt (cfgModel config)))
-    (runScheduler schedulerEnv)
+  -- Run polling and scheduler concurrently, with MCP cleanup on exit
+  finally
+    (concurrently_
+      (runPolling
+        logger
+        telegram
+        (cfgAllowedChatIds config)
+        (claudeHandler logger claude conversations registry toolEnv compactionConfig systemPrompt (cfgModel config)))
+      (runScheduler schedulerEnv))
+    (do
+      logInfo logger "Shutting down MCP servers" []
+      mapM_ stopMCPServer mcpServers)
 
 -- | Load heartbeat prompt from HEARTBEAT.md file
 loadHeartbeatPrompt :: FilePath -> IO (Maybe Text)
