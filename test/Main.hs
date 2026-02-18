@@ -8,7 +8,6 @@ import Test.Elwood.Event qualified
 import Test.Elwood.MCP qualified
 import Test.Elwood.Memory qualified
 import Test.Elwood.Permissions qualified
-import Test.Elwood.Scheduler qualified
 import Test.Elwood.Webhook qualified
 import Test.Tasty
 
@@ -22,7 +21,6 @@ tests =
     [ Test.Elwood.Memory.tests,
       Test.Elwood.Permissions.tests,
       Test.Elwood.Config.tests,
-      Test.Elwood.Scheduler.tests,
       Test.Elwood.Claude.Types.tests,
       Test.Elwood.Claude.Compaction.tests,
       Test.Elwood.Claude.Client.tests,

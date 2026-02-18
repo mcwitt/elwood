@@ -12,27 +12,51 @@ let
   mkConfigFile =
     name: agentCfg:
     let
-      # Build cron jobs list (internal crons, not systemd-managed ones)
-      cronJobsList = lib.mapAttrsToList (cronName: cronCfg: {
-        name = cronName;
-        intervalMinutes = cronCfg.intervalMinutes;
-        prompt = cronCfg.prompt;
-        isolated = cronCfg.isolated;
-      }) (lib.filterAttrs (_: c: !c.useSystemdTimer) agentCfg.cronJobs);
+      # Build webhook endpoints (includes auto-generated cron endpoints)
+      allWebhookEndpoints =
+        let
+          # User-defined endpoints
+          userEndpoints = lib.mapAttrsToList (
+            epName: epCfg:
+            {
+              name = epName;
+              promptTemplate = epCfg.promptTemplate;
+              session = epCfg.session;
+              deliver = epCfg.deliver;
+            }
+            // lib.optionalAttrs (epCfg.secret != null) {
+              secret = epCfg.secret;
+            }
+            // lib.optionalAttrs (epCfg.suppressIfContains != null) {
+              suppressIfContains = epCfg.suppressIfContains;
+            }
+          ) agentCfg.webhook.endpoints;
 
-      # Build webhook endpoints
-      webhookEndpoints = lib.mapAttrsToList (
-        epName: epCfg:
-        {
-          name = epName;
-          promptTemplate = epCfg.promptTemplate;
-          session = epCfg.session;
-          deliver = epCfg.deliver;
-        }
-        // lib.optionalAttrs (epCfg.secret != null) {
-          secret = epCfg.secret;
-        }
-      ) agentCfg.webhook.endpoints;
+          # Auto-generated cron job endpoints
+          cronEndpoints = lib.mapAttrsToList (
+            cronName: cronCfg:
+            {
+              name = "cron-${cronName}";
+              session = if cronCfg.isolated then "isolated" else "named:cron-${cronName}";
+              deliver = [ "telegram" ];
+            }
+            // lib.optionalAttrs (cronCfg.prompt != null) {
+              promptTemplate = cronCfg.prompt;
+            }
+            // lib.optionalAttrs (cronCfg.promptFile != null) {
+              promptFile = cronCfg.promptFile;
+            }
+            // lib.optionalAttrs (cronCfg.webhookSecret != null) {
+              secret = cronCfg.webhookSecret;
+            }
+            // lib.optionalAttrs (cronCfg.suppressIfContains != null) {
+              suppressIfContains = cronCfg.suppressIfContains;
+            }
+          ) agentCfg.cronJobs;
+        in
+        userEndpoints ++ cronEndpoints;
+
+      webhookEndpoints = allWebhookEndpoints;
 
       # Build MCP servers
       mcpServersList = lib.mapAttrs (
@@ -56,12 +80,8 @@ let
         model = agentCfg.model;
         maxHistory = agentCfg.maxHistory;
 
-        heartbeat = {
-          enabled = agentCfg.heartbeat.enable;
-          intervalMinutes = agentCfg.heartbeat.intervalMinutes;
-          activeHoursStart = agentCfg.heartbeat.activeHoursStart;
-          activeHoursEnd = agentCfg.heartbeat.activeHoursEnd;
-        };
+        # Heartbeat and cronJobs are now handled externally via systemd timers
+        # The Haskell app no longer needs these config sections
 
         permissions = {
           safeCommands = agentCfg.permissions.safeCommands;
@@ -76,9 +96,6 @@ let
           tokenThreshold = agentCfg.compaction.tokenThreshold;
           compactionModel = agentCfg.compaction.model;
         };
-      }
-      // lib.optionalAttrs (cronJobsList != [ ]) {
-        cronJobs = cronJobsList;
       }
       // lib.optionalAttrs (mcpServersList != { }) {
         mcpServers = mcpServersList;
@@ -123,21 +140,30 @@ let
         default = [ "telegram" ];
         description = "Delivery targets: telegram, log.";
       };
+
+      suppressIfContains = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Suppress notification if response contains this string.";
+        example = "HEARTBEAT_OK";
+      };
     };
   };
 
-  # Submodule for cron jobs
+  # Submodule for cron jobs (always use systemd timers)
   cronJobModule = lib.types.submodule {
     options = {
       prompt = lib.mkOption {
-        type = lib.types.str;
-        description = "Prompt to send to the agent.";
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Prompt to send to the agent. Mutually exclusive with promptFile.";
       };
 
-      intervalMinutes = lib.mkOption {
-        type = lib.types.int;
-        default = 60;
-        description = "Interval in minutes (used if useSystemdTimer is false).";
+      promptFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "File in workspaceDir to read prompt from at runtime. Mutually exclusive with prompt.";
+        example = "HEARTBEAT.md";
       };
 
       isolated = lib.mkOption {
@@ -146,23 +172,24 @@ let
         description = "Whether to use an isolated session for each run.";
       };
 
-      useSystemdTimer = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "Use systemd timer instead of internal scheduler.";
-      };
-
       schedule = lib.mkOption {
         type = lib.types.str;
-        default = "*:0/60";
-        description = "systemd OnCalendar schedule (only used if useSystemdTimer is true).";
-        example = "daily";
+        default = "hourly";
+        description = "systemd OnCalendar schedule.";
+        example = "*-*-* 09:00";
       };
 
       webhookSecret = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Secret for the auto-generated webhook endpoint.";
+        description = "Secret for the auto-generated webhook endpoint. Falls back to global webhook secret.";
+      };
+
+      suppressIfContains = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Suppress notification if response contains this string.";
+        example = "HEARTBEAT_OK";
       };
     };
   };
@@ -238,32 +265,6 @@ let
           type = lib.types.int;
           default = 50;
           description = "Maximum messages to keep per conversation.";
-        };
-
-        heartbeat = {
-          enable = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Enable heartbeat/proactive checks.";
-          };
-
-          intervalMinutes = lib.mkOption {
-            type = lib.types.int;
-            default = 30;
-            description = "Heartbeat check interval in minutes.";
-          };
-
-          activeHoursStart = lib.mkOption {
-            type = lib.types.int;
-            default = 8;
-            description = "Start of active hours (0-23).";
-          };
-
-          activeHoursEnd = lib.mkOption {
-            type = lib.types.int;
-            default = 22;
-            description = "End of active hours (0-23).";
-          };
         };
 
         permissions = {
@@ -384,7 +385,7 @@ let
   # Get all enabled agents
   enabledAgents = lib.filterAttrs (_: agent: agent.enable) cfg.agents;
 
-  # Get all systemd timer crons across all agents
+  # Get all cron jobs across all agents (all crons use systemd timers now)
   allTimerCrons = lib.concatMapAttrs (
     agentName: agentCfg:
     lib.mapAttrs' (
@@ -397,7 +398,7 @@ let
           agentCfg
           ;
       }
-    ) (lib.filterAttrs (_: c: c.useSystemdTimer) agentCfg.cronJobs)
+    ) agentCfg.cronJobs
   ) enabledAgents;
 
 in
@@ -435,6 +436,41 @@ in
   };
 
   config = lib.mkIf (enabledAgents != { }) {
+    # Assertions
+    assertions =
+      let
+        # Webhook must be enabled if cron jobs are configured
+        webhookAssertions =
+          let
+            agentsNeedingWebhook = lib.filterAttrs (_: agent: agent.cronJobs != { }) enabledAgents;
+          in
+          lib.mapAttrsToList (name: agent: {
+            assertion = agent.webhook.enable;
+            message = ''
+              Assistant agent '${name}' has cron jobs configured,
+              but webhook.enable is false. Cron jobs require the
+              webhook server to be running. Add:
+
+              services.assistant.agents.${name}.webhook.enable = true;
+            '';
+          }) agentsNeedingWebhook;
+
+        # Cron jobs must have exactly one of prompt or promptFile
+        cronAssertions = lib.concatLists (
+          lib.mapAttrsToList (
+            agentName: agentCfg:
+            lib.mapAttrsToList (cronName: cronCfg: {
+              assertion = (cronCfg.prompt != null) != (cronCfg.promptFile != null);
+              message = ''
+                Cron job '${cronName}' in agent '${agentName}' must have exactly one
+                of 'prompt' or 'promptFile' set, not both or neither.
+              '';
+            }) agentCfg.cronJobs
+          ) enabledAgents
+        );
+      in
+      webhookAssertions ++ cronAssertions;
+
     # Collect all unique users and groups
     # Use lib.unique to avoid duplicate definitions when multiple agents share the same user
     users.users =
@@ -560,7 +596,6 @@ in
           secret =
             if cronCfg.webhookSecret != null then cronCfg.webhookSecret else agentCfg.webhook.globalSecret;
           secretHeader = lib.optionalString (secret != null) ''-H "X-Webhook-Secret: ${secret}"'';
-          sessionMode = if cronCfg.isolated then "isolated" else "named:cron-${cronName}";
         in
         lib.nameValuePair "assistant-cron-${timerName}" {
           description = "Cron job ${cronName} for assistant ${agentName}";
@@ -586,42 +621,7 @@ in
       ) allTimerCrons)
     ];
 
-    # Auto-create webhook endpoints for systemd timer crons
-    # This is a bit tricky - we need to inject these into the agent configs
-    # For now, users need to manually add the webhook endpoints for systemd timer crons
-    warnings =
-      let
-        timerCronsWithoutWebhook = lib.filterAttrs (
-          timerName:
-          {
-            agentName,
-            cronName,
-            agentCfg,
-            ...
-          }:
-          agentCfg.webhook.enable && !(lib.hasAttr "cron-${cronName}" agentCfg.webhook.endpoints)
-        ) allTimerCrons;
-      in
-      lib.mapAttrsToList (
-        timerName:
-        {
-          agentName,
-          cronName,
-          cronCfg,
-          ...
-        }:
-        ''
-          Assistant agent '${agentName}' has cron job '${cronName}' with useSystemdTimer=true,
-          but no webhook endpoint 'cron-${cronName}' is defined. Add this to your config:
-
-          services.assistant.agents.${agentName}.webhook.endpoints."cron-${cronName}" = {
-            promptTemplate = '''
-              ${cronCfg.prompt}
-            ''';
-            session = "${if cronCfg.isolated then "isolated" else "named:cron-${cronName}"}";
-            deliver = [ "telegram" ];
-          };
-        ''
-      ) timerCronsWithoutWebhook;
+    # Cron job webhook endpoints are now auto-created in the config generation
+    # so no warnings are needed
   };
 }

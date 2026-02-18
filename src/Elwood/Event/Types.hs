@@ -23,8 +23,6 @@ data EventSource
     WebhookSource Text
   | -- | Cron job with name
     CronSource Text
-  | -- | Heartbeat check
-    HeartbeatSource
   | -- | Telegram message from chat ID
     TelegramSource Int64
   deriving stock (Show, Eq)

@@ -15,13 +15,19 @@ import Data.Aeson (Value (..), eitherDecode, encode)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as LBS
+import Data.Int (Int64)
 import Data.List (find)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
 import Elwood.Event (Event (..), EventEnv (..), EventSource (..), handleEvent)
+import Elwood.Event.Types (DeliveryTarget (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
+import Elwood.Telegram.Client qualified
+import Elwood.Tools.Types (ToolEnv (..))
 import Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..))
 import Network.HTTP.Types
   ( HeaderName,
@@ -43,6 +49,7 @@ import Network.Wai
     strictRequestBody,
   )
 import Network.Wai.Handler.Warp (run)
+import System.FilePath ((</>))
 
 -- | Header name for webhook secret
 webhookSecretHeader :: HeaderName
@@ -116,32 +123,94 @@ handleWebhookRequest logger webhookConfig env request respond = do
           ("payload_size", T.pack (show (LBS.length body)))
         ]
 
-      -- Render prompt template with payload
-      let prompt = renderTemplate (wcPromptTemplate webhookConfig) payload
+      -- Get prompt: either from template or from file
+      promptResult <- case (wcPromptTemplate webhookConfig, wcPromptFile webhookConfig) of
+        (Just template, _) -> pure $ Right $ renderTemplate template payload
+        (Nothing, Just filePath) -> do
+          let workspaceDir = teWorkspaceDir (eeToolEnv env)
+              fullPath = workspaceDir </> filePath
+          readPromptFile fullPath
+        (Nothing, Nothing) -> pure $ Left "No prompt or promptFile configured"
 
-      -- Create event
-      now <- getCurrentTime
-      let event =
-            Event
-              { evSource = WebhookSource (wcName webhookConfig),
-                evTimestamp = now,
-                evPayload = payload,
-                evPrompt = prompt,
-                evImage = Nothing,
-                evSession = wcSession webhookConfig,
-                evDelivery = wcDelivery webhookConfig
-              }
-
-      -- Handle the event
-      result <- handleEvent env event
-
-      case result of
-        Right responseText -> do
-          logInfo logger "Webhook processed successfully" [("name", wcName webhookConfig)]
-          respond $ jsonResponse status200 $ successJson responseText
+      case promptResult of
         Left err -> do
-          logError logger "Webhook processing failed" [("name", wcName webhookConfig), ("error", err)]
-          respond $ jsonResponse status500 $ errorJson err
+          logError logger "Failed to get prompt" [("error", T.pack err)]
+          respond $ jsonResponse status500 $ errorJson (T.pack err)
+        Right prompt -> do
+          -- Create event with LogOnly delivery - we handle notification manually
+          -- to support conditional suppression
+          now <- getCurrentTime
+          let event =
+                Event
+                  { evSource = WebhookSource (wcName webhookConfig),
+                    evTimestamp = now,
+                    evPayload = payload,
+                    evPrompt = prompt,
+                    evImage = Nothing,
+                    evSession = wcSession webhookConfig,
+                    evDelivery = [LogOnly]
+                  }
+
+          -- Handle the event
+          result <- handleEvent env event
+
+          case result of
+            Right responseText -> do
+              -- Check if we should suppress notification
+              let shouldSuppress = case wcSuppressIfContains webhookConfig of
+                    Just suppressPattern -> suppressPattern `T.isInfixOf` responseText
+                    Nothing -> False
+
+              if shouldSuppress
+                then do
+                  logInfo
+                    logger
+                    "Webhook response suppressed"
+                    [("name", wcName webhookConfig), ("pattern", fromMaybe "" (wcSuppressIfContains webhookConfig))]
+                  respond $ jsonResponse status200 $ successJson responseText
+                else do
+                  -- Deliver to configured targets
+                  deliverToTargets env (wcDelivery webhookConfig) responseText
+                  logInfo logger "Webhook processed successfully" [("name", wcName webhookConfig)]
+                  respond $ jsonResponse status200 $ successJson responseText
+            Left err -> do
+              logError logger "Webhook processing failed" [("name", wcName webhookConfig), ("error", err)]
+              respond $ jsonResponse status500 $ errorJson err
+
+-- | Deliver response to the specified targets
+deliverToTargets :: EventEnv -> [DeliveryTarget] -> Text -> IO ()
+deliverToTargets env targets msg = mapM_ deliver targets
+  where
+    deliver :: DeliveryTarget -> IO ()
+    deliver target = case target of
+      TelegramDelivery chatId ->
+        notifyChat env chatId msg
+      TelegramBroadcast ->
+        mapM_ (\cid -> notifyChat env cid msg) (eeNotifyChatIds env)
+      TelegramReply ->
+        -- For webhooks, TelegramReply acts like TelegramBroadcast
+        mapM_ (\cid -> notifyChat env cid msg) (eeNotifyChatIds env)
+      LogOnly ->
+        logInfo (eeLogger env) "Webhook response (log only)" [("response", T.take 100 msg)]
+
+    notifyChat :: EventEnv -> Int64 -> Text -> IO ()
+    notifyChat e cid m = do
+      Elwood.Telegram.Client.notify (eeLogger e) (eeTelegram e) cid m
+        `catch` \(ex :: SomeException) ->
+          logError (eeLogger e) "Failed to send notification" [("chat_id", T.pack (show cid)), ("error", T.pack (show ex))]
+
+-- | Read prompt from a file
+readPromptFile :: FilePath -> IO (Either String Text)
+readPromptFile path = do
+  result <-
+    (Right <$> TIO.readFile path)
+      `catch` \(e :: SomeException) ->
+        pure $ Left $ "Failed to read " <> path <> ": " <> show e
+  pure $ case result of
+    Left err -> Left err
+    Right content
+      | T.null content -> Left $ "Empty prompt file: " <> path
+      | otherwise -> Right content
 
 -- | status400 for bad request
 status400 :: Status

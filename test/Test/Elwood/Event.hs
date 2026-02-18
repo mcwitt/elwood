@@ -68,9 +68,7 @@ eventSourceTests =
       testCase "TelegramSource holds chat ID" $
         case TelegramSource 12345 of
           TelegramSource cid -> cid @?= 12345
-          _ -> assertFailure "Expected TelegramSource",
-      testCase "HeartbeatSource equality" $
-        HeartbeatSource == HeartbeatSource @?= True
+          _ -> assertFailure "Expected TelegramSource"
     ]
 
 sessionIdTests :: TestTree

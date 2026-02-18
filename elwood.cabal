@@ -39,7 +39,6 @@ library
     Elwood.MCP.Types
     Elwood.Memory
     Elwood.Permissions
-    Elwood.Scheduler
     Elwood.Telegram.Client
     Elwood.Telegram.Polling
     Elwood.Telegram.Types
@@ -115,7 +114,6 @@ test-suite elwood-test
     Test.Elwood.MCP
     Test.Elwood.Memory
     Test.Elwood.Permissions
-    Test.Elwood.Scheduler
     Test.Elwood.Webhook
 
   build-depends:

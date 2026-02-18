@@ -2,9 +2,7 @@
 
 module Elwood.Config
   ( Config (..),
-    HeartbeatConfig (..),
     CompactionConfig (..),
-    CronJob (..),
     MCPServerConfig (..),
     PermissionConfigFile (..),
     loadConfig,
@@ -53,44 +51,14 @@ data Config = Config
     cfgModel :: Text,
     -- | Maximum messages to keep per conversation
     cfgMaxHistory :: Int,
-    -- | Heartbeat/proactive check configuration
-    cfgHeartbeat :: HeartbeatConfig,
     -- | Permission configuration for tools
     cfgPermissions :: PermissionConfig,
     -- | Context compaction configuration
     cfgCompaction :: CompactionConfig,
-    -- | Scheduled cron jobs
-    cfgCronJobs :: [CronJob],
     -- | MCP server configurations
     cfgMCPServers :: [MCPServerConfig],
     -- | Webhook server configuration
     cfgWebhook :: WebhookServerConfig
-  }
-  deriving stock (Show, Generic)
-
--- | Configuration for heartbeat/proactive functionality
-data HeartbeatConfig = HeartbeatConfig
-  { -- | Whether heartbeat is enabled
-    hbEnabled :: Bool,
-    -- | How often to check for proactive actions (in minutes)
-    hbIntervalMinutes :: Int,
-    -- | Start of active hours (0-23)
-    hbActiveHoursStart :: Int,
-    -- | End of active hours (0-23)
-    hbActiveHoursEnd :: Int
-  }
-  deriving stock (Show, Generic)
-
--- | Configuration for a scheduled cron job
-data CronJob = CronJob
-  { -- | Job identifier
-    cjName :: Text,
-    -- | Simple interval (no cron expressions for M5)
-    cjIntervalMinutes :: Int,
-    -- | Message to send to agent
-    cjPrompt :: Text,
-    -- | Use fresh session (True) or shared heartbeat session (False)
-    cjIsolated :: Bool
   }
   deriving stock (Show, Generic)
 
@@ -125,28 +93,10 @@ data ConfigFile = ConfigFile
     cfAllowedChatIds :: Maybe [Int64],
     cfModel :: Maybe Text,
     cfMaxHistory :: Maybe Int,
-    cfHeartbeat :: Maybe HeartbeatConfigFile,
     cfPermissions :: Maybe PermissionConfigFile,
     cfCompaction :: Maybe CompactionConfigFile,
-    cfCronJobs :: Maybe [CronJobFile],
     cfMCPServers :: Maybe (Map Text MCPServerConfigFile),
     cfWebhook :: Maybe WebhookServerConfigFile
-  }
-  deriving stock (Show, Generic)
-
-data HeartbeatConfigFile = HeartbeatConfigFile
-  { hcEnabled :: Maybe Bool,
-    hcIntervalMinutes :: Maybe Int,
-    hcActiveHoursStart :: Maybe Int,
-    hcActiveHoursEnd :: Maybe Int
-  }
-  deriving stock (Show, Generic)
-
-data CronJobFile = CronJobFile
-  { cjfName :: Text,
-    cjfIntervalMinutes :: Int,
-    cjfPrompt :: Text,
-    cjfIsolated :: Maybe Bool
   }
   deriving stock (Show, Generic)
 
@@ -185,28 +135,10 @@ instance FromJSON ConfigFile where
       <*> v .:? "allowedChatIds"
       <*> v .:? "model"
       <*> v .:? "maxHistory"
-      <*> v .:? "heartbeat"
       <*> v .:? "permissions"
       <*> v .:? "compaction"
-      <*> v .:? "cronJobs"
       <*> v .:? "mcpServers"
       <*> v .:? "webhook"
-
-instance FromJSON HeartbeatConfigFile where
-  parseJSON = withObject "HeartbeatConfigFile" $ \v ->
-    HeartbeatConfigFile
-      <$> v .:? "enabled"
-      <*> v .:? "intervalMinutes"
-      <*> v .:? "activeHoursStart"
-      <*> v .:? "activeHoursEnd"
-
-instance FromJSON CronJobFile where
-  parseJSON = withObject "CronJobFile" $ \v ->
-    CronJobFile
-      <$> v .: "name"
-      <*> v .: "intervalMinutes"
-      <*> v .: "prompt"
-      <*> v .:? "isolated"
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v ->
@@ -231,16 +163,6 @@ instance FromJSON MCPServerConfigFile where
       <*> v .:? "args"
       <*> v .:? "env"
       <*> v .:? "startupDelay"
-
--- | Default heartbeat configuration
-defaultHeartbeat :: HeartbeatConfig
-defaultHeartbeat =
-  HeartbeatConfig
-    { hbEnabled = True,
-      hbIntervalMinutes = 30,
-      hbActiveHoursStart = 8,
-      hbActiveHoursEnd = 22
-    }
 
 -- | Default compaction configuration
 defaultCompaction :: CompactionConfig
@@ -275,28 +197,6 @@ loadConfig path = do
   webhookSecretEnv <- fmap T.pack <$> lookupEnv "WEBHOOK_SECRET"
 
   -- Build final config with defaults
-  let heartbeat = case cfHeartbeat configFile of
-        Nothing -> defaultHeartbeat
-        Just hbf ->
-          HeartbeatConfig
-            { hbEnabled = fromMaybe (hbEnabled defaultHeartbeat) (hcEnabled hbf),
-              hbIntervalMinutes = fromMaybe (hbIntervalMinutes defaultHeartbeat) (hcIntervalMinutes hbf),
-              hbActiveHoursStart = fromMaybe (hbActiveHoursStart defaultHeartbeat) (hcActiveHoursStart hbf),
-              hbActiveHoursEnd = fromMaybe (hbActiveHoursEnd defaultHeartbeat) (hcActiveHoursEnd hbf)
-            }
-
-  let cronJobs = case cfCronJobs configFile of
-        Nothing -> []
-        Just cjfs ->
-          [ CronJob
-              { cjName = cjfName cjf,
-                cjIntervalMinutes = cjfIntervalMinutes cjf,
-                cjPrompt = cjfPrompt cjf,
-                cjIsolated = fromMaybe False (cjfIsolated cjf)
-              }
-          | cjf <- cjfs
-          ]
-
   -- Helper to parse tool policy from string
   let parseToolPolicy :: Text -> Maybe ToolPolicy
       parseToolPolicy t = case T.toLower t of
@@ -373,6 +273,7 @@ loadConfig path = do
                       { wcName = wcfName ep,
                         wcSecret = wcfSecret ep,
                         wcPromptTemplate = wcfPromptTemplate ep,
+                        wcPromptFile = wcfPromptFile ep,
                         wcSession = maybe Isolated parseSessionConfig (wcfSession ep),
                         wcDelivery = case wcfDeliver ep of
                           Nothing -> [TelegramBroadcast]
@@ -380,7 +281,8 @@ loadConfig path = do
                             let parsed = mapMaybe parseDeliveryTarget targets
                              in if null parsed
                                   then [TelegramBroadcast]
-                                  else parsed
+                                  else parsed,
+                        wcSuppressIfContains = wcfSuppressIfContains ep
                       }
                   | ep <- endpoints
                   ]
@@ -396,10 +298,8 @@ loadConfig path = do
         cfgAllowedChatIds = fromMaybe [] (cfAllowedChatIds configFile),
         cfgModel = fromMaybe "claude-sonnet-4-20250514" (cfModel configFile),
         cfgMaxHistory = fromMaybe 50 (cfMaxHistory configFile),
-        cfgHeartbeat = heartbeat,
         cfgPermissions = permissions,
         cfgCompaction = compaction,
-        cfgCronJobs = cronJobs,
         cfgMCPServers = mcpServers,
         cfgWebhook = webhook
       }

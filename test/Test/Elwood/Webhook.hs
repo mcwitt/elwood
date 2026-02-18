@@ -90,26 +90,42 @@ webhookConfigTests :: TestTree
 webhookConfigTests =
   testGroup
     "WebhookConfig"
-    [ testCase "can create minimal config" $ do
+    [ testCase "can create config with promptTemplate" $ do
         let config =
               WebhookConfig
                 { wcName = "test-hook",
                   wcSecret = Nothing,
-                  wcPromptTemplate = "Hello",
+                  wcPromptTemplate = Just "Hello",
+                  wcPromptFile = Nothing,
                   wcSession = Isolated,
-                  wcDelivery = [LogOnly]
+                  wcDelivery = [LogOnly],
+                  wcSuppressIfContains = Nothing
                 }
         wcName config @?= "test-hook"
-        wcSecret config @?= Nothing
+        wcPromptTemplate config @?= Just "Hello"
         wcSession config @?= Isolated,
+      testCase "can create config with promptFile" $ do
+        let config =
+              WebhookConfig
+                { wcName = "file-hook",
+                  wcSecret = Nothing,
+                  wcPromptTemplate = Nothing,
+                  wcPromptFile = Just "HEARTBEAT.md",
+                  wcSession = Isolated,
+                  wcDelivery = [TelegramBroadcast],
+                  wcSuppressIfContains = Nothing
+                }
+        wcPromptFile config @?= Just "HEARTBEAT.md",
       testCase "can create config with secret" $ do
         let config =
               WebhookConfig
                 { wcName = "secure-hook",
                   wcSecret = Just "my-secret",
-                  wcPromptTemplate = "Hello",
+                  wcPromptTemplate = Just "Hello",
+                  wcPromptFile = Nothing,
                   wcSession = Named "session",
-                  wcDelivery = [TelegramBroadcast]
+                  wcDelivery = [TelegramBroadcast],
+                  wcSuppressIfContains = Nothing
                 }
         wcSecret config @?= Just "my-secret"
         wcSession config @?= Named "session",
@@ -118,11 +134,25 @@ webhookConfigTests =
               WebhookConfig
                 { wcName = "multi-target",
                   wcSecret = Nothing,
-                  wcPromptTemplate = "Test",
+                  wcPromptTemplate = Just "Test",
+                  wcPromptFile = Nothing,
                   wcSession = Isolated,
-                  wcDelivery = [TelegramBroadcast, TelegramDelivery 123, LogOnly]
+                  wcDelivery = [TelegramBroadcast, TelegramDelivery 123, LogOnly],
+                  wcSuppressIfContains = Nothing
                 }
-        length (wcDelivery config) @?= 3
+        length (wcDelivery config) @?= 3,
+      testCase "can have suppressIfContains" $ do
+        let config =
+              WebhookConfig
+                { wcName = "heartbeat",
+                  wcSecret = Nothing,
+                  wcPromptTemplate = Nothing,
+                  wcPromptFile = Just "HEARTBEAT.md",
+                  wcSession = Isolated,
+                  wcDelivery = [TelegramBroadcast],
+                  wcSuppressIfContains = Just "HEARTBEAT_OK"
+                }
+        wcSuppressIfContains config @?= Just "HEARTBEAT_OK"
     ]
 
 webhookServerConfigTests :: TestTree
@@ -144,9 +174,11 @@ webhookServerConfigTests =
               WebhookConfig
                 { wcName = "hook1",
                   wcSecret = Nothing,
-                  wcPromptTemplate = "Test",
+                  wcPromptTemplate = Just "Test",
+                  wcPromptFile = Nothing,
                   wcSession = Isolated,
-                  wcDelivery = [LogOnly]
+                  wcDelivery = [LogOnly],
+                  wcSuppressIfContains = Nothing
                 }
             config =
               WebhookServerConfig

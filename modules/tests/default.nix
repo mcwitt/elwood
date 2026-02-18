@@ -140,16 +140,12 @@ in
             enable = true;
             port = 8080;
             globalSecret = "test-secret";
-            endpoints."cron-daily-job" = {
-              promptTemplate = "Run daily job";
-              session = "isolated";
-              deliver = [ "telegram" ];
-            };
           };
 
+          # Cron jobs now always use systemd timers
+          # Webhook endpoints are auto-generated
           cronJobs.daily-job = {
             prompt = "Run daily job";
-            useSystemdTimer = true;
             schedule = "*:0/5"; # Every 5 minutes for testing
             isolated = true;
           };
@@ -168,6 +164,59 @@ in
 
       # Check the oneshot service exists (but isn't running yet)
       machine.succeed("systemctl cat assistant-cron-cron-test-daily-job.service")
+
+      # Check that the auto-generated webhook endpoint is in the config
+      config_path = machine.succeed(
+        "systemctl show assistant-cron-test.service -p Environment | grep -oP 'ELWOOD_CONFIG=\\K[^\\s]+'"
+      ).strip()
+      config = machine.succeed(f"cat {config_path}")
+      assert "cron-daily-job" in config, f"Auto-generated cron endpoint not in config: {config}"
+    '';
+  };
+
+  # Test suppressIfContains for conditional notification
+  suppress-if-contains = pkgs.testers.runNixOSTest {
+    name = "assistant-suppress-if-contains";
+
+    nodes.machine =
+      { ... }:
+      {
+        imports = [ self.nixosModules.default ];
+
+        services.assistant.package = mockElwood;
+
+        services.assistant.agents.suppress-test = {
+          enable = true;
+          allowedChatIds = [ 123456789 ];
+
+          webhook = {
+            enable = true;
+            port = 8080;
+          };
+
+          # Heartbeat is now just a regular cron with suppressIfContains
+          cronJobs.heartbeat = {
+            prompt = "Check system health. Reply HEARTBEAT_OK if all is well.";
+            schedule = "*:0/30";
+            suppressIfContains = "HEARTBEAT_OK";
+          };
+        };
+      };
+
+    testScript = ''
+      machine.start()
+      machine.wait_for_unit("assistant-suppress-test.service")
+
+      # Check cron timer was created
+      machine.succeed("systemctl list-timers | grep assistant-cron-suppress-test-heartbeat")
+
+      # Check the config includes suppressIfContains
+      config_path = machine.succeed(
+        "systemctl show assistant-suppress-test.service -p Environment | grep -oP 'ELWOOD_CONFIG=\\K[^\\s]+'"
+      ).strip()
+      config = machine.succeed(f"cat {config_path}")
+      assert "suppressIfContains" in config, f"suppressIfContains not in config: {config}"
+      assert "HEARTBEAT_OK" in config, f"HEARTBEAT_OK pattern not in config: {config}"
     '';
   };
 
@@ -191,11 +240,11 @@ in
           model = "claude-test-model";
           maxHistory = 100;
 
-          heartbeat = {
+          # Heartbeat is now handled via systemd timer, not in config
+          # We still need webhook enabled for it to work
+          webhook = {
             enable = true;
-            intervalMinutes = 60;
-            activeHoursStart = 9;
-            activeHoursEnd = 21;
+            port = 9000;
           };
 
           permissions = {
@@ -211,11 +260,6 @@ in
           compaction = {
             tokenThreshold = 50000;
             model = "claude-haiku";
-          };
-
-          webhook = {
-            enable = true;
-            port = 9000;
           };
         };
       };
@@ -233,16 +277,64 @@ in
       config = machine.succeed(f"cat {config_path}")
 
       # Verify key config values are present (JSON format)
+      # Note: heartbeat config is no longer in the YAML - it's handled via systemd timers
       assert "claude-test-model" in config, f"Model not in config: {config}"
       assert '"maxHistory":100' in config, f"maxHistory not in config: {config}"
-      assert '"intervalMinutes":60' in config, f"heartbeat interval not in config: {config}"
-      assert '"activeHoursStart":9' in config, f"activeHoursStart not in config: {config}"
       assert '"tokenThreshold":50000' in config, f"tokenThreshold not in config: {config}"
       assert '"port":9000' in config, f"webhook port not in config: {config}"
       assert '"defaultPolicy":"ask"' in config, f"defaultPolicy not in config: {config}"
 
       print("Config validation passed!")
       print(config)
+    '';
+  };
+
+  # Test promptFile option for cron jobs
+  prompt-file = pkgs.testers.runNixOSTest {
+    name = "assistant-prompt-file";
+
+    nodes.machine =
+      { ... }:
+      {
+        imports = [ self.nixosModules.default ];
+
+        services.assistant.package = mockElwood;
+
+        services.assistant.agents.prompt-file-test = {
+          enable = true;
+          allowedChatIds = [ 123456789 ];
+
+          webhook = {
+            enable = true;
+            port = 8080;
+          };
+
+          # Use promptFile instead of prompt
+          cronJobs.heartbeat = {
+            promptFile = "HEARTBEAT.md";
+            schedule = "*:0/30";
+            suppressIfContains = "HEARTBEAT_OK";
+          };
+        };
+      };
+
+    testScript = ''
+      machine.start()
+      machine.wait_for_unit("assistant-prompt-file-test.service")
+
+      # Check cron timer was created
+      machine.succeed("systemctl list-timers | grep assistant-cron-prompt-file-test-heartbeat")
+
+      # Check the config includes promptFile (not promptTemplate)
+      config_path = machine.succeed(
+        "systemctl show assistant-prompt-file-test.service -p Environment | grep -oP 'ELWOOD_CONFIG=\\K[^\\s]+'"
+      ).strip()
+      config = machine.succeed(f"cat {config_path}")
+      assert "promptFile" in config, f"promptFile not in config: {config}"
+      assert "HEARTBEAT.md" in config, f"HEARTBEAT.md not in config: {config}"
+      # Ensure promptTemplate is NOT present for this endpoint
+      assert '"promptTemplate"' not in config or '"promptFile":"HEARTBEAT.md"' in config, \
+        f"Config should have promptFile, not promptTemplate for cron-heartbeat: {config}"
     '';
   };
 

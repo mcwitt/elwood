@@ -210,5 +210,4 @@ hashSessionName = T.foldl' step 5381
 formatSource :: EventSource -> Text
 formatSource (WebhookSource name) = "webhook:" <> name
 formatSource (CronSource name) = "cron:" <> name
-formatSource HeartbeatSource = "heartbeat"
 formatSource (TelegramSource chatId) = "telegram:" <> T.pack (show chatId)

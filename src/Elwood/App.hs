@@ -4,13 +4,12 @@ module Elwood.App
   )
 where
 
-import Control.Concurrent.Async (async, concurrently_, wait)
-import Control.Exception (SomeException, catch, finally)
+import Control.Concurrent.Async (async, wait)
+import Control.Exception (finally)
 import Data.Foldable (for_)
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.IO qualified as TIO
 import Data.UUID qualified as UUID
 import Elwood.Approval
   ( ApprovalCoordinator,
@@ -31,7 +30,6 @@ import Elwood.MCP.Client (stopMCPServer)
 import Elwood.MCP.Registry (startMCPServers)
 import Elwood.Memory (newMemoryStore)
 import Elwood.Permissions (newPermissionChecker, pcApprovalTimeoutSeconds)
-import Elwood.Scheduler (SchedulerEnv (..), runScheduler)
 import Elwood.Telegram.Client
   ( TelegramClient,
     answerCallbackQuery,
@@ -56,8 +54,7 @@ import Elwood.Tools.Web (webFetchTool, webSearchTool)
 import Elwood.Webhook.Server (runWebhookServer)
 import Network.HTTP.Client (newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
-import System.FilePath ((</>))
+import System.Directory (createDirectoryIfMissing)
 
 -- | Application environment containing all initialized components
 data AppEnv = AppEnv
@@ -198,34 +195,6 @@ runApp config = do
     Just _ -> logInfo logger "Brave Search API key configured" []
     Nothing -> logWarn logger "No Brave Search API key, web_search will be unavailable" []
 
-  -- Load HEARTBEAT.md
-  heartbeatPrompt <- loadHeartbeatPrompt (cfgWorkspaceDir config)
-  case heartbeatPrompt of
-    Just _ -> logInfo logger "Heartbeat prompt loaded from HEARTBEAT.md" []
-    Nothing -> logInfo logger "No HEARTBEAT.md found, heartbeat will be inactive" []
-
-  -- Log cron jobs
-  let cronJobs = cfgCronJobs config
-  logInfo logger "Cron jobs configured" [("count", T.pack (show (length cronJobs)))]
-
-  -- Create scheduler environment (uses base toolEnv without approval, since scheduler is not interactive)
-  let schedulerEnv =
-        SchedulerEnv
-          { seLogger = logger,
-            seTelegram = telegram,
-            seClaude = claude,
-            seConversations = conversations,
-            seRegistry = registry,
-            seToolEnv = baseToolEnv,
-            seCompaction = compactionConfig,
-            seSystemPrompt = systemPrompt,
-            seModel = cfgModel config,
-            seHeartbeatConfig = cfgHeartbeat config,
-            seHeartbeatPrompt = heartbeatPrompt,
-            seNotifyChatIds = cfgAllowedChatIds config,
-            seCronJobs = cronJobs
-          }
-
   -- Create callback handler for approval responses
   let callbackHandler = handleApprovalCallback logger telegram approvalCoordinator
 
@@ -256,7 +225,7 @@ runApp config = do
         ]
     else logInfo logger "Webhook server disabled" []
 
-  -- Run polling, scheduler, and optionally webhook server concurrently, with MCP cleanup on exit
+  -- Run polling and optionally webhook server, with MCP cleanup on exit
   finally
     ( do
         -- Start webhook server in background if enabled
@@ -267,16 +236,13 @@ runApp config = do
               Just <$> async (runWebhookServer webhookConfig webhookEventEnv)
             else pure Nothing
 
-        -- Run polling and scheduler concurrently
-        concurrently_
-          ( runPolling
-              logger
-              telegram
-              (cfgAllowedChatIds config)
-              (claudeHandlerWithApproval logger claude telegram conversations registry mkToolEnvWithApproval compactionConfig systemPrompt (cfgModel config) (cfgAllowedChatIds config))
-              callbackHandler
-          )
-          (runScheduler schedulerEnv)
+        -- Run Telegram polling
+        runPolling
+          logger
+          telegram
+          (cfgAllowedChatIds config)
+          (claudeHandlerWithApproval logger claude telegram conversations registry mkToolEnvWithApproval compactionConfig systemPrompt (cfgModel config) (cfgAllowedChatIds config))
+          callbackHandler
 
         -- Wait for webhook thread (this won't happen in normal operation)
         for_ webhookThread wait
@@ -285,21 +251,6 @@ runApp config = do
         logInfo logger "Shutting down MCP servers" []
         mapM_ stopMCPServer mcpServers
     )
-
--- | Load heartbeat prompt from HEARTBEAT.md file
-loadHeartbeatPrompt :: FilePath -> IO (Maybe Text)
-loadHeartbeatPrompt workspaceDir = do
-  let heartbeatPath = workspaceDir </> "HEARTBEAT.md"
-  exists <- doesFileExist heartbeatPath
-  if exists
-    then do
-      content <-
-        TIO.readFile heartbeatPath
-          `catch` \(_ :: SomeException) -> pure ""
-      if T.null content
-        then pure Nothing
-        else pure (Just content)
-    else pure Nothing
 
 -- | Claude handler that injects per-chat approval function into ToolEnv
 claudeHandlerWithApproval ::

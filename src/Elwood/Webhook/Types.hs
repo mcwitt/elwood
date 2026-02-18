@@ -22,12 +22,16 @@ data WebhookConfig = WebhookConfig
     wcName :: Text,
     -- | Required secret (header: X-Webhook-Secret)
     wcSecret :: Maybe Text,
-    -- | Template with {{.field}} placeholders
-    wcPromptTemplate :: Text,
+    -- | Template with {{.field}} placeholders (mutually exclusive with wcPromptFile)
+    wcPromptTemplate :: Maybe Text,
+    -- | File in workspace to read prompt from at runtime (mutually exclusive with wcPromptTemplate)
+    wcPromptFile :: Maybe FilePath,
     -- | Session mode: isolated or named:<id>
     wcSession :: SessionConfig,
     -- | Where to deliver responses
-    wcDelivery :: [DeliveryTarget]
+    wcDelivery :: [DeliveryTarget],
+    -- | Suppress notification if response contains this string
+    wcSuppressIfContains :: Maybe Text
   }
   deriving stock (Show, Eq, Generic)
 
@@ -57,9 +61,11 @@ data WebhookServerConfigFile = WebhookServerConfigFile
 data WebhookConfigFile = WebhookConfigFile
   { wcfName :: Text,
     wcfSecret :: Maybe Text,
-    wcfPromptTemplate :: Text,
+    wcfPromptTemplate :: Maybe Text,
+    wcfPromptFile :: Maybe FilePath,
     wcfSession :: Maybe Text,
-    wcfDeliver :: Maybe [Text]
+    wcfDeliver :: Maybe [Text],
+    wcfSuppressIfContains :: Maybe Text
   }
   deriving stock (Show, Generic)
 
@@ -76,6 +82,8 @@ instance FromJSON WebhookConfigFile where
     WebhookConfigFile
       <$> v .: "name"
       <*> v .:? "secret"
-      <*> v .: "promptTemplate"
+      <*> v .:? "promptTemplate"
+      <*> v .:? "promptFile"
       <*> v .:? "session"
       <*> v .:? "deliver"
+      <*> v .:? "suppressIfContains"
