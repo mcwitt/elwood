@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Test.Elwood.Claude.Client qualified
 import Test.Elwood.Claude.Compaction qualified
 import Test.Elwood.Claude.Types qualified
 import Test.Elwood.Config qualified
@@ -22,5 +23,6 @@ tests =
       Test.Elwood.Scheduler.tests,
       Test.Elwood.Claude.Types.tests,
       Test.Elwood.Claude.Compaction.tests,
+      Test.Elwood.Claude.Client.tests,
       Test.Elwood.MCP.tests
     ]

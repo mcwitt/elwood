@@ -101,6 +101,7 @@ test-suite elwood-test
   type:               exitcode-stdio-1.0
   main-is:            Main.hs
   other-modules:
+    Test.Elwood.Claude.Client
     Test.Elwood.Claude.Compaction
     Test.Elwood.Claude.Types
     Test.Elwood.Config

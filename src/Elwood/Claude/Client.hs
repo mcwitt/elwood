@@ -7,6 +7,11 @@ module Elwood.Claude.Client
     sendMessagesWithRetry,
     RetryConfig (..),
     defaultRetryConfig,
+
+    -- * Exported for testing
+    isRetryableError,
+    calculateRetryDelay,
+    retryWithBackoff,
   )
 where
 
@@ -87,41 +92,62 @@ sendMessages client req = do
 
   pure $ parseResponse status respBody retryAfter
 
+-- | Check if an error is retryable (rate limits and overload)
+isRetryableError :: ClaudeError -> Bool
+isRetryableError (ClaudeRateLimited _) = True
+isRetryableError (ClaudeOverloaded _) = True
+isRetryableError _ = False
+
+-- | Calculate retry delay based on error and attempt number
+--
+-- Uses retry-after header if available, otherwise exponential backoff
+calculateRetryDelay :: RetryConfig -> ClaudeError -> Int -> Int
+calculateRetryDelay config err attempt =
+  case err of
+    ClaudeRateLimited (Just secs) -> min secs (rcMaxDelay config)
+    ClaudeOverloaded (Just secs) -> min secs (rcMaxDelay config)
+    _ ->
+      -- Exponential backoff: baseDelay * 2^attempt, capped at maxDelay
+      min (rcBaseDelay config * (2 ^ attempt)) (rcMaxDelay config)
+
+-- | Generic retry combinator with configurable delay function
+--
+-- Takes the action and delay function as parameters for testability
+retryWithBackoff ::
+  RetryConfig ->
+  -- | Action to retry
+  IO (Either ClaudeError a) ->
+  -- | Delay function (seconds -> IO ())
+  (Int -> IO ()) ->
+  IO (Either ClaudeError a)
+retryWithBackoff config action delayFn = go 0
+  where
+    go attempt = do
+      result <- action
+      case result of
+        Right resp -> pure (Right resp)
+        Left err
+          | isRetryableError err && attempt < rcMaxRetries config -> do
+              let waitSeconds = calculateRetryDelay config err attempt
+              -- Notify about retry if callback is configured
+              case rcOnRetry config of
+                Just notify -> notify (attempt + 1) waitSeconds err
+                Nothing -> pure ()
+              -- Wait and retry
+              delayFn waitSeconds
+              go (attempt + 1)
+          | otherwise -> pure (Left err)
+
 -- | Send a messages request with automatic retry on rate limits
 sendMessagesWithRetry ::
   ClaudeClient ->
   RetryConfig ->
   MessagesRequest ->
   IO (Either ClaudeError MessagesResponse)
-sendMessagesWithRetry client config req = go 0
+sendMessagesWithRetry client config req =
+  retryWithBackoff config (sendMessages client req) delaySeconds
   where
-    go attempt = do
-      result <- sendMessages client req
-      case result of
-        Right resp -> pure (Right resp)
-        Left err
-          | isRetryable err && attempt < rcMaxRetries config -> do
-              let waitSeconds = getWaitTime err attempt
-              -- Notify about retry if callback is configured
-              case rcOnRetry config of
-                Just notify -> notify (attempt + 1) waitSeconds err
-                Nothing -> pure ()
-              -- Wait and retry
-              threadDelay (waitSeconds * 1000000)
-              go (attempt + 1)
-          | otherwise -> pure (Left err)
-
-    isRetryable (ClaudeRateLimited _) = True
-    isRetryable (ClaudeOverloaded _) = True
-    isRetryable _ = False
-
-    getWaitTime err attempt =
-      case err of
-        ClaudeRateLimited (Just secs) -> min secs (rcMaxDelay config)
-        ClaudeOverloaded (Just secs) -> min secs (rcMaxDelay config)
-        _ ->
-          -- Exponential backoff: baseDelay * 2^attempt, capped at maxDelay
-          min (rcBaseDelay config * (2 ^ attempt)) (rcMaxDelay config)
+    delaySeconds s = threadDelay (s * 1000000)
 
 -- | Parse the retry-after header from response
 parseRetryAfter :: Response a -> Maybe Int
