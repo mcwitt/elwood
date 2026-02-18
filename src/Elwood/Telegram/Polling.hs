@@ -5,7 +5,7 @@ module Elwood.Telegram.Polling
   )
 where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Exception (SomeException, catch)
 import Data.Foldable (for_)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -60,8 +60,10 @@ runPolling logger client allowedChats handler callbackHandler = do
         let newOffset = updateId update + 1
         writeIORef offsetRef newOffset
 
-        -- Process message if present
-        for_ (message update) processMessage
+        -- Process message if present (forked to avoid blocking callback processing)
+        for_ (message update) $ \msg -> do
+          _ <- forkIO $ processMessage msg
+          pure ()
 
         -- Process callback query if present
         for_ (callbackQuery update) processCallback
