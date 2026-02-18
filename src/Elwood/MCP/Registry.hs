@@ -2,28 +2,29 @@
 
 module Elwood.MCP.Registry
   ( -- * Tool Discovery
-    discoverMCPTools
+    discoverMCPTools,
 
     -- * Tool Conversion
-  , mcpToolToTool
+    mcpToolToTool,
 
     -- * Server Management
-  , startMCPServers
-  ) where
+    startMCPServers,
+  )
+where
 
 import Control.Exception (SomeException, catch)
-import Data.Aeson (FromJSON (..), Result (..), Value (..), fromJSON, object, withObject, (.=), (.:))
-import qualified Data.Aeson.KeyMap as KM
+import Data.Aeson (FromJSON (..), Result (..), Value (..), fromJSON, object, withObject, (.:), (.=))
+import Data.Aeson.KeyMap qualified as KM
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Vector as V
-
+import Data.Text qualified as T
+import Data.Vector qualified as V
 import Elwood.Config (MCPServerConfig (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.MCP.Client (sendRequest, spawnMCPServer, stopMCPServer)
 import Elwood.MCP.Types
 import Elwood.Tools.Registry (ToolRegistry, registerTool)
-import Elwood.Tools.Types (Tool (..), ToolResult (..), ToolEnv)
+import Elwood.Tools.Types (Tool (..), ToolEnv, ToolResult (..))
 
 -- | Response from tools/list
 newtype ToolsListResponse = ToolsListResponse
@@ -46,7 +47,7 @@ discoverMCPTools server = do
         Just resp -> pure $ Right $ tlrTools resp
 
 -- | Helper to parse JSON Value
-fromJSONValue :: FromJSON a => Value -> Maybe a
+fromJSONValue :: (FromJSON a) => Value -> Maybe a
 fromJSONValue v = case fromJSON v of
   Error _ -> Nothing
   Success a -> Just a
@@ -55,10 +56,10 @@ fromJSONValue v = case fromJSON v of
 mcpToolToTool :: Text -> MCPServer -> MCPTool -> Tool
 mcpToolToTool serverName server mcpTool =
   Tool
-    { toolName = "mcp_" <> serverName <> "_" <> mtName mcpTool
-    , toolDescription = maybe "(MCP tool)" id (mtDescription mcpTool)
-    , toolInputSchema = ensureTypeObject (mtInputSchema mcpTool)
-    , toolExecute = executeMCPTool server mcpTool
+    { toolName = "mcp_" <> serverName <> "_" <> mtName mcpTool,
+      toolDescription = fromMaybe "(MCP tool)" (mtDescription mcpTool),
+      toolInputSchema = ensureTypeObject (mtInputSchema mcpTool),
+      toolExecute = executeMCPTool server mcpTool
     }
 
 -- | Ensure the input schema has type: "object" at the top level
@@ -72,13 +73,14 @@ executeMCPTool :: MCPServer -> MCPTool -> ToolEnv -> Value -> IO ToolResult
 executeMCPTool server mcpTool _env input = do
   let params =
         object
-          [ "name" .= mtName mcpTool
-          , "arguments" .= input
+          [ "name" .= mtName mcpTool,
+            "arguments" .= input
           ]
 
-  result <- sendRequest server "tools/call" (Just params)
-    `catch` \(e :: SomeException) ->
-      pure $ Left $ MCPRequestError $ T.pack $ show e
+  result <-
+    sendRequest server "tools/call" (Just params)
+      `catch` \(e :: SomeException) ->
+        pure $ Left $ MCPRequestError $ T.pack $ show e
 
   case result of
     Left (MCPToolError _code msg) -> pure $ ToolError msg
@@ -133,8 +135,8 @@ startMCPServers logger configs registry = do
   logInfo
     logger
     "MCP initialization complete"
-    [ ("servers", T.pack $ show $ length servers)
-    , ("tools", T.pack $ show $ length allTools)
+    [ ("servers", T.pack $ show $ length servers),
+      ("tools", T.pack $ show $ length allTools)
     ]
 
   pure (finalRegistry, servers)
@@ -159,8 +161,8 @@ startOneServer logger config = do
           logInfo
             logger
             "Discovered MCP tools"
-            [ ("server", mscName config)
-            , ("count", T.pack $ show $ length tools)
+            [ ("server", mscName config),
+              ("count", T.pack $ show $ length tools)
             ]
           pure $ Right (server, tools)
 
@@ -179,6 +181,6 @@ logServerFailure logger (config, err) =
   logWarn
     logger
     "MCP server failed to start"
-    [ ("server", mscName config)
-    , ("error", T.pack $ show err)
+    [ ("server", mscName config),
+      ("error", T.pack $ show err)
     ]

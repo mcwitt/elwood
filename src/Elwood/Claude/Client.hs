@@ -1,32 +1,32 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Claude.Client
-  ( ClaudeClient (..)
-  , newClaudeClient
-  , sendMessages
-  ) where
+  ( ClaudeClient (..),
+    newClaudeClient,
+    sendMessages,
+  )
+where
 
-import Data.Aeson (eitherDecode, encode, (.:), withObject)
+import Data.Aeson (eitherDecode, encode, withObject, (.:))
+import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (parseMaybe)
-import qualified Data.Aeson as Aeson
 import Data.ByteString.Lazy (ByteString)
-import qualified Data.ByteString.Lazy as LBS
+import Data.ByteString.Lazy qualified as LBS
 import Data.Text (Text)
-import qualified Data.Text.Encoding as TE
+import Data.Text.Encoding qualified as TE
+import Elwood.Claude.Types
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Status (statusCode)
 
-import Elwood.Claude.Types
-
 -- | Claude API client
 data ClaudeClient = ClaudeClient
-  { ccManager :: Manager
-  -- ^ HTTP connection manager
-  , ccApiKey :: Text
-  -- ^ Anthropic API key
-  , ccBaseUrl :: String
-  -- ^ Base URL for API calls
+  { -- | HTTP connection manager
+    ccManager :: Manager,
+    -- | Anthropic API key
+    ccApiKey :: Text,
+    -- | Base URL for API calls
+    ccBaseUrl :: String
   }
 
 -- | Create a new Claude client
@@ -35,9 +35,9 @@ newClaudeClient apiKey = do
   manager <- newManager tlsManagerSettings
   pure
     ClaudeClient
-      { ccManager = manager
-      , ccApiKey = apiKey
-      , ccBaseUrl = "https://api.anthropic.com"
+      { ccManager = manager,
+        ccApiKey = apiKey,
+        ccBaseUrl = "https://api.anthropic.com"
       }
 
 -- | Send a messages request to Claude
@@ -47,8 +47,8 @@ sendMessages client req = do
   let body = encode req
       httpReq' =
         httpReq
-          { method = "POST"
-          , requestBody = RequestBodyLBS body
+          { method = "POST",
+            requestBody = RequestBodyLBS body
           }
 
   response <- httpLbs httpReq' (ccManager client)
@@ -64,9 +64,9 @@ buildRequest client = do
   pure
     req
       { requestHeaders =
-          [ ("Content-Type", "application/json")
-          , ("x-api-key", TE.encodeUtf8 $ ccApiKey client)
-          , ("anthropic-version", "2023-06-01")
+          [ ("Content-Type", "application/json"),
+            ("x-api-key", TE.encodeUtf8 $ ccApiKey client),
+            ("anthropic-version", "2023-06-01")
           ]
       }
 

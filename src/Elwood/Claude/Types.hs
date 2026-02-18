@@ -3,22 +3,23 @@
 
 module Elwood.Claude.Types
   ( -- * Message Types
-    Role (..)
-  , ClaudeMessage (..)
-  , Conversation (..)
+    Role (..),
+    ClaudeMessage (..),
+    Conversation (..),
 
     -- * Content Blocks
-  , ContentBlock (..)
+    ContentBlock (..),
 
     -- * API Request/Response
-  , MessagesRequest (..)
-  , MessagesResponse (..)
-  , ToolSchema (..)
-  , Usage (..)
+    MessagesRequest (..),
+    MessagesResponse (..),
+    ToolSchema (..),
+    Usage (..),
 
     -- * Errors
-  , ClaudeError (..)
-  ) where
+    ClaudeError (..),
+  )
+where
 
 import Control.Exception (Exception)
 import Data.Aeson
@@ -45,41 +46,41 @@ instance FromJSON Role where
 data ContentBlock
   = TextBlock Text
   | ToolUseBlock
-      { tubId :: Text
-      -- ^ Tool use ID (e.g., "toolu_...")
-      , tubName :: Text
-      -- ^ Tool name
-      , tubInput :: Value
-      -- ^ JSON arguments
+      { -- | Tool use ID (e.g., "toolu_...")
+        tubId :: Text,
+        -- | Tool name
+        tubName :: Text,
+        -- | JSON arguments
+        tubInput :: Value
       }
   | ToolResultBlock
-      { trbToolUseId :: Text
-      -- ^ ID of the tool use this is a result for
-      , trbContent :: Text
-      -- ^ Result content
-      , trbIsError :: Bool
-      -- ^ Whether this is an error result
+      { -- | ID of the tool use this is a result for
+        trbToolUseId :: Text,
+        -- | Result content
+        trbContent :: Text,
+        -- | Whether this is an error result
+        trbIsError :: Bool
       }
   deriving stock (Show, Eq, Generic)
 
 instance ToJSON ContentBlock where
   toJSON (TextBlock t) =
     object
-      [ "type" .= ("text" :: Text)
-      , "text" .= t
+      [ "type" .= ("text" :: Text),
+        "text" .= t
       ]
   toJSON (ToolUseBlock tid name input) =
     object
-      [ "type" .= ("tool_use" :: Text)
-      , "id" .= tid
-      , "name" .= name
-      , "input" .= input
+      [ "type" .= ("tool_use" :: Text),
+        "id" .= tid,
+        "name" .= name,
+        "input" .= input
       ]
   toJSON (ToolResultBlock tid content isErr) =
     object $
-      [ "type" .= ("tool_result" :: Text)
-      , "tool_use_id" .= tid
-      , "content" .= content
+      [ "type" .= ("tool_result" :: Text),
+        "tool_use_id" .= tid,
+        "content" .= content
       ]
         ++ ["is_error" .= True | isErr]
 
@@ -102,16 +103,16 @@ instance FromJSON ContentBlock where
 
 -- | A message in a Claude conversation
 data ClaudeMessage = ClaudeMessage
-  { cmRole :: Role
-  , cmContent :: [ContentBlock]
+  { cmRole :: Role,
+    cmContent :: [ContentBlock]
   }
   deriving stock (Show, Eq, Generic)
 
 instance ToJSON ClaudeMessage where
   toJSON msg =
     object
-      [ "role" .= cmRole msg
-      , "content" .= cmContent msg
+      [ "role" .= cmRole msg,
+        "content" .= cmContent msg
       ]
 
 instance FromJSON ClaudeMessage where
@@ -122,21 +123,21 @@ instance FromJSON ClaudeMessage where
 
 -- | A conversation with history
 data Conversation = Conversation
-  { convChatId :: Int64
-  -- ^ Telegram chat ID
-  , convMessages :: [ClaudeMessage]
-  -- ^ Message history (oldest first)
-  , convLastUpdated :: UTCTime
-  -- ^ When conversation was last updated
+  { -- | Telegram chat ID
+    convChatId :: Int64,
+    -- | Message history (oldest first)
+    convMessages :: [ClaudeMessage],
+    -- | When conversation was last updated
+    convLastUpdated :: UTCTime
   }
   deriving stock (Show, Generic)
 
 instance ToJSON Conversation where
   toJSON conv =
     object
-      [ "chatId" .= convChatId conv
-      , "messages" .= convMessages conv
-      , "lastUpdated" .= convLastUpdated conv
+      [ "chatId" .= convChatId conv,
+        "messages" .= convMessages conv,
+        "lastUpdated" .= convLastUpdated conv
       ]
 
 instance FromJSON Conversation where
@@ -148,52 +149,52 @@ instance FromJSON Conversation where
 
 -- | Tool schema for API requests
 data ToolSchema = ToolSchema
-  { tsName :: Text
-  -- ^ Tool name
-  , tsDescription :: Text
-  -- ^ Tool description
-  , tsInputSchema :: Value
-  -- ^ JSON Schema for input parameters
+  { -- | Tool name
+    tsName :: Text,
+    -- | Tool description
+    tsDescription :: Text,
+    -- | JSON Schema for input parameters
+    tsInputSchema :: Value
   }
   deriving stock (Show, Eq, Generic)
 
 instance ToJSON ToolSchema where
   toJSON ts =
     object
-      [ "name" .= tsName ts
-      , "description" .= tsDescription ts
-      , "input_schema" .= tsInputSchema ts
+      [ "name" .= tsName ts,
+        "description" .= tsDescription ts,
+        "input_schema" .= tsInputSchema ts
       ]
 
 -- | Request to the Claude Messages API
 data MessagesRequest = MessagesRequest
-  { mrModel :: Text
-  -- ^ Model to use (e.g., "claude-sonnet-4-20250514")
-  , mrMaxTokens :: Int
-  -- ^ Maximum tokens in response
-  , mrSystem :: Maybe Text
-  -- ^ System prompt (optional)
-  , mrMessages :: [ClaudeMessage]
-  -- ^ Conversation messages
-  , mrTools :: [ToolSchema]
-  -- ^ Available tools
+  { -- | Model to use (e.g., "claude-sonnet-4-20250514")
+    mrModel :: Text,
+    -- | Maximum tokens in response
+    mrMaxTokens :: Int,
+    -- | System prompt (optional)
+    mrSystem :: Maybe Text,
+    -- | Conversation messages
+    mrMessages :: [ClaudeMessage],
+    -- | Available tools
+    mrTools :: [ToolSchema]
   }
   deriving stock (Show, Generic)
 
 instance ToJSON MessagesRequest where
   toJSON req =
     object $
-      [ "model" .= mrModel req
-      , "max_tokens" .= mrMaxTokens req
-      , "messages" .= mrMessages req
+      [ "model" .= mrModel req,
+        "max_tokens" .= mrMaxTokens req,
+        "messages" .= mrMessages req
       ]
         ++ maybe [] (\s -> ["system" .= s]) (mrSystem req)
-        ++ (if null (mrTools req) then [] else ["tools" .= mrTools req])
+        ++ ["tools" .= mrTools req | not (null (mrTools req))]
 
 -- | Token usage information
 data Usage = Usage
-  { usageInputTokens :: Int
-  , usageOutputTokens :: Int
+  { usageInputTokens :: Int,
+    usageOutputTokens :: Int
   }
   deriving stock (Show, Generic)
 
@@ -205,14 +206,14 @@ instance FromJSON Usage where
 
 -- | Response from the Claude Messages API
 data MessagesResponse = MessagesResponse
-  { mresId :: Text
-  -- ^ Unique message ID
-  , mresContent :: [ContentBlock]
-  -- ^ Response content blocks
-  , mresStopReason :: Maybe Text
-  -- ^ Why the model stopped (end_turn, max_tokens, tool_use, etc.)
-  , mresUsage :: Usage
-  -- ^ Token usage
+  { -- | Unique message ID
+    mresId :: Text,
+    -- | Response content blocks
+    mresContent :: [ContentBlock],
+    -- | Why the model stopped (end_turn, max_tokens, tool_use, etc.)
+    mresStopReason :: Maybe Text,
+    -- | Token usage
+    mresUsage :: Usage
   }
   deriving stock (Show, Generic)
 
@@ -226,16 +227,16 @@ instance FromJSON MessagesResponse where
 
 -- | Errors from Claude API
 data ClaudeError
-  = ClaudeHttpError Int Text
-  -- ^ HTTP error with status code and body
-  | ClaudeParseError String
-  -- ^ Failed to parse response JSON
-  | ClaudeApiError Text Text
-  -- ^ API error with type and message
-  | ClaudeRateLimited
-  -- ^ Rate limited by the API
-  | ClaudeOverloaded
-  -- ^ API is overloaded
+  = -- | HTTP error with status code and body
+    ClaudeHttpError Int Text
+  | -- | Failed to parse response JSON
+    ClaudeParseError String
+  | -- | API error with type and message
+    ClaudeApiError Text Text
+  | -- | Rate limited by the API
+    ClaudeRateLimited
+  | -- | API is overloaded
+    ClaudeOverloaded
   deriving stock (Show, Eq)
 
 instance Exception ClaudeError

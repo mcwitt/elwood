@@ -2,47 +2,47 @@
 
 module Elwood.MCP.Types
   ( -- * MCP Server Types
-    MCPServer (..)
-  , MCPTool (..)
-  , MCPError (..)
+    MCPServer (..),
+    MCPTool (..),
+    MCPError (..),
 
     -- * JSON-RPC Types
-  , JsonRpcRequest (..)
-  , JsonRpcResponse (..)
-  , JsonRpcError (..)
-  ) where
+    JsonRpcRequest (..),
+    JsonRpcResponse (..),
+    JsonRpcError (..),
+  )
+where
 
 import Data.Aeson
 import Data.IORef (IORef)
 import Data.Text (Text)
+import Elwood.Config (MCPServerConfig)
 import GHC.Generics (Generic)
 import System.IO (Handle)
 import System.Process (ProcessHandle)
 
-import Elwood.Config (MCPServerConfig)
-
 -- | A running MCP server instance
 data MCPServer = MCPServer
-  { msConfig :: MCPServerConfig
-  -- ^ Configuration used to spawn this server
-  , msProcess :: ProcessHandle
-  -- ^ Handle to the subprocess
-  , msStdin :: Handle
-  -- ^ Handle to write JSON-RPC requests
-  , msStdout :: Handle
-  -- ^ Handle to read JSON-RPC responses
-  , msRequestId :: IORef Int
-  -- ^ Counter for generating unique request IDs
+  { -- | Configuration used to spawn this server
+    msConfig :: MCPServerConfig,
+    -- | Handle to the subprocess
+    msProcess :: ProcessHandle,
+    -- | Handle to write JSON-RPC requests
+    msStdin :: Handle,
+    -- | Handle to read JSON-RPC responses
+    msStdout :: Handle,
+    -- | Counter for generating unique request IDs
+    msRequestId :: IORef Int
   }
 
 -- | Tool definition from MCP server
 data MCPTool = MCPTool
-  { mtName :: Text
-  -- ^ Tool name (without server prefix)
-  , mtDescription :: Maybe Text
-  -- ^ Tool description
-  , mtInputSchema :: Value
-  -- ^ JSON Schema for tool input
+  { -- | Tool name (without server prefix)
+    mtName :: Text,
+    -- | Tool description
+    mtDescription :: Maybe Text,
+    -- | JSON Schema for tool input
+    mtInputSchema :: Value
   }
   deriving stock (Show, Eq, Generic)
 
@@ -55,50 +55,50 @@ instance FromJSON MCPTool where
 
 -- | Errors that can occur during MCP operations
 data MCPError
-  = MCPSpawnError Text
-  -- ^ Failed to spawn the MCP server process
-  | MCPInitializeError Text
-  -- ^ Failed during initialize handshake
-  | MCPRequestError Text
-  -- ^ Error sending/receiving JSON-RPC request
-  | MCPProtocolError Text
-  -- ^ Protocol-level error from server
-  | MCPToolError Int Text
-  -- ^ Tool execution error with code and message
+  = -- | Failed to spawn the MCP server process
+    MCPSpawnError Text
+  | -- | Failed during initialize handshake
+    MCPInitializeError Text
+  | -- | Error sending/receiving JSON-RPC request
+    MCPRequestError Text
+  | -- | Protocol-level error from server
+    MCPProtocolError Text
+  | -- | Tool execution error with code and message
+    MCPToolError Int Text
   deriving stock (Show, Eq)
 
 -- | JSON-RPC 2.0 request
 data JsonRpcRequest = JsonRpcRequest
-  { jrqJsonrpc :: Text
-  -- ^ Always "2.0"
-  , jrqMethod :: Text
-  -- ^ Method name
-  , jrqParams :: Maybe Value
-  -- ^ Method parameters
-  , jrqId :: Int
-  -- ^ Request ID for matching responses
+  { -- | Always "2.0"
+    jrqJsonrpc :: Text,
+    -- | Method name
+    jrqMethod :: Text,
+    -- | Method parameters
+    jrqParams :: Maybe Value,
+    -- | Request ID for matching responses
+    jrqId :: Int
   }
   deriving stock (Show, Eq, Generic)
 
 instance ToJSON JsonRpcRequest where
   toJSON req =
     object $
-      [ "jsonrpc" .= jrqJsonrpc req
-      , "method" .= jrqMethod req
-      , "id" .= jrqId req
+      [ "jsonrpc" .= jrqJsonrpc req,
+        "method" .= jrqMethod req,
+        "id" .= jrqId req
       ]
         ++ maybe [] (\p -> ["params" .= p]) (jrqParams req)
 
 -- | JSON-RPC 2.0 response
 data JsonRpcResponse = JsonRpcResponse
-  { jrsJsonrpc :: Text
-  -- ^ Always "2.0"
-  , jrsResult :: Maybe Value
-  -- ^ Result on success
-  , jrsError :: Maybe JsonRpcError
-  -- ^ Error on failure
-  , jrsId :: Maybe Int
-  -- ^ Request ID (may be null for notifications/errors)
+  { -- | Always "2.0"
+    jrsJsonrpc :: Text,
+    -- | Result on success
+    jrsResult :: Maybe Value,
+    -- | Error on failure
+    jrsError :: Maybe JsonRpcError,
+    -- | Request ID (may be null for notifications/errors)
+    jrsId :: Maybe Int
   }
   deriving stock (Show, Eq, Generic)
 
@@ -112,12 +112,12 @@ instance FromJSON JsonRpcResponse where
 
 -- | JSON-RPC 2.0 error object
 data JsonRpcError = JsonRpcError
-  { jreCode :: Int
-  -- ^ Error code
-  , jreMessage :: Text
-  -- ^ Error message
-  , jreData :: Maybe Value
-  -- ^ Additional error data
+  { -- | Error code
+    jreCode :: Int,
+    -- | Error message
+    jreMessage :: Text,
+    -- | Additional error data
+    jreData :: Maybe Value
   }
   deriving stock (Show, Eq, Generic)
 

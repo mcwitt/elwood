@@ -1,21 +1,22 @@
 module Elwood.Logging
-  ( LogLevel (..)
-  , LogMsg (..)
-  , Logger
-  , newLogger
-  , logMsg
-  , logDebug
-  , logInfo
-  , logWarn
-  , logError
-  ) where
+  ( LogLevel (..),
+    LogMsg (..),
+    Logger,
+    newLogger,
+    logMsg,
+    logDebug,
+    logInfo,
+    logWarn,
+    logError,
+  )
+where
 
 import Colog.Core (LogAction (..))
 import Control.Monad (when)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
-import Data.Time (getCurrentTime, formatTime, defaultTimeLocale)
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
+import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
 import System.IO (hFlush, stdout)
 
 -- | Log severity levels
@@ -28,9 +29,9 @@ data LogLevel
 
 -- | Structured log message
 data LogMsg = LogMsg
-  { logLevel :: LogLevel
-  , logMessage :: Text
-  , logContext :: [(Text, Text)]
+  { logLevel :: LogLevel,
+    logMessage :: Text,
+    logContext :: [(Text, Text)]
   }
   deriving stock (Show)
 
@@ -59,10 +60,10 @@ newLogger minLevel = pure $ LogAction $ \msg ->
     let timeStr = T.pack $ formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%S" timestamp
         line =
           T.concat
-            [ "[" <> timeStr <> "] "
-            , "[" <> formatLevel (logLevel msg) <> "] "
-            , logMessage msg
-            , formatContext (logContext msg)
+            [ "[" <> timeStr <> "] ",
+              "[" <> formatLevel (logLevel msg) <> "] ",
+              logMessage msg,
+              formatContext (logContext msg)
             ]
     TIO.putStrLn line
     hFlush stdout

@@ -2,59 +2,59 @@
 
 module Elwood.Tools.Types
   ( -- * Tool Types
-    Tool (..)
-  , ToolResult (..)
-  , ToolEnv (..)
+    Tool (..),
+    ToolResult (..),
+    ToolEnv (..),
 
     -- * Result Helpers
-  , toolSuccess
-  , toolError
-  ) where
+    toolSuccess,
+    toolError,
+  )
+where
 
 import Data.Aeson (Value)
 import Data.Text (Text)
-import Network.HTTP.Client (Manager)
-
 import Elwood.Logging (Logger)
 import Elwood.Memory (MemoryStore)
 import Elwood.Permissions (PermissionChecker)
+import Network.HTTP.Client (Manager)
 
 -- | Result of executing a tool
 data ToolResult
-  = ToolSuccess Text
-  -- ^ Successful execution with output
-  | ToolError Text
-  -- ^ Execution failed with error message
+  = -- | Successful execution with output
+    ToolSuccess Text
+  | -- | Execution failed with error message
+    ToolError Text
   deriving stock (Show, Eq)
 
 -- | Environment available to tools during execution
 data ToolEnv = ToolEnv
-  { teLogger :: Logger
-  -- ^ Logger for tool operations
-  , teWorkspaceDir :: FilePath
-  -- ^ Workspace directory (user files)
-  , teStateDir :: FilePath
-  -- ^ State directory (bot state)
-  , tePermissions :: PermissionChecker
-  -- ^ Permission checker
-  , teHttpManager :: Manager
-  -- ^ Shared HTTP manager for web tools
-  , teBraveApiKey :: Maybe Text
-  -- ^ Brave Search API key (optional)
-  , teMemoryStore :: MemoryStore
-  -- ^ Persistent memory store
+  { -- | Logger for tool operations
+    teLogger :: Logger,
+    -- | Workspace directory (user files)
+    teWorkspaceDir :: FilePath,
+    -- | State directory (bot state)
+    teStateDir :: FilePath,
+    -- | Permission checker
+    tePermissions :: PermissionChecker,
+    -- | Shared HTTP manager for web tools
+    teHttpManager :: Manager,
+    -- | Brave Search API key (optional)
+    teBraveApiKey :: Maybe Text,
+    -- | Persistent memory store
+    teMemoryStore :: MemoryStore
   }
 
 -- | A tool that can be used by Claude
 data Tool = Tool
-  { toolName :: Text
-  -- ^ Unique tool name
-  , toolDescription :: Text
-  -- ^ Description of what the tool does
-  , toolInputSchema :: Value
-  -- ^ JSON Schema for input parameters
-  , toolExecute :: ToolEnv -> Value -> IO ToolResult
-  -- ^ Execute the tool with given input
+  { -- | Unique tool name
+    toolName :: Text,
+    -- | Description of what the tool does
+    toolDescription :: Text,
+    -- | JSON Schema for input parameters
+    toolInputSchema :: Value,
+    -- | Execute the tool with given input
+    toolExecute :: ToolEnv -> Value -> IO ToolResult
   }
 
 -- | Create a success result

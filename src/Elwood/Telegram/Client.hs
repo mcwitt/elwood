@@ -1,35 +1,35 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Telegram.Client
-  ( TelegramClient (..)
-  , TelegramError (..)
-  , newTelegramClient
-  , getUpdates
-  , sendMessage
-  , notify
-  ) where
+  ( TelegramClient (..),
+    TelegramError (..),
+    newTelegramClient,
+    getUpdates,
+    sendMessage,
+    notify,
+  )
+where
 
 import Control.Exception (Exception, throwIO)
-import Data.Aeson (encode, eitherDecode, object, (.=))
+import Data.Aeson (eitherDecode, encode, object, (.=))
 import Data.ByteString.Lazy (ByteString)
 import Data.Int (Int64)
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
+import Elwood.Logging (Logger, logInfo)
+import Elwood.Telegram.Types
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Status (statusCode)
 
-import Elwood.Logging (Logger, logInfo)
-import Elwood.Telegram.Types
-
 -- | Telegram API client
 data TelegramClient = TelegramClient
-  { tcManager :: Manager
-  -- ^ HTTP connection manager
-  , tcToken :: Text
-  -- ^ Bot token
-  , tcBaseUrl :: String
-  -- ^ Base URL for API calls
+  { -- | HTTP connection manager
+    tcManager :: Manager,
+    -- | Bot token
+    tcToken :: Text,
+    -- | Base URL for API calls
+    tcBaseUrl :: String
   }
 
 -- | Errors from Telegram API calls
@@ -47,9 +47,9 @@ newTelegramClient token = do
   manager <- newManager tlsManagerSettings
   pure
     TelegramClient
-      { tcManager = manager
-      , tcToken = token
-      , tcBaseUrl = "https://api.telegram.org/bot" <> T.unpack token
+      { tcManager = manager,
+        tcToken = token,
+        tcBaseUrl = "https://api.telegram.org/bot" <> T.unpack token
       }
 
 -- | Build a request for a Telegram API method
@@ -76,16 +76,16 @@ getUpdates client offset = do
   let body =
         encode $
           object
-            [ "offset" .= offset
-            , "timeout" .= (30 :: Int)
-            , "allowed_updates" .= (["message"] :: [Text])
+            [ "offset" .= offset,
+              "timeout" .= (30 :: Int),
+              "allowed_updates" .= (["message"] :: [Text])
             ]
       req' =
         req
-          { method = "POST"
-          , requestBody = RequestBodyLBS body
-          -- Set timeout longer than Telegram's 30s long poll
-          , responseTimeout = responseTimeoutMicro (35 * 1000000)
+          { method = "POST",
+            requestBody = RequestBodyLBS body,
+            -- Set timeout longer than Telegram's 30s long poll
+            responseTimeout = responseTimeoutMicro (35 * 1000000)
           }
 
   response <- httpLbs req' (tcManager client)
@@ -106,14 +106,14 @@ sendMessage client chatId msgText = do
   let body =
         encode
           SendMessageRequest
-            { smrChatId = chatId
-            , smrText = msgText
-            , smrParseMode = Nothing
+            { smrChatId = chatId,
+              smrText = msgText,
+              smrParseMode = Nothing
             }
       req' =
         req
-          { method = "POST"
-          , requestBody = RequestBodyLBS body
+          { method = "POST",
+            requestBody = RequestBodyLBS body
           }
 
   response <- httpLbs req' (tcManager client)

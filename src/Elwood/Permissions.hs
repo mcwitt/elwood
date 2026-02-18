@@ -2,36 +2,37 @@
 
 module Elwood.Permissions
   ( -- * Permission Configuration
-    PermissionConfig (..)
-  , defaultPermissionConfig
+    PermissionConfig (..),
+    defaultPermissionConfig,
 
     -- * Permission Checker
-  , PermissionChecker (..)
-  , newPermissionChecker
+    PermissionChecker (..),
+    newPermissionChecker,
 
     -- * Permission Results
-  , PermissionResult (..)
-  , isAllowed
+    PermissionResult (..),
+    isAllowed,
 
     -- * Permission Checks
-  , checkCommandPermission
-  , checkPathPermission
-  ) where
+    checkCommandPermission,
+    checkPathPermission,
+  )
+where
 
 import Data.List (isPrefixOf)
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import System.FilePath (makeRelative, normalise)
 import Text.Regex.TDFA ((=~))
 
 -- | Configuration for permissions
 data PermissionConfig = PermissionConfig
-  { pcSafeCommands :: [Text]
-  -- ^ Commands that are always allowed (prefix match)
-  , pcDangerousPatterns :: [Text]
-  -- ^ Regex patterns that are always blocked
-  , pcAllowedPaths :: [FilePath]
-  -- ^ Relative paths allowed for file operations (relative to workspace)
+  { -- | Commands that are always allowed (prefix match)
+    pcSafeCommands :: [Text],
+    -- | Regex patterns that are always blocked
+    pcDangerousPatterns :: [Text],
+    -- | Relative paths allowed for file operations (relative to workspace)
+    pcAllowedPaths :: [FilePath]
   }
   deriving stock (Show, Eq)
 
@@ -40,46 +41,46 @@ defaultPermissionConfig :: PermissionConfig
 defaultPermissionConfig =
   PermissionConfig
     { pcSafeCommands =
-        [ "ls"
-        , "cat"
-        , "head"
-        , "tail"
-        , "date"
-        , "whoami"
-        , "pwd"
-        , "git status"
-        , "git log"
-        , "git diff"
-        , "echo"
-        , "wc"
-        , "find"
-        , "grep"
-        ]
-    , pcDangerousPatterns =
-        [ "\\brm\\b"
-        , "\\bsudo\\b"
-        , "\\bchmod\\b"
-        , "\\bchown\\b"
-        , "curl.*\\|.*sh"
-        , "wget.*\\|.*sh"
-        , "\\bmkfs\\b"
-        , "\\bdd\\b.*of=/"
-        , "\\b>\\s*/dev/"
-        , "\\bformat\\b"
-        ]
-    , pcAllowedPaths =
-        [ "workspace"
-        , "scratch"
-        , "."
+        [ "ls",
+          "cat",
+          "head",
+          "tail",
+          "date",
+          "whoami",
+          "pwd",
+          "git status",
+          "git log",
+          "git diff",
+          "echo",
+          "wc",
+          "find",
+          "grep"
+        ],
+      pcDangerousPatterns =
+        [ "\\brm\\b",
+          "\\bsudo\\b",
+          "\\bchmod\\b",
+          "\\bchown\\b",
+          "curl.*\\|.*sh",
+          "wget.*\\|.*sh",
+          "\\bmkfs\\b",
+          "\\bdd\\b.*of=/",
+          "\\b>\\s*/dev/",
+          "\\bformat\\b"
+        ],
+      pcAllowedPaths =
+        [ "workspace",
+          "scratch",
+          "."
         ]
     }
 
 -- | Result of a permission check
 data PermissionResult
-  = Allowed
-  -- ^ Operation is permitted
-  | Denied Text
-  -- ^ Operation is denied with reason
+  = -- | Operation is permitted
+    Allowed
+  | -- | Operation is denied with reason
+    Denied Text
   deriving stock (Show, Eq)
 
 -- | Check if a permission result allows the operation
@@ -89,26 +90,26 @@ isAllowed (Denied _) = False
 
 -- | Permission checker with resolved paths
 data PermissionChecker = PermissionChecker
-  { pcConfig :: PermissionConfig
-  -- ^ Raw configuration
-  , pcWorkspaceDir :: FilePath
-  -- ^ Workspace directory for resolving paths
+  { -- | Raw configuration
+    pcConfig :: PermissionConfig,
+    -- | Workspace directory for resolving paths
+    pcWorkspaceDir :: FilePath
   }
 
 -- | Create a new permission checker
 newPermissionChecker :: PermissionConfig -> FilePath -> PermissionChecker
 newPermissionChecker config workspaceDir =
   PermissionChecker
-    { pcConfig = config
-    , pcWorkspaceDir = workspaceDir
+    { pcConfig = config,
+      pcWorkspaceDir = workspaceDir
     }
 
 -- | Check if a command is allowed
 checkCommand :: PermissionChecker -> Text -> PermissionResult
 checkCommand checker cmd
   | isSafeCommand = Allowed
-  | Just pattern <- matchesDangerous = Denied $ "Command matches dangerous pattern: " <> pattern
-  | otherwise = Allowed  -- Allow by default for M3
+  | Just pat <- matchesDangerous = Denied $ "Command matches dangerous pattern: " <> pat
+  | otherwise = Allowed -- Allow by default for M3
   where
     config = pcConfig checker
     cmdText = T.strip cmd
@@ -145,7 +146,7 @@ checkFilePath checker path
 
     isUnderAllowed :: FilePath -> Bool
     isUnderAllowed allowedDir
-      | allowedDir == "." = True  -- "." means entire workspace is allowed
+      | allowedDir == "." = True -- "." means entire workspace is allowed
       | otherwise = allowedDir == relPath || (allowedDir ++ "/") `isPrefixOf` relPath
 
 -- | Instance for checking different operation types

@@ -1,84 +1,84 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Tools.FileSystem
-  ( readFileTool
-  , writeFileTool
-  ) where
+  ( readFileTool,
+    writeFileTool,
+  )
+where
 
 import Control.Exception (SomeException, try)
 import Data.Aeson (Value, object, (.=))
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.KeyMap as KM
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KM
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
-import System.Directory (doesFileExist, createDirectoryIfMissing)
-import System.FilePath ((</>), takeDirectory, normalise)
-
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Elwood.Logging (logInfo, logWarn)
-import Elwood.Permissions (checkPathPermission, PermissionResult (..))
+import Elwood.Permissions (PermissionResult (..), checkPathPermission)
 import Elwood.Tools.Types
+import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.FilePath (normalise, takeDirectory, (</>))
 
 -- | Tool for reading files
 readFileTool :: Tool
 readFileTool =
   Tool
-    { toolName = "read_file"
-    , toolDescription =
+    { toolName = "read_file",
+      toolDescription =
         "Read the contents of a file. "
-          <> "The path should be relative to the workspace directory."
-    , toolInputSchema = readFileSchema
-    , toolExecute = executeReadFile
+          <> "The path should be relative to the workspace directory.",
+      toolInputSchema = readFileSchema,
+      toolExecute = executeReadFile
     }
 
 -- | Tool for writing files
 writeFileTool :: Tool
 writeFileTool =
   Tool
-    { toolName = "write_file"
-    , toolDescription =
+    { toolName = "write_file",
+      toolDescription =
         "Write content to a file. "
           <> "The path should be relative to the workspace directory. "
-          <> "Creates parent directories if they don't exist."
-    , toolInputSchema = writeFileSchema
-    , toolExecute = executeWriteFile
+          <> "Creates parent directories if they don't exist.",
+      toolInputSchema = writeFileSchema,
+      toolExecute = executeWriteFile
     }
 
 -- | JSON Schema for read_file input
 readFileSchema :: Value
 readFileSchema =
   object
-    [ "type" .= ("object" :: Text)
-    , "properties"
+    [ "type" .= ("object" :: Text),
+      "properties"
         .= object
           [ "path"
               .= object
-                [ "type" .= ("string" :: Text)
-                , "description" .= ("Path to the file (relative to workspace)" :: Text)
+                [ "type" .= ("string" :: Text),
+                  "description" .= ("Path to the file (relative to workspace)" :: Text)
                 ]
-          ]
-    , "required" .= (["path"] :: [Text])
+          ],
+      "required" .= (["path"] :: [Text])
     ]
 
 -- | JSON Schema for write_file input
 writeFileSchema :: Value
 writeFileSchema =
   object
-    [ "type" .= ("object" :: Text)
-    , "properties"
+    [ "type" .= ("object" :: Text),
+      "properties"
         .= object
           [ "path"
               .= object
-                [ "type" .= ("string" :: Text)
-                , "description" .= ("Path to the file (relative to workspace)" :: Text)
-                ]
-          , "content"
+                [ "type" .= ("string" :: Text),
+                  "description" .= ("Path to the file (relative to workspace)" :: Text)
+                ],
+            "content"
               .= object
-                [ "type" .= ("string" :: Text)
-                , "description" .= ("Content to write to the file" :: Text)
+                [ "type" .= ("string" :: Text),
+                  "description" .= ("Content to write to the file" :: Text)
                 ]
-          ]
-    , "required" .= (["path", "content"] :: [Text])
+          ],
+      "required" .= (["path", "content"] :: [Text])
     ]
 
 -- | Execute read_file

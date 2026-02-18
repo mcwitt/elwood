@@ -1,16 +1,16 @@
 module Elwood.Telegram.Polling
-  ( MessageHandler
-  , runPolling
-  ) where
+  ( MessageHandler,
+    runPolling,
+  )
+where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, catch)
-import Control.Monad (forM_)
-import Data.Int (Int64)
+import Data.Foldable (for_)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.Int (Int64)
 import Data.Text (Text)
-import qualified Data.Text as T
-
+import Data.Text qualified as T
 import Elwood.Logging
 import Elwood.Telegram.Client
 import Elwood.Telegram.Types
@@ -47,15 +47,13 @@ runPolling logger client allowedChats handler = do
           pure []
 
       -- Process each update
-      forM_ updates $ \update -> do
+      for_ updates $ \update -> do
         -- Always update offset to avoid reprocessing
         let newOffset = updateId update + 1
         writeIORef offsetRef newOffset
 
         -- Process message if present
-        case message update of
-          Nothing -> pure ()
-          Just msg -> processMessage msg
+        for_ (message update) processMessage
 
       -- Continue polling
       loop offsetRef
@@ -71,16 +69,16 @@ runPolling logger client allowedChats handler = do
           logWarn
             logger
             "Ignoring message from unauthorized chat"
-            [ ("chat_id", T.pack (show cid))
-            , ("user", userName)
+            [ ("chat_id", T.pack (show cid)),
+              ("user", userName)
             ]
         else do
           logInfo
             logger
             "Received message"
-            [ ("chat_id", T.pack (show cid))
-            , ("user", userName)
-            , ("text", maybe "<no text>" (T.take 50) (text msg))
+            [ ("chat_id", T.pack (show cid)),
+              ("user", userName),
+              ("text", maybe "<no text>" (T.take 50) (text msg))
             ]
 
           -- Call handler and send reply if any
@@ -96,12 +94,12 @@ runPolling logger client allowedChats handler = do
                 logError
                   logger
                   "Failed to send reply"
-                  [ ("chat_id", T.pack (show cid))
-                  , ("error", T.pack (show e))
+                  [ ("chat_id", T.pack (show cid)),
+                    ("error", T.pack (show e))
                   ]
               logInfo
                 logger
                 "Sent reply"
-                [ ("chat_id", T.pack (show cid))
-                , ("text", T.take 50 replyText)
+                [ ("chat_id", T.pack (show cid)),
+                  ("text", T.take 50 replyText)
                 ]

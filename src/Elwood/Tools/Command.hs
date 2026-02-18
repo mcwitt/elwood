@@ -1,62 +1,62 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Tools.Command
-  ( runCommandTool
-  ) where
+  ( runCommandTool,
+  )
+where
 
 import Control.Exception (SomeException, try)
 import Data.Aeson (Value, object, (.=))
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.KeyMap as KM
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KM
 import Data.Text (Text)
-import qualified Data.Text as T
-import System.Exit (ExitCode (..))
-import System.Process
-  ( CreateProcess (..)
-  , StdStream (..)
-  , createProcess
-  , proc
-  , waitForProcess
-  )
-import System.IO (hGetContents)
-import System.Timeout (timeout)
-
+import Data.Text qualified as T
 import Elwood.Logging (logInfo, logWarn)
-import Elwood.Permissions (checkCommandPermission, PermissionResult (..))
+import Elwood.Permissions (PermissionResult (..), checkCommandPermission)
 import Elwood.Tools.Types
+import System.Exit (ExitCode (..))
+import System.IO (hGetContents)
+import System.Process
+  ( CreateProcess (..),
+    StdStream (..),
+    createProcess,
+    proc,
+    waitForProcess,
+  )
+import System.Timeout (timeout)
 
 -- | Tool for running shell commands
 runCommandTool :: Tool
 runCommandTool =
   Tool
-    { toolName = "run_command"
-    , toolDescription =
+    { toolName = "run_command",
+      toolDescription =
         "Execute a shell command in the workspace directory. "
           <> "Use this for listing files, checking git status, running builds, etc. "
-          <> "The command runs with a 30 second timeout."
-    , toolInputSchema = commandSchema
-    , toolExecute = executeCommand
+          <> "The command runs with a 30 second timeout.",
+      toolInputSchema = commandSchema,
+      toolExecute = executeCommand
     }
 
 -- | JSON Schema for command input
 commandSchema :: Value
 commandSchema =
   object
-    [ "type" .= ("object" :: Text)
-    , "properties"
+    [ "type" .= ("object" :: Text),
+      "properties"
         .= object
           [ "command"
               .= object
-                [ "type" .= ("string" :: Text)
-                , "description" .= ("The shell command to execute" :: Text)
-                ]
-          , "timeout_seconds"
+                [ "type" .= ("string" :: Text),
+                  "description" .= ("The shell command to execute" :: Text)
+                ],
+            "timeout_seconds"
               .= object
-                [ "type" .= ("integer" :: Text)
-                , "description" .= ("Timeout in seconds (default 30, max 120)" :: Text)
+                [ "type" .= ("integer" :: Text),
+                  "description" .= ("Timeout in seconds (default 30, max 120)" :: Text)
                 ]
-          ]
-    , "required" .= (["command"] :: [Text])
+          ],
+      "required" .= (["command"] :: [Text])
     ]
 
 -- | Execute a command
@@ -101,9 +101,9 @@ runCommand cmd workDir = do
   result <- try $ do
     let process =
           (proc "/bin/sh" ["-c", T.unpack cmd])
-            { cwd = Just workDir
-            , std_out = CreatePipe
-            , std_err = CreatePipe
+            { cwd = Just workDir,
+              std_out = CreatePipe,
+              std_err = CreatePipe
             }
 
     (_, Just hOut, Just hErr, ph) <- createProcess process

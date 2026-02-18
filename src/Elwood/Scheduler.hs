@@ -1,30 +1,32 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Scheduler
-  ( SchedulerEnv (..)
-  , runScheduler
-  -- * Exported for testing
-  , isWithinActiveHours
-  , hashJobName
-  ) where
+  ( SchedulerEnv (..),
+    runScheduler,
+
+    -- * Exported for testing
+    isWithinActiveHours,
+    hashJobName,
+  )
+where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, catch)
+import Control.Monad (when)
 import Data.Bits (shiftL, xor)
 import Data.Int (Int64)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Data.Time
-  ( UTCTime
-  , diffUTCTime
-  , getCurrentTime
-  , getCurrentTimeZone
-  , localTimeOfDay
-  , todHour
-  , utcToLocalTime
+  ( UTCTime,
+    diffUTCTime,
+    getCurrentTime,
+    getCurrentTimeZone,
+    localTimeOfDay,
+    todHour,
+    utcToLocalTime,
   )
-
 import Elwood.Claude.AgentLoop (AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Compaction (CompactionConfig)
@@ -38,21 +40,21 @@ import Elwood.Tools.Types (ToolEnv)
 
 -- | Environment for the scheduler
 data SchedulerEnv = SchedulerEnv
-  { seLogger :: Logger
-  , seTelegram :: TelegramClient
-  , seClaude :: ClaudeClient
-  , seConversations :: ConversationStore
-  , seRegistry :: ToolRegistry
-  , seToolEnv :: ToolEnv
-  , seCompaction :: CompactionConfig
-  , seSystemPrompt :: Maybe Text
-  , seModel :: Text
-  , seHeartbeatConfig :: HeartbeatConfig
-  , seHeartbeatPrompt :: Maybe Text
-  -- ^ Contents of HEARTBEAT.md
-  , seNotifyChatIds :: [Int64]
-  -- ^ Who to notify
-  , seCronJobs :: [CronJob]
+  { seLogger :: Logger,
+    seTelegram :: TelegramClient,
+    seClaude :: ClaudeClient,
+    seConversations :: ConversationStore,
+    seRegistry :: ToolRegistry,
+    seToolEnv :: ToolEnv,
+    seCompaction :: CompactionConfig,
+    seSystemPrompt :: Maybe Text,
+    seModel :: Text,
+    seHeartbeatConfig :: HeartbeatConfig,
+    -- | Contents of HEARTBEAT.md
+    seHeartbeatPrompt :: Maybe Text,
+    -- | Who to notify
+    seNotifyChatIds :: [Int64],
+    seCronJobs :: [CronJob]
   }
 
 -- | Heartbeat session uses chat ID -1
@@ -94,9 +96,8 @@ schedulerLoop env lastHeartbeat cronChecks = do
             runHeartbeat env
             pure now
           else do
-            if shouldRun && not inActiveHours
-              then logInfo logger "Outside active hours, skipping heartbeat" []
-              else pure ()
+            when (shouldRun && not inActiveHours) $
+              logInfo logger "Outside active hours, skipping heartbeat" []
             pure lastHeartbeat
       else pure lastHeartbeat
 
@@ -128,7 +129,6 @@ runHeartbeat env = do
   case seHeartbeatPrompt env of
     Nothing -> do
       logWarn logger "No HEARTBEAT.md found, skipping" []
-
     Just heartbeatPromptText -> do
       logInfo logger "Running heartbeat" []
 
@@ -168,7 +168,6 @@ runHeartbeat env = do
             else do
               logInfo logger "Heartbeat needs attention, notifying" []
               mapM_ (\chatId -> notifySafe env chatId responseText) (seNotifyChatIds env)
-
         AgentError err -> do
           logError logger "Heartbeat failed" [("error", err)]
 
@@ -237,7 +236,6 @@ runCronJob env job = do
       let notification = "[" <> jobName <> "] " <> responseText
       logInfo logger "Cron job completed" [("job", jobName)]
       mapM_ (\chatId -> notifySafe env chatId notification) (seNotifyChatIds env)
-
     AgentError err -> do
       logError logger "Cron job failed" [("job", jobName), ("error", err)]
 

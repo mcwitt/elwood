@@ -1,26 +1,27 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Claude.AgentLoop
-  ( runAgentTurn
-  , AgentResult (..)
-  ) where
+  ( runAgentTurn,
+    AgentResult (..),
+  )
+where
 
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-
+import Data.Text qualified as T
 import Elwood.Claude.Client (ClaudeClient, sendMessages)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Types
-import Elwood.Logging (Logger, logInfo, logWarn, logError)
+import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Tools.Registry (ToolRegistry, lookupTool, toolSchemas)
 import Elwood.Tools.Types (Tool (..), ToolEnv, ToolResult (..))
 
 -- | Result of running an agent turn
 data AgentResult
-  = AgentSuccess Text [ClaudeMessage]
-  -- ^ Success with response text and all messages (for persistence)
-  | AgentError Text
-  -- ^ Error that should be shown to user
+  = -- | Success with response text and all messages (for persistence)
+    AgentSuccess Text [ClaudeMessage]
+  | -- | Error that should be shown to user
+    AgentError Text
   deriving stock (Show)
 
 -- | Maximum iterations to prevent infinite loops
@@ -28,21 +29,21 @@ maxIterations :: Int
 maxIterations = 10
 
 -- | Run a complete agent turn, handling tool use loops
-runAgentTurn
-  :: Logger
-  -> ClaudeClient
-  -> ToolRegistry
-  -> ToolEnv
-  -> CompactionConfig
-  -> Maybe Text
-  -- ^ System prompt
-  -> Text
-  -- ^ Model name
-  -> [ClaudeMessage]
-  -- ^ Existing conversation history
-  -> ClaudeMessage
-  -- ^ New user message
-  -> IO AgentResult
+runAgentTurn ::
+  Logger ->
+  ClaudeClient ->
+  ToolRegistry ->
+  ToolEnv ->
+  CompactionConfig ->
+  -- | System prompt
+  Maybe Text ->
+  -- | Model name
+  Text ->
+  -- | Existing conversation history
+  [ClaudeMessage] ->
+  -- | New user message
+  ClaudeMessage ->
+  IO AgentResult
 runAgentTurn logger client registry toolEnv compactionConfig systemPrompt model history userMessage = do
   -- Compact history if needed before adding new message
   compactedHistory <- compactIfNeeded logger client compactionConfig history
@@ -50,17 +51,17 @@ runAgentTurn logger client registry toolEnv compactionConfig systemPrompt model 
   agentLoop logger client registry toolEnv compactionConfig systemPrompt model messages 0
 
 -- | The main agent loop
-agentLoop
-  :: Logger
-  -> ClaudeClient
-  -> ToolRegistry
-  -> ToolEnv
-  -> CompactionConfig
-  -> Maybe Text
-  -> Text
-  -> [ClaudeMessage]
-  -> Int
-  -> IO AgentResult
+agentLoop ::
+  Logger ->
+  ClaudeClient ->
+  ToolRegistry ->
+  ToolEnv ->
+  CompactionConfig ->
+  Maybe Text ->
+  Text ->
+  [ClaudeMessage] ->
+  Int ->
+  IO AgentResult
 agentLoop logger client registry toolEnv compactionConfig systemPrompt model messages iteration
   | iteration >= maxIterations = do
       logError logger "Agent loop exceeded max iterations" []
@@ -69,18 +70,18 @@ agentLoop logger client registry toolEnv compactionConfig systemPrompt model mes
       -- Build and send request
       let request =
             MessagesRequest
-              { mrModel = model
-              , mrMaxTokens = 4096
-              , mrSystem = systemPrompt
-              , mrMessages = messages
-              , mrTools = toolSchemas registry
+              { mrModel = model,
+                mrMaxTokens = 4096,
+                mrSystem = systemPrompt,
+                mrMessages = messages,
+                mrTools = toolSchemas registry
               }
 
       logInfo
         logger
         "Sending request to Claude"
-        [ ("iteration", T.pack (show iteration))
-        , ("message_count", T.pack (show (length messages)))
+        [ ("iteration", T.pack (show iteration)),
+          ("message_count", T.pack (show (length messages)))
         ]
 
       result <- sendMessages client request
@@ -93,25 +94,25 @@ agentLoop logger client registry toolEnv compactionConfig systemPrompt model mes
           logInfo
             logger
             "Claude response received"
-            [ ("stop_reason", maybe "none" id (mresStopReason response))
-            , ("content_blocks", T.pack (show (length (mresContent response))))
+            [ ("stop_reason", fromMaybe "none" (mresStopReason response)),
+              ("content_blocks", T.pack (show (length (mresContent response))))
             ]
 
           handleResponse logger client registry toolEnv compactionConfig systemPrompt model messages response iteration
 
 -- | Handle Claude's response
-handleResponse
-  :: Logger
-  -> ClaudeClient
-  -> ToolRegistry
-  -> ToolEnv
-  -> CompactionConfig
-  -> Maybe Text
-  -> Text
-  -> [ClaudeMessage]
-  -> MessagesResponse
-  -> Int
-  -> IO AgentResult
+handleResponse ::
+  Logger ->
+  ClaudeClient ->
+  ToolRegistry ->
+  ToolEnv ->
+  CompactionConfig ->
+  Maybe Text ->
+  Text ->
+  [ClaudeMessage] ->
+  MessagesResponse ->
+  Int ->
+  IO AgentResult
 handleResponse logger client registry toolEnv compactionConfig systemPrompt model messages response iteration =
   case mresStopReason response of
     Just "end_turn" -> do
@@ -120,7 +121,6 @@ handleResponse logger client registry toolEnv compactionConfig systemPrompt mode
           assistantMsg = ClaudeMessage Assistant (mresContent response)
           allMessages = messages ++ [assistantMsg]
       pure $ AgentSuccess responseText allMessages
-
     Just "tool_use" -> do
       -- Tool use requested - execute tools and continue
       let toolUses = extractToolUses (mresContent response)
@@ -141,7 +141,6 @@ handleResponse logger client registry toolEnv compactionConfig systemPrompt mode
 
       -- Continue the loop
       agentLoop logger client registry toolEnv compactionConfig systemPrompt model newMessages (iteration + 1)
-
     Just "max_tokens" -> do
       -- Hit token limit - return what we have
       let responseText = extractTextContent (mresContent response)
@@ -149,10 +148,9 @@ handleResponse logger client registry toolEnv compactionConfig systemPrompt mode
           allMessages = messages ++ [assistantMsg]
       logWarn logger "Response hit max tokens" []
       pure $ AgentSuccess (responseText <> "\n\n(Response was truncated due to length)") allMessages
-
     other -> do
       -- Unknown stop reason
-      logWarn logger "Unknown stop reason" [("reason", maybe "null" id other)]
+      logWarn logger "Unknown stop reason" [("reason", fromMaybe "null" other)]
       let responseText = extractTextContent (mresContent response)
           assistantMsg = ClaudeMessage Assistant (mresContent response)
           allMessages = messages ++ [assistantMsg]
@@ -179,7 +177,6 @@ executeToolUse logger registry toolEnv (ToolUseBlock tid name input) = do
     Nothing -> do
       logWarn logger "Unknown tool" [("tool", name)]
       pure $ ToolError $ "Unknown tool: " <> name
-
     Just tool -> do
       result <- toolExecute tool toolEnv input
       case result of

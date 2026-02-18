@@ -1,4 +1,9 @@
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 let
   cfg = config.services.assistant;
@@ -15,13 +20,16 @@ let
       activeHoursEnd: ${toString cfg.heartbeat.activeHoursEnd}
   '';
 
-in {
+in
+{
   options.services.assistant = {
     enable = lib.mkEnableOption "Elwood personal AI assistant";
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.elwood or (throw "elwood package not found; add the overlay or set services.assistant.package");
+      default =
+        pkgs.elwood
+          or (throw "elwood package not found; add the overlay or set services.assistant.package");
       defaultText = lib.literalExpression "pkgs.elwood";
       description = "The elwood package to use.";
     };
@@ -49,7 +57,7 @@ in {
 
     allowedChatIds = lib.mkOption {
       type = lib.types.listOf lib.types.int;
-      default = [];
+      default = [ ];
       description = "List of Telegram chat IDs allowed to interact with the bot.";
     };
 
@@ -101,7 +109,7 @@ in {
       description = "Elwood AI assistant service user";
     };
 
-    users.groups.${cfg.group} = {};
+    users.groups.${cfg.group} = { };
 
     # Create state directories
     systemd.tmpfiles.rules = [
@@ -139,7 +147,10 @@ in {
         ProtectKernelTunables = true;
         ProtectKernelModules = true;
         ProtectControlGroups = true;
-        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+        ];
         RestrictNamespaces = true;
         LockPersonality = true;
         MemoryDenyWriteExecute = true;

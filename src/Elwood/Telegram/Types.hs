@@ -1,14 +1,15 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Telegram.Types
-  ( Update (..)
-  , Message (..)
-  , Chat (..)
-  , User (..)
-  , SendMessageRequest (..)
-  , GetUpdatesResponse (..)
-  , SendMessageResponse (..)
-  ) where
+  ( Update (..),
+    Message (..),
+    Chat (..),
+    User (..),
+    SendMessageRequest (..),
+    GetUpdatesResponse (..),
+    SendMessageResponse (..),
+  )
+where
 
 import Data.Aeson
 import Data.Int (Int64)
@@ -17,10 +18,10 @@ import GHC.Generics (Generic)
 
 -- | Incoming update from Telegram's getUpdates API
 data Update = Update
-  { updateId :: Int
-  -- ^ Unique update identifier
-  , message :: Maybe Message
-  -- ^ New incoming message (if any)
+  { -- | Unique update identifier
+    updateId :: Int,
+    -- | New incoming message (if any)
+    message :: Maybe Message
   }
   deriving stock (Show, Generic)
 
@@ -32,14 +33,14 @@ instance FromJSON Update where
 
 -- | A Telegram message
 data Message = Message
-  { messageId :: Int
-  -- ^ Unique message identifier
-  , chat :: Chat
-  -- ^ Chat the message belongs to
-  , text :: Maybe Text
-  -- ^ Text content of the message
-  , from :: Maybe User
-  -- ^ Sender of the message
+  { -- | Unique message identifier
+    messageId :: Int,
+    -- | Chat the message belongs to
+    chat :: Chat,
+    -- | Text content of the message
+    text :: Maybe Text,
+    -- | Sender of the message
+    from :: Maybe User
   }
   deriving stock (Show, Generic)
 
@@ -53,10 +54,10 @@ instance FromJSON Message where
 
 -- | A Telegram chat
 data Chat = Chat
-  { chatId :: Int64
-  -- ^ Unique chat identifier
-  , chatType :: Text
-  -- ^ Type of chat: "private", "group", "supergroup", or "channel"
+  { -- | Unique chat identifier
+    chatId :: Int64,
+    -- | Type of chat: "private", "group", "supergroup", or "channel"
+    chatType :: Text
   }
   deriving stock (Show, Generic)
 
@@ -68,14 +69,14 @@ instance FromJSON Chat where
 
 -- | A Telegram user
 data User = User
-  { userId :: Int64
-  -- ^ Unique user identifier
-  , firstName :: Text
-  -- ^ User's first name
-  , lastName :: Maybe Text
-  -- ^ User's last name (optional)
-  , username :: Maybe Text
-  -- ^ User's username (optional)
+  { -- | Unique user identifier
+    userId :: Int64,
+    -- | User's first name
+    firstName :: Text,
+    -- | User's last name (optional)
+    lastName :: Maybe Text,
+    -- | User's username (optional)
+    username :: Maybe Text
   }
   deriving stock (Show, Generic)
 
@@ -89,24 +90,24 @@ instance FromJSON User where
 
 -- | Request body for sendMessage API
 data SendMessageRequest = SendMessageRequest
-  { smrChatId :: Int64
-  , smrText :: Text
-  , smrParseMode :: Maybe Text
+  { smrChatId :: Int64,
+    smrText :: Text,
+    smrParseMode :: Maybe Text
   }
   deriving stock (Show, Generic)
 
 instance ToJSON SendMessageRequest where
   toJSON req =
     object $
-      [ "chat_id" .= smrChatId req
-      , "text" .= smrText req
+      [ "chat_id" .= smrChatId req,
+        "text" .= smrText req
       ]
         ++ maybe [] (\pm -> ["parse_mode" .= pm]) (smrParseMode req)
 
 -- | Response wrapper for Telegram API
 data GetUpdatesResponse = GetUpdatesResponse
-  { gurOk :: Bool
-  , gurResult :: [Update]
+  { gurOk :: Bool,
+    gurResult :: [Update]
   }
   deriving stock (Show, Generic)
 
@@ -118,8 +119,8 @@ instance FromJSON GetUpdatesResponse where
 
 -- | Response for sendMessage API
 data SendMessageResponse = SendMessageResponse
-  { smresOk :: Bool
-  , smresResult :: Maybe Message
+  { smresOk :: Bool,
+    smresResult :: Maybe Message
   }
   deriving stock (Show, Generic)
 

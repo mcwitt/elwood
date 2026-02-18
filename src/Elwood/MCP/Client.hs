@@ -2,38 +2,40 @@
 
 module Elwood.MCP.Client
   ( -- * Server Lifecycle
-    spawnMCPServer
-  , stopMCPServer
+    spawnMCPServer,
+    stopMCPServer,
 
     -- * JSON-RPC Communication
-  , sendRequest
-  ) where
+    sendRequest,
+  )
+where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, catch, try)
+import Control.Monad (when)
 import Data.Aeson (Value (..), eitherDecode, encode, object, (.=))
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Lazy.Char8 as BL8
+import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.IORef (atomicModifyIORef', newIORef)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
-import System.Environment (getEnvironment)
-import qualified Data.ByteString as BS
-import System.IO (BufferMode (..), hClose, hFlush, hGetContents, hSetBuffering)
-import System.Process
-  ( CreateProcess (..)
-  , StdStream (..)
-  , createProcess
-  , getProcessExitCode
-  , proc
-  , terminateProcess
-  , waitForProcess
-  )
-import System.Timeout (timeout)
-
+import Data.Text qualified as T
 import Elwood.Config (MCPServerConfig (..))
 import Elwood.Logging (Logger, logDebug, logError, logInfo)
 import Elwood.MCP.Types
+import System.Environment (getEnvironment)
+import System.IO (BufferMode (..), hClose, hFlush, hGetContents, hSetBuffering)
+import System.Process
+  ( CreateProcess (..),
+    StdStream (..),
+    createProcess,
+    getProcessExitCode,
+    proc,
+    terminateProcess,
+    waitForProcess,
+  )
+import System.Timeout (timeout)
 
 -- | Response timeout in microseconds (30 seconds)
 responseTimeoutMicros :: Int
@@ -50,10 +52,10 @@ spawnMCPServer logger config = do
   -- Create the process
   let processConfig =
         (proc (T.unpack (mscCommand config)) (map T.unpack (mscArgs config)))
-          { std_in = CreatePipe
-          , std_out = CreatePipe
-          , std_err = CreatePipe
-          , env = envPairs
+          { std_in = CreatePipe,
+            std_out = CreatePipe,
+            std_err = CreatePipe,
+            env = envPairs
           }
 
   spawnResult <- try $ createProcess processConfig
@@ -72,26 +74,28 @@ spawnMCPServer logger config = do
 
       let server =
             MCPServer
-              { msConfig = config
-              , msProcess = procHandle
-              , msStdin = stdin
-              , msStdout = stdout
-              , msRequestId = requestIdRef
+              { msConfig = config,
+                msProcess = procHandle,
+                msStdin = stdin,
+                msStdout = stdout,
+                msRequestId = requestIdRef
               }
 
       -- Optional startup delay for slow-starting servers (e.g., npx)
       when (mscStartupDelay config > 0) $
-        threadDelay (mscStartupDelay config * 1000)  -- Convert ms to μs
+        threadDelay (mscStartupDelay config * 1000) -- Convert ms to μs
 
       -- Check if process exited during startup
       exitCode <- getProcessExitCode procHandle
       case exitCode of
         Just code -> do
           stderrContent <- hGetContents stderr `catch` \(_ :: SomeException) -> pure ""
-          logError logger "MCP server exited during startup"
-            [ ("name", mscName config)
-            , ("exit_code", T.pack (show code))
-            , ("stderr", T.pack (take 500 stderrContent))
+          logError
+            logger
+            "MCP server exited during startup"
+            [ ("name", mscName config),
+              ("exit_code", T.pack (show code)),
+              ("stderr", T.pack (take 500 stderrContent))
             ]
           pure $ Left $ MCPSpawnError $ "Server exited with code " <> T.pack (show code)
         Nothing -> do
@@ -106,12 +110,10 @@ spawnMCPServer logger config = do
     Right _ -> do
       logError logger "Failed to create process pipes" []
       pure $ Left $ MCPSpawnError "Failed to create process pipes"
-  where
-    when cond action = if cond then action else pure ()
 
 -- | Merge custom environment variables with current environment
 mergeEnv :: Maybe [(Text, Text)] -> IO (Maybe [(String, String)])
-mergeEnv Nothing = pure Nothing  -- Inherit current environment
+mergeEnv Nothing = pure Nothing -- Inherit current environment
 mergeEnv (Just customPairs) = do
   currentEnv <- getEnvironment
   let customEnv = [(T.unpack k, T.unpack v) | (k, v) <- customPairs]
@@ -124,12 +126,12 @@ initializeMCPServer :: Logger -> MCPServer -> IO (Either MCPError ())
 initializeMCPServer logger server = do
   let initParams =
         object
-          [ "protocolVersion" .= ("2024-11-05" :: Text)
-          , "capabilities" .= object []
-          , "clientInfo"
+          [ "protocolVersion" .= ("2024-11-05" :: Text),
+            "capabilities" .= object [],
+            "clientInfo"
               .= object
-                [ "name" .= ("elwood" :: Text)
-                , "version" .= ("0.1.0" :: Text)
+                [ "name" .= ("elwood" :: Text),
+                  "version" .= ("0.1.0" :: Text)
                 ]
           ]
 
@@ -162,10 +164,10 @@ sendRequest server method params = do
 
   let request =
         JsonRpcRequest
-          { jrqJsonrpc = "2.0"
-          , jrqMethod = method
-          , jrqParams = params
-          , jrqId = reqId
+          { jrqJsonrpc = "2.0",
+            jrqMethod = method,
+            jrqParams = params,
+            jrqId = reqId
           }
 
   sendResult <- try $ do
@@ -206,14 +208,18 @@ readResponse server expectedId = readJsonLine 100
         Just respId
           | respId == expectedId -> handleResponse response
           | otherwise ->
-              pure $ Left $ MCPProtocolError $
-                "Response ID mismatch: expected " <> T.pack (show expectedId)
-                  <> ", got " <> T.pack (show respId)
+              pure $
+                Left $
+                  MCPProtocolError $
+                    "Response ID mismatch: expected "
+                      <> T.pack (show expectedId)
+                      <> ", got "
+                      <> T.pack (show respId)
         Nothing -> handleResponse response
 
     -- Check if a line looks like it could be JSON (starts with '{')
-    isJsonLine bs = case BS.uncons (BS.dropWhile (== 0x20) bs) of  -- 0x20 = space
-      Just (0x7B, _) -> True  -- 0x7B = '{'
+    isJsonLine bs = case BS.uncons (BS.dropWhile (== 0x20) bs) of -- 0x20 = space
+      Just (0x7B, _) -> True -- 0x7B = '{'
       _ -> False
 
 -- | Handle a parsed JSON-RPC response
@@ -221,7 +227,7 @@ handleResponse :: JsonRpcResponse -> IO (Either MCPError Value)
 handleResponse response =
   case jrsError response of
     Just err -> pure $ Left $ MCPToolError (jreCode err) (jreMessage err)
-    Nothing -> pure $ Right $ maybe Null id (jrsResult response)
+    Nothing -> pure $ Right $ fromMaybe Null (jrsResult response)
 
 -- | Clean shutdown of an MCP server
 stopMCPServer :: MCPServer -> IO ()

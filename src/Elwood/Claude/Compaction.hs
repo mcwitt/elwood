@@ -2,22 +2,22 @@
 
 module Elwood.Claude.Compaction
   ( -- * Compaction
-    compactIfNeeded
-  , estimateTokens
+    compactIfNeeded,
+    estimateTokens,
 
     -- * Re-export config
-  , CompactionConfig (..)
+    CompactionConfig (..),
 
     -- * Exported for testing
-  , extractText
-  , formatMessagesForSummary
-  ) where
+    extractText,
+    formatMessagesForSummary,
+  )
+where
 
 import Data.Aeson (encode)
-import qualified Data.ByteString.Lazy as LBS
+import Data.ByteString.Lazy qualified as LBS
 import Data.Text (Text)
-import qualified Data.Text as T
-
+import Data.Text qualified as T
 import Elwood.Claude.Client (ClaudeClient, sendMessages)
 import Elwood.Claude.Types
 import Elwood.Config (CompactionConfig (..))
@@ -32,12 +32,12 @@ estimateTokens msgs =
 
 -- | Compact messages if they exceed the token threshold
 -- Returns the (possibly compacted) message list
-compactIfNeeded
-  :: Logger
-  -> ClaudeClient
-  -> CompactionConfig
-  -> [ClaudeMessage]
-  -> IO [ClaudeMessage]
+compactIfNeeded ::
+  Logger ->
+  ClaudeClient ->
+  CompactionConfig ->
+  [ClaudeMessage] ->
+  IO [ClaudeMessage]
 compactIfNeeded logger client config msgs = do
   let tokens = estimateTokens msgs
   if tokens < ccTokenThreshold config
@@ -46,19 +46,19 @@ compactIfNeeded logger client config msgs = do
       logInfo
         logger
         "Context compaction triggered"
-        [ ("estimated_tokens", T.pack (show tokens))
-        , ("threshold", T.pack (show (ccTokenThreshold config)))
-        , ("message_count", T.pack (show (length msgs)))
+        [ ("estimated_tokens", T.pack (show tokens)),
+          ("threshold", T.pack (show (ccTokenThreshold config))),
+          ("message_count", T.pack (show (length msgs)))
         ]
       compactMessages logger client config msgs
 
 -- | Perform the actual compaction
-compactMessages
-  :: Logger
-  -> ClaudeClient
-  -> CompactionConfig
-  -> [ClaudeMessage]
-  -> IO [ClaudeMessage]
+compactMessages ::
+  Logger ->
+  ClaudeClient ->
+  CompactionConfig ->
+  [ClaudeMessage] ->
+  IO [ClaudeMessage]
 compactMessages logger client config msgs = do
   -- Split messages: keep recent half, summarize old half
   let totalMsgs = length msgs
@@ -68,8 +68,8 @@ compactMessages logger client config msgs = do
   logInfo
     logger
     "Compacting messages"
-    [ ("old_messages", T.pack (show (length oldMsgs)))
-    , ("recent_messages", T.pack (show (length recentMsgs)))
+    [ ("old_messages", T.pack (show (length oldMsgs))),
+      ("recent_messages", T.pack (show (length recentMsgs)))
     ]
 
   -- Generate summary of old messages
@@ -88,8 +88,8 @@ compactMessages logger client config msgs = do
       -- Create a synthetic message with the summary
       let summaryMsg =
             ClaudeMessage
-              { cmRole = User
-              , cmContent =
+              { cmRole = User,
+                cmContent =
                   [ TextBlock $
                       "[Previous conversation summary]\n\n" <> summary
                   ]
@@ -97,18 +97,18 @@ compactMessages logger client config msgs = do
       pure $ summaryMsg : recentMsgs
 
 -- | Summarize a list of messages using a fast model
-summarizeMessages
-  :: ClaudeClient
-  -> CompactionConfig
-  -> [ClaudeMessage]
-  -> IO (Either Text Text)
+summarizeMessages ::
+  ClaudeClient ->
+  CompactionConfig ->
+  [ClaudeMessage] ->
+  IO (Either Text Text)
 summarizeMessages client config msgs = do
   -- Build a prompt asking for a summary
   let conversationText = formatMessagesForSummary msgs
       summaryRequest =
         ClaudeMessage
-          { cmRole = User
-          , cmContent =
+          { cmRole = User,
+            cmContent =
               [ TextBlock $
                   "Please summarize the following conversation concisely. "
                     <> "Focus on key facts, decisions, and context that would be important "
@@ -119,11 +119,11 @@ summarizeMessages client config msgs = do
           }
       request =
         MessagesRequest
-          { mrModel = ccCompactionModel config
-          , mrMaxTokens = 2048
-          , mrSystem = Just "You are a helpful assistant that summarizes conversations concisely."
-          , mrMessages = [summaryRequest]
-          , mrTools = []
+          { mrModel = ccCompactionModel config,
+            mrMaxTokens = 2048,
+            mrSystem = Just "You are a helpful assistant that summarizes conversations concisely.",
+            mrMessages = [summaryRequest],
+            mrTools = []
           }
 
   result <- sendMessages client request

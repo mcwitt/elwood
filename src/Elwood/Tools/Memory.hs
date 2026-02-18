@@ -1,16 +1,16 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Tools.Memory
-  ( saveMemoryTool
-  , searchMemoryTool
-  ) where
+  ( saveMemoryTool,
+    searchMemoryTool,
+  )
+where
 
 import Data.Aeson (Value, object, (.=))
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.KeyMap as KM
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KM
 import Data.Text (Text)
-import qualified Data.Text as T
-
+import Data.Text qualified as T
 import Elwood.Logging (logInfo)
 import Elwood.Memory (MemoryResult (..), saveMemory, searchMemory)
 import Elwood.Tools.Types
@@ -19,64 +19,64 @@ import Elwood.Tools.Types
 saveMemoryTool :: Tool
 saveMemoryTool =
   Tool
-    { toolName = "save_memory"
-    , toolDescription =
+    { toolName = "save_memory",
+      toolDescription =
         "Save information to persistent memory for future reference. "
           <> "Use this to remember important facts, preferences, or information "
           <> "that should persist across conversations. "
-          <> "The key should be a short, descriptive identifier."
-    , toolInputSchema = saveMemorySchema
-    , toolExecute = executeSaveMemory
+          <> "The key should be a short, descriptive identifier.",
+      toolInputSchema = saveMemorySchema,
+      toolExecute = executeSaveMemory
     }
 
 -- | Tool for searching memories
 searchMemoryTool :: Tool
 searchMemoryTool =
   Tool
-    { toolName = "search_memory"
-    , toolDescription =
+    { toolName = "search_memory",
+      toolDescription =
         "Search persistent memory for previously saved information. "
           <> "Use this to recall facts, preferences, or context from past conversations. "
-          <> "The query can contain multiple keywords."
-    , toolInputSchema = searchMemorySchema
-    , toolExecute = executeSearchMemory
+          <> "The query can contain multiple keywords.",
+      toolInputSchema = searchMemorySchema,
+      toolExecute = executeSearchMemory
     }
 
 -- | JSON Schema for save_memory input
 saveMemorySchema :: Value
 saveMemorySchema =
   object
-    [ "type" .= ("object" :: Text)
-    , "properties"
+    [ "type" .= ("object" :: Text),
+      "properties"
         .= object
           [ "key"
               .= object
-                [ "type" .= ("string" :: Text)
-                , "description" .= ("Short identifier for this memory (e.g., 'user-birthday', 'project-goals')" :: Text)
-                ]
-          , "content"
+                [ "type" .= ("string" :: Text),
+                  "description" .= ("Short identifier for this memory (e.g., 'user-birthday', 'project-goals')" :: Text)
+                ],
+            "content"
               .= object
-                [ "type" .= ("string" :: Text)
-                , "description" .= ("The information to remember" :: Text)
+                [ "type" .= ("string" :: Text),
+                  "description" .= ("The information to remember" :: Text)
                 ]
-          ]
-    , "required" .= (["key", "content"] :: [Text])
+          ],
+      "required" .= (["key", "content"] :: [Text])
     ]
 
 -- | JSON Schema for search_memory input
 searchMemorySchema :: Value
 searchMemorySchema =
   object
-    [ "type" .= ("object" :: Text)
-    , "properties"
+    [ "type" .= ("object" :: Text),
+      "properties"
         .= object
           [ "query"
               .= object
-                [ "type" .= ("string" :: Text)
-                , "description" .= ("Keywords to search for in memories" :: Text)
+                [ "type" .= ("string" :: Text),
+                  "description" .= ("Keywords to search for in memories" :: Text)
                 ]
-          ]
-    , "required" .= (["query"] :: [Text])
+          ],
+      "required" .= (["query"] :: [Text])
     ]
 
 -- | Execute save_memory

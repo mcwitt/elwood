@@ -1,18 +1,14 @@
 module Elwood.App
-  ( AppEnv (..)
-  , runApp
-  ) where
+  ( AppEnv (..),
+    runApp,
+  )
+where
 
 import Control.Concurrent.Async (concurrently_)
 import Control.Exception (SomeException, catch, finally)
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
-import Network.HTTP.Client (newManager)
-import Network.HTTP.Client.TLS (tlsManagerSettings)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
-import System.FilePath ((</>))
-
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Elwood.Claude.Client
 import Elwood.Claude.Conversation
 import Elwood.Claude.Handler
@@ -30,18 +26,22 @@ import Elwood.Tools.FileSystem (readFileTool, writeFileTool)
 import Elwood.Tools.Memory (saveMemoryTool, searchMemoryTool)
 import Elwood.Tools.Registry
 import Elwood.Tools.Types (ToolEnv (..))
-import Elwood.Tools.Web (webSearchTool, webFetchTool)
+import Elwood.Tools.Web (webFetchTool, webSearchTool)
+import Network.HTTP.Client (newManager)
+import Network.HTTP.Client.TLS (tlsManagerSettings)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.FilePath ((</>))
 
 -- | Application environment containing all initialized components
 data AppEnv = AppEnv
-  { appConfig :: Config
-  , appLogger :: Logger
-  , appTelegram :: TelegramClient
-  , appClaude :: ClaudeClient
-  , appConversations :: ConversationStore
-  , appSystemPrompt :: Maybe Text
-  , appToolRegistry :: ToolRegistry
-  , appToolEnv :: ToolEnv
+  { appConfig :: Config,
+    appLogger :: Logger,
+    appTelegram :: TelegramClient,
+    appClaude :: ClaudeClient,
+    appConversations :: ConversationStore,
+    appSystemPrompt :: Maybe Text,
+    appToolRegistry :: ToolRegistry,
+    appToolEnv :: ToolEnv
   }
 
 -- | Initialize and run the application
@@ -91,25 +91,26 @@ runApp config = do
   -- Create tool environment
   let toolEnv =
         ToolEnv
-          { teLogger = logger
-          , teWorkspaceDir = cfgWorkspaceDir config
-          , teStateDir = cfgStateDir config
-          , tePermissions = permChecker
-          , teHttpManager = httpManager
-          , teBraveApiKey = cfgBraveApiKey config
-          , teMemoryStore = memoryStore
+          { teLogger = logger,
+            teWorkspaceDir = cfgWorkspaceDir config,
+            teStateDir = cfgStateDir config,
+            tePermissions = permChecker,
+            teHttpManager = httpManager,
+            teBraveApiKey = cfgBraveApiKey config,
+            teMemoryStore = memoryStore
           }
 
   -- Initialize tool registry with built-in tools
   let builtinRegistry =
         registerTool runCommandTool $
-        registerTool readFileTool $
-        registerTool writeFileTool $
-        registerTool webSearchTool $
-        registerTool webFetchTool $
-        registerTool saveMemoryTool $
-        registerTool searchMemoryTool $
-        newToolRegistry
+          registerTool readFileTool $
+            registerTool writeFileTool $
+              registerTool webSearchTool $
+                registerTool webFetchTool $
+                  registerTool saveMemoryTool $
+                    registerTool
+                      searchMemoryTool
+                      newToolRegistry
 
   logInfo
     logger
@@ -134,14 +135,14 @@ runApp config = do
 
   let _env =
         AppEnv
-          { appConfig = config
-          , appLogger = logger
-          , appTelegram = telegram
-          , appClaude = claude
-          , appConversations = conversations
-          , appSystemPrompt = systemPrompt
-          , appToolRegistry = registry
-          , appToolEnv = toolEnv
+          { appConfig = config,
+            appLogger = logger,
+            appTelegram = telegram,
+            appClaude = claude,
+            appConversations = conversations,
+            appSystemPrompt = systemPrompt,
+            appToolRegistry = registry,
+            appToolEnv = toolEnv
           }
 
   -- Log allowed chats
@@ -168,33 +169,36 @@ runApp config = do
   -- Create scheduler environment
   let schedulerEnv =
         SchedulerEnv
-          { seLogger = logger
-          , seTelegram = telegram
-          , seClaude = claude
-          , seConversations = conversations
-          , seRegistry = registry
-          , seToolEnv = toolEnv
-          , seCompaction = compactionConfig
-          , seSystemPrompt = systemPrompt
-          , seModel = cfgModel config
-          , seHeartbeatConfig = cfgHeartbeat config
-          , seHeartbeatPrompt = heartbeatPrompt
-          , seNotifyChatIds = cfgAllowedChatIds config
-          , seCronJobs = cronJobs
+          { seLogger = logger,
+            seTelegram = telegram,
+            seClaude = claude,
+            seConversations = conversations,
+            seRegistry = registry,
+            seToolEnv = toolEnv,
+            seCompaction = compactionConfig,
+            seSystemPrompt = systemPrompt,
+            seModel = cfgModel config,
+            seHeartbeatConfig = cfgHeartbeat config,
+            seHeartbeatPrompt = heartbeatPrompt,
+            seNotifyChatIds = cfgAllowedChatIds config,
+            seCronJobs = cronJobs
           }
 
   -- Run polling and scheduler concurrently, with MCP cleanup on exit
   finally
-    (concurrently_
-      (runPolling
-        logger
-        telegram
-        (cfgAllowedChatIds config)
-        (claudeHandler logger claude conversations registry toolEnv compactionConfig systemPrompt (cfgModel config)))
-      (runScheduler schedulerEnv))
-    (do
-      logInfo logger "Shutting down MCP servers" []
-      mapM_ stopMCPServer mcpServers)
+    ( concurrently_
+        ( runPolling
+            logger
+            telegram
+            (cfgAllowedChatIds config)
+            (claudeHandler logger claude conversations registry toolEnv compactionConfig systemPrompt (cfgModel config))
+        )
+        (runScheduler schedulerEnv)
+    )
+    ( do
+        logInfo logger "Shutting down MCP servers" []
+        mapM_ stopMCPServer mcpServers
+    )
 
 -- | Load heartbeat prompt from HEARTBEAT.md file
 loadHeartbeatPrompt :: FilePath -> IO (Maybe Text)
@@ -203,8 +207,9 @@ loadHeartbeatPrompt workspaceDir = do
   exists <- doesFileExist heartbeatPath
   if exists
     then do
-      content <- TIO.readFile heartbeatPath
-        `catch` \(_ :: SomeException) -> pure ""
+      content <-
+        TIO.readFile heartbeatPath
+          `catch` \(_ :: SomeException) -> pure ""
       if T.null content
         then pure Nothing
         else pure (Just content)

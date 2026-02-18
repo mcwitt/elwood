@@ -2,18 +2,18 @@
 
 module Elwood.Tools.Registry
   ( -- * Tool Registry
-    ToolRegistry
-  , newToolRegistry
-  , registerTool
-  , lookupTool
-  , allTools
-  , toolSchemas
-  ) where
+    ToolRegistry,
+    newToolRegistry,
+    registerTool,
+    lookupTool,
+    allTools,
+    toolSchemas,
+  )
+where
 
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-
 import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Tools.Types (Tool (..))
 
@@ -43,9 +43,9 @@ allTools (ToolRegistry reg) = Map.elems reg
 toolSchemas :: ToolRegistry -> [ToolSchema]
 toolSchemas registry =
   [ ToolSchema
-      { tsName = toolName tool
-      , tsDescription = toolDescription tool
-      , tsInputSchema = toolInputSchema tool
+      { tsName = toolName tool,
+        tsDescription = toolDescription tool,
+        tsInputSchema = toolInputSchema tool
       }
   | tool <- allTools registry
   ]

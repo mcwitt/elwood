@@ -1,10 +1,9 @@
 module Main (main) where
 
 import Data.Maybe (fromMaybe)
-import System.Environment (lookupEnv)
-
 import Elwood.App (runApp)
 import Elwood.Config (loadConfig)
+import System.Environment (lookupEnv)
 
 main :: IO ()
 main = do

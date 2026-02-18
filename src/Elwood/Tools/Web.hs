@@ -1,92 +1,92 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Tools.Web
-  ( webSearchTool
-  , webFetchTool
-  ) where
+  ( webSearchTool,
+    webFetchTool,
+  )
+where
 
 import Control.Exception (SomeException, try)
-import Data.Aeson (Value, object, (.=), (.:), (.:?), (.!=))
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.KeyMap as KM
+import Data.Aeson (Value, object, (.!=), (.:), (.:?), (.=))
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types (parseMaybe)
-import qualified Data.ByteString.Lazy as LBS
+import Data.ByteString.Lazy qualified as LBS
 import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import Network.HTTP.Client
-  ( Manager
-  , httpLbs
-  , parseRequest
-  , requestHeaders
-  , responseBody
-  , responseStatus
-  )
-import Network.HTTP.Types.Status (statusCode)
-import Text.HTML.TagSoup (parseTags, Tag(..), innerText)
-
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Elwood.Logging (logInfo, logWarn)
 import Elwood.Tools.Types
+import Network.HTTP.Client
+  ( Manager,
+    httpLbs,
+    parseRequest,
+    requestHeaders,
+    responseBody,
+    responseStatus,
+  )
+import Network.HTTP.Types.Status (statusCode)
+import Text.HTML.TagSoup (Tag (..), innerText, parseTags)
 
 -- | Tool for web search via Brave Search API
 webSearchTool :: Tool
 webSearchTool =
   Tool
-    { toolName = "web_search"
-    , toolDescription =
+    { toolName = "web_search",
+      toolDescription =
         "Search the web using Brave Search. "
-          <> "Returns search results with titles, URLs, and descriptions."
-    , toolInputSchema = webSearchSchema
-    , toolExecute = executeWebSearch
+          <> "Returns search results with titles, URLs, and descriptions.",
+      toolInputSchema = webSearchSchema,
+      toolExecute = executeWebSearch
     }
 
 -- | Tool for fetching web pages
 webFetchTool :: Tool
 webFetchTool =
   Tool
-    { toolName = "web_fetch"
-    , toolDescription =
+    { toolName = "web_fetch",
+      toolDescription =
         "Fetch a web page and extract its text content. "
-          <> "Useful for reading articles, documentation, etc."
-    , toolInputSchema = webFetchSchema
-    , toolExecute = executeWebFetch
+          <> "Useful for reading articles, documentation, etc.",
+      toolInputSchema = webFetchSchema,
+      toolExecute = executeWebFetch
     }
 
 -- | JSON Schema for web_search input
 webSearchSchema :: Value
 webSearchSchema =
   object
-    [ "type" .= ("object" :: Text)
-    , "properties"
+    [ "type" .= ("object" :: Text),
+      "properties"
         .= object
           [ "query"
               .= object
-                [ "type" .= ("string" :: Text)
-                , "description" .= ("Search query" :: Text)
-                ]
-          , "count"
+                [ "type" .= ("string" :: Text),
+                  "description" .= ("Search query" :: Text)
+                ],
+            "count"
               .= object
-                [ "type" .= ("integer" :: Text)
-                , "description" .= ("Number of results (default 5, max 10)" :: Text)
+                [ "type" .= ("integer" :: Text),
+                  "description" .= ("Number of results (default 5, max 10)" :: Text)
                 ]
-          ]
-    , "required" .= (["query"] :: [Text])
+          ],
+      "required" .= (["query"] :: [Text])
     ]
 
 -- | JSON Schema for web_fetch input
 webFetchSchema :: Value
 webFetchSchema =
   object
-    [ "type" .= ("object" :: Text)
-    , "properties"
+    [ "type" .= ("object" :: Text),
+      "properties"
         .= object
           [ "url"
               .= object
-                [ "type" .= ("string" :: Text)
-                , "description" .= ("URL to fetch" :: Text)
+                [ "type" .= ("string" :: Text),
+                  "description" .= ("URL to fetch" :: Text)
                 ]
-          ]
-    , "required" .= (["url"] :: [Text])
+          ],
+      "required" .= (["url"] :: [Text])
     ]
 
 -- | Execute web_search
@@ -141,8 +141,8 @@ performSearch manager apiKey query count = do
     let req' =
           req
             { requestHeaders =
-                [ ("Accept", "application/json")
-                , ("X-Subscription-Token", TE.encodeUtf8 apiKey)
+                [ ("Accept", "application/json"),
+                  ("X-Subscription-Token", TE.encodeUtf8 apiKey)
                 ]
             }
     response <- httpLbs req' manager
@@ -196,8 +196,8 @@ fetchAndExtract manager url = do
     let req' =
           req
             { requestHeaders =
-                [ ("User-Agent", "Mozilla/5.0 (compatible; Elwood/1.0)")
-                , ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                [ ("User-Agent", "Mozilla/5.0 (compatible; Elwood/1.0)"),
+                  ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 ]
             }
     response <- httpLbs req' manager

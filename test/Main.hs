@@ -1,25 +1,26 @@
 module Main (main) where
 
+import Test.Elwood.Claude.Compaction qualified
+import Test.Elwood.Claude.Types qualified
+import Test.Elwood.Config qualified
+import Test.Elwood.MCP qualified
+import Test.Elwood.Memory qualified
+import Test.Elwood.Permissions qualified
+import Test.Elwood.Scheduler qualified
 import Test.Tasty
-
-import qualified Test.Elwood.Memory
-import qualified Test.Elwood.Permissions
-import qualified Test.Elwood.Config
-import qualified Test.Elwood.Scheduler
-import qualified Test.Elwood.Claude.Types
-import qualified Test.Elwood.Claude.Compaction
-import qualified Test.Elwood.MCP
 
 main :: IO ()
 main = defaultMain tests
 
 tests :: TestTree
-tests = testGroup "Elwood Tests"
-  [ Test.Elwood.Memory.tests
-  , Test.Elwood.Permissions.tests
-  , Test.Elwood.Config.tests
-  , Test.Elwood.Scheduler.tests
-  , Test.Elwood.Claude.Types.tests
-  , Test.Elwood.Claude.Compaction.tests
-  , Test.Elwood.MCP.tests
-  ]
+tests =
+  testGroup
+    "Elwood Tests"
+    [ Test.Elwood.Memory.tests,
+      Test.Elwood.Permissions.tests,
+      Test.Elwood.Config.tests,
+      Test.Elwood.Scheduler.tests,
+      Test.Elwood.Claude.Types.tests,
+      Test.Elwood.Claude.Compaction.tests,
+      Test.Elwood.MCP.tests
+    ]

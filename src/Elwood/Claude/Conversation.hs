@@ -1,36 +1,36 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Claude.Conversation
-  ( ConversationStore (..)
-  , newConversationStore
-  , getConversation
-  , appendMessage
-  , updateConversation
-  , clearConversation
-  ) where
+  ( ConversationStore (..),
+    newConversationStore,
+    getConversation,
+    appendMessage,
+    updateConversation,
+    clearConversation,
+  )
+where
 
 import Control.Concurrent.MVar
-import Control.Exception (catch, SomeException)
+import Control.Exception (SomeException, catch)
 import Data.Aeson (eitherDecodeFileStrict, encodeFile)
 import Data.Int (Int64)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Time (getCurrentTime)
+import Elwood.Claude.Types
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath ((</>))
-
-import Elwood.Claude.Types
 
 -- | In-memory cache of conversations
 type ConversationCache = Map.Map Int64 Conversation
 
 -- | Store for conversation persistence
 data ConversationStore = ConversationStore
-  { csStateDir :: FilePath
-  -- ^ Directory for conversation files
-  , csMaxHistory :: Int
-  -- ^ Maximum messages to keep per conversation
-  , csCache :: MVar ConversationCache
-  -- ^ In-memory cache
+  { -- | Directory for conversation files
+    csStateDir :: FilePath,
+    -- | Maximum messages to keep per conversation
+    csMaxHistory :: Int,
+    -- | In-memory cache
+    csCache :: MVar ConversationCache
   }
 
 -- | Create a new conversation store
@@ -43,9 +43,9 @@ newConversationStore stateDir maxHistory = do
   cache <- newMVar Map.empty
   pure
     ConversationStore
-      { csStateDir = convDir
-      , csMaxHistory = maxHistory
-      , csCache = cache
+      { csStateDir = convDir,
+        csMaxHistory = maxHistory,
+        csCache = cache
       }
 
 -- | Get the file path for a conversation
@@ -88,9 +88,9 @@ createEmptyConversation chatId = do
   now <- getCurrentTime
   pure
     Conversation
-      { convChatId = chatId
-      , convMessages = []
-      , convLastUpdated = now
+      { convChatId = chatId,
+        convMessages = [],
+        convLastUpdated = now
       }
 
 -- | Append a message to a conversation
@@ -105,8 +105,8 @@ appendMessage store chatId msg = do
       trimmed = takeEnd (csMaxHistory store) messages
       conv' =
         conv
-          { convMessages = trimmed
-          , convLastUpdated = now
+          { convMessages = trimmed,
+            convLastUpdated = now
           }
 
   -- Update cache and persist
@@ -137,9 +137,9 @@ updateConversation store chatId messages = do
   let trimmed = takeEnd (csMaxHistory store) messages
       conv =
         Conversation
-          { convChatId = chatId
-          , convMessages = trimmed
-          , convLastUpdated = now
+          { convChatId = chatId,
+            convMessages = trimmed,
+            convLastUpdated = now
           }
 
   -- Update cache and persist
