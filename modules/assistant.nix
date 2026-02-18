@@ -570,7 +570,8 @@ in
             ];
             RestrictNamespaces = true;
             LockPersonality = true;
-            MemoryDenyWriteExecute = true;
+            # Note: MemoryDenyWriteExecute breaks Node.js JIT (used by MCP servers)
+            MemoryDenyWriteExecute = false;
             RestrictRealtime = true;
             RestrictSUIDSGID = true;
             ReadWritePaths = [ agentCfg.stateDir ];
