@@ -5,22 +5,30 @@ module Elwood.Claude.Handler
 where
 
 import Control.Exception (SomeException, catch)
+import Data.Aeson (Value (..))
 import Data.ByteString.Base64.Lazy qualified as B64
 import Data.ByteString.Lazy qualified as LBS
 import Data.Int (Int64)
 import Data.List (sortOn)
-import Data.Maybe (fromMaybe, listToMaybe, maybeToList)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
-import Elwood.Claude.AgentLoop (AgentResult (..), runAgentTurn)
+import Data.Time (getCurrentTime)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Compaction (CompactionConfig)
-import Elwood.Claude.Conversation
-import Elwood.Claude.Types
-import Elwood.Logging (Logger, logError, logInfo, logWarn)
+import Elwood.Claude.Conversation (ConversationStore, clearConversation)
+import Elwood.Event
+  ( DeliveryTarget (..),
+    Event (..),
+    EventEnv (..),
+    EventSource (..),
+    SessionConfig (..),
+    handleEvent,
+  )
+import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.Telegram.Client (TelegramClient, downloadFile, getFile)
 import Elwood.Telegram.Types (Chat (..), Message (..), PhotoSize (..), TelegramFile (..))
 import Elwood.Tools.Registry (ToolRegistry)
@@ -56,9 +64,11 @@ claudeHandler ::
   Maybe Text ->
   -- | Model name
   Text ->
+  -- | Allowed chat IDs (for event env)
+  [Int64] ->
   Message ->
   IO (Maybe Text)
-claudeHandler logger client telegram store registry toolEnv compactionConfig systemPrompt model msg =
+claudeHandler logger client telegram store registry toolEnv compactionConfig systemPrompt model allowedChatIds msg =
   case (text msg, photo msg) of
     -- Handle /clear command
     (Just txt, _) | T.strip txt == "/clear" -> handleClear
@@ -90,53 +100,58 @@ claudeHandler logger client telegram store registry toolEnv compactionConfig sys
           ("has_photo", T.pack (show (maybe False (not . null) maybePhotos)))
         ]
 
-      -- Build content blocks: image first (if present), then text
-      imageBlock <- case maybePhotos of
-        Just photos@(_ : _) -> fetchImageBlock photos
+      -- Fetch image if present
+      imageData <- case maybePhotos of
+        Just photos@(_ : _) -> fetchImageData photos
         _ -> pure Nothing
 
-      let textBlocks = [TextBlock userText | not (T.null userText)]
-          contentBlocks = maybeToList imageBlock ++ textBlocks
-
       -- If no content, skip
-      if null contentBlocks
+      if T.null userText && isNothing imageData
         then pure Nothing
         else do
-          -- Get existing conversation
-          conv <- getConversation store chatIdVal
+          -- Create event environment
+          let eventEnv =
+                EventEnv
+                  { eeLogger = logger,
+                    eeTelegram = telegram,
+                    eeClaude = client,
+                    eeConversations = store,
+                    eeRegistry = registry,
+                    eeToolEnv = toolEnv,
+                    eeCompaction = compactionConfig,
+                    eeSystemPrompt = systemPrompt,
+                    eeModel = model,
+                    eeNotifyChatIds = allowedChatIds
+                  }
 
-          -- Create user message with content blocks
-          let userMsg = ClaudeMessage User contentBlocks
+          -- Create Telegram event
+          now <- getCurrentTime
+          let event =
+                Event
+                  { evSource = TelegramSource chatIdVal,
+                    evTimestamp = now,
+                    evPayload = Null,
+                    evPrompt = userText,
+                    evImage = imageData,
+                    evSession = Named (T.pack (show chatIdVal)),
+                    -- Don't use TelegramReply since polling handles reply
+                    evDelivery = [LogOnly]
+                  }
 
-          -- Run the agent turn (handles tool use loop internally)
-          result <-
-            runAgentTurn
-              logger
-              client
-              registry
-              toolEnv
-              compactionConfig
-              systemPrompt
-              model
-              (convMessages conv)
-              userMsg
+          -- Handle the event
+          result <- handleEvent eventEnv event
 
           case result of
-            AgentSuccess responseText allMessages -> do
-              -- Update conversation with all messages (including tool interactions)
-              updateConversation store chatIdVal allMessages
-
+            Right responseText -> do
               logInfo
                 logger
                 "Agent turn completed"
                 [ ("chat_id", T.pack (show chatIdVal)),
-                  ("response_length", T.pack (show (T.length responseText))),
-                  ("message_count", T.pack (show (length allMessages)))
+                  ("response_length", T.pack (show (T.length responseText)))
                 ]
-
               pure (Just responseText)
-            AgentError errorMsg -> do
-              logError
+            Left errorMsg -> do
+              logInfo
                 logger
                 "Agent turn failed"
                 [ ("chat_id", T.pack (show chatIdVal)),
@@ -144,9 +159,9 @@ claudeHandler logger client telegram store registry toolEnv compactionConfig sys
                 ]
               pure (Just errorMsg)
 
-    -- Fetch the largest photo and convert to ImageBlock
-    fetchImageBlock :: [PhotoSize] -> IO (Maybe ContentBlock)
-    fetchImageBlock photos = do
+    -- Fetch the largest photo and return (mediaType, base64Data)
+    fetchImageData :: [PhotoSize] -> IO (Maybe (Text, Text))
+    fetchImageData photos = do
       -- Get the largest photo (sort by file size descending, take first)
       let largestPhoto = listToMaybe $ sortOn (Down . psFileSize) photos
       case largestPhoto of
@@ -172,25 +187,25 @@ claudeHandler logger client telegram store registry toolEnv compactionConfig sys
                 pure Nothing
               Just filePath -> do
                 -- Download the file
-                imageData <-
+                rawImageData <-
                   downloadFile telegram filePath
                     `catch` \(e :: SomeException) -> do
                       logWarn logger "Failed to download file" [("error", T.pack (show e))]
                       pure LBS.empty
 
-                if LBS.null imageData
+                if LBS.null rawImageData
                   then pure Nothing
                   else do
                     -- Determine media type from file extension
                     let mediaType = guessMediaType filePath
-                        base64Data = TE.decodeUtf8 $ LBS.toStrict $ B64.encode imageData
+                        base64Data = TE.decodeUtf8 $ LBS.toStrict $ B64.encode rawImageData
                     logInfo
                       logger
                       "Photo downloaded and encoded"
                       [ ("media_type", mediaType),
-                        ("size_bytes", T.pack (show (LBS.length imageData)))
+                        ("size_bytes", T.pack (show (LBS.length rawImageData)))
                       ]
-                    pure $ Just $ ImageBlock mediaType base64Data
+                    pure $ Just (mediaType, base64Data)
 
     -- Guess media type from file path
     guessMediaType :: Text -> Text

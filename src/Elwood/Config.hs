@@ -8,6 +8,10 @@ module Elwood.Config
     MCPServerConfig (..),
     PermissionConfigFile (..),
     loadConfig,
+
+    -- * Re-exports for webhook config
+    WebhookServerConfig (..),
+    WebhookConfig (..),
   )
 where
 
@@ -15,11 +19,18 @@ import Data.Aeson
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Yaml qualified as Yaml
+import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), ToolPolicy (..), defaultPermissionConfig)
+import Elwood.Webhook.Types
+  ( WebhookConfig (..),
+    WebhookConfigFile (..),
+    WebhookServerConfig (..),
+    WebhookServerConfigFile (..),
+  )
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
 
@@ -50,7 +61,9 @@ data Config = Config
     -- | Scheduled cron jobs
     cfgCronJobs :: [CronJob],
     -- | MCP server configurations
-    cfgMCPServers :: [MCPServerConfig]
+    cfgMCPServers :: [MCPServerConfig],
+    -- | Webhook server configuration
+    cfgWebhook :: WebhookServerConfig
   }
   deriving stock (Show, Generic)
 
@@ -115,7 +128,8 @@ data ConfigFile = ConfigFile
     cfPermissions :: Maybe PermissionConfigFile,
     cfCompaction :: Maybe CompactionConfigFile,
     cfCronJobs :: Maybe [CronJobFile],
-    cfMCPServers :: Maybe (Map Text MCPServerConfigFile)
+    cfMCPServers :: Maybe (Map Text MCPServerConfigFile),
+    cfWebhook :: Maybe WebhookServerConfigFile
   }
   deriving stock (Show, Generic)
 
@@ -175,6 +189,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "compaction"
       <*> v .:? "cronJobs"
       <*> v .:? "mcpServers"
+      <*> v .:? "webhook"
 
 instance FromJSON HeartbeatConfigFile where
   parseJSON = withObject "HeartbeatConfigFile" $ \v ->
@@ -322,6 +337,48 @@ loadConfig path = do
           | (name, mcf) <- Map.toList serverMap
           ]
 
+  -- Helper to parse session config from string
+  let parseSessionConfig :: Text -> SessionConfig
+      parseSessionConfig t
+        | T.toLower t == "isolated" = Isolated
+        | "named:" `T.isPrefixOf` T.toLower t = Named (T.drop 6 t)
+        | otherwise = Named t -- Default to named with the given string
+
+  -- Helper to parse delivery targets from strings
+  let parseDeliveryTarget :: Text -> Maybe DeliveryTarget
+      parseDeliveryTarget t = case T.toLower t of
+        "telegram" -> Just TelegramBroadcast
+        "telegram_broadcast" -> Just TelegramBroadcast
+        "log" -> Just LogOnly
+        "logonly" -> Just LogOnly
+        _ -> Nothing -- Skip unknown targets
+  let webhook = case cfWebhook configFile of
+        Nothing -> defaultWebhookServerConfig
+        Just wscf ->
+          WebhookServerConfig
+            { wscEnabled = fromMaybe False (wscfEnabled wscf),
+              wscPort = fromMaybe 8080 (wscfPort wscf),
+              wscGlobalSecret = wscfGlobalSecret wscf,
+              wscWebhooks = case wscfEndpoints wscf of
+                Nothing -> []
+                Just endpoints ->
+                  [ WebhookConfig
+                      { wcName = wcfName ep,
+                        wcSecret = wcfSecret ep,
+                        wcPromptTemplate = wcfPromptTemplate ep,
+                        wcSession = maybe Isolated parseSessionConfig (wcfSession ep),
+                        wcDelivery = case wcfDeliver ep of
+                          Nothing -> [TelegramBroadcast]
+                          Just targets ->
+                            let parsed = mapMaybe parseDeliveryTarget targets
+                             in if null parsed
+                                  then [TelegramBroadcast]
+                                  else parsed
+                      }
+                  | ep <- endpoints
+                  ]
+            }
+
   pure
     Config
       { cfgStateDir = fromMaybe "/var/lib/assistant" (cfStateDir configFile),
@@ -336,5 +393,16 @@ loadConfig path = do
         cfgPermissions = permissions,
         cfgCompaction = compaction,
         cfgCronJobs = cronJobs,
-        cfgMCPServers = mcpServers
+        cfgMCPServers = mcpServers,
+        cfgWebhook = webhook
       }
+
+-- | Default webhook server configuration (disabled)
+defaultWebhookServerConfig :: WebhookServerConfig
+defaultWebhookServerConfig =
+  WebhookServerConfig
+    { wscEnabled = False,
+      wscPort = 8080,
+      wscGlobalSecret = Nothing,
+      wscWebhooks = []
+    }

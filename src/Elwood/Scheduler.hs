@@ -13,6 +13,7 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, catch)
 import Control.Monad (when)
+import Data.Aeson (Value (..))
 import Data.Bits (shiftL, xor)
 import Data.Int (Int64)
 import Data.Map.Strict qualified as Map
@@ -27,12 +28,18 @@ import Data.Time
     todHour,
     utcToLocalTime,
   )
-import Elwood.Claude.AgentLoop (AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Compaction (CompactionConfig)
-import Elwood.Claude.Conversation (ConversationStore, getConversation, updateConversation)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Conversation (..), Role (..))
+import Elwood.Claude.Conversation (ConversationStore)
 import Elwood.Config (CronJob (..), HeartbeatConfig (..))
+import Elwood.Event
+  ( DeliveryTarget (..),
+    Event (..),
+    EventEnv (..),
+    EventSource (..),
+    SessionConfig (..),
+    handleEvent,
+  )
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Telegram.Client (TelegramClient, notify)
 import Elwood.Tools.Registry (ToolRegistry)
@@ -56,10 +63,6 @@ data SchedulerEnv = SchedulerEnv
     seNotifyChatIds :: [Int64],
     seCronJobs :: [CronJob]
   }
-
--- | Heartbeat session uses chat ID -1
-heartbeatChatId :: Int64
-heartbeatChatId = -1
 
 -- | Run the scheduler loop
 runScheduler :: SchedulerEnv -> IO ()
@@ -137,38 +140,35 @@ runHeartbeat env = do
               <> heartbeatPromptText
               <> "\nIf nothing needs attention, reply HEARTBEAT_OK."
 
-      let userMsg = ClaudeMessage User [TextBlock prompt]
+      -- Create event environment
+      let eventEnv = schedulerToEventEnv env
 
-      -- Get existing heartbeat conversation
-      conv <- getConversation (seConversations env) heartbeatChatId
+      -- Create heartbeat event
+      now <- getCurrentTime
+      let event =
+            Event
+              { evSource = HeartbeatSource,
+                evTimestamp = now,
+                evPayload = Null,
+                evPrompt = prompt,
+                evImage = Nothing,
+                evSession = Named "heartbeat",
+                -- Heartbeat only notifies if NOT OK, so use LogOnly for normal case
+                -- We'll check the response and notify manually
+                evDelivery = [LogOnly]
+              }
 
-      result <-
-        runAgentTurn
-          logger
-          (seClaude env)
-          (seRegistry env)
-          (seToolEnv env)
-          (seCompaction env)
-          (seSystemPrompt env)
-          (seModel env)
-          (convMessages conv)
-          userMsg
-          `catch` \(e :: SomeException) -> do
-            logError logger "Heartbeat agent error" [("error", T.pack (show e))]
-            pure $ AgentError $ "Agent error: " <> T.pack (show e)
+      result <- handleEvent eventEnv event
 
       case result of
-        AgentSuccess responseText allMessages -> do
-          -- Update heartbeat conversation
-          updateConversation (seConversations env) heartbeatChatId allMessages
-
+        Right responseText -> do
           -- Check if we need to notify
           if "HEARTBEAT_OK" `T.isInfixOf` responseText
             then logInfo logger "Heartbeat OK, no notification needed" []
             else do
               logInfo logger "Heartbeat needs attention, notifying" []
               mapM_ (\chatId -> notifySafe env chatId responseText) (seNotifyChatIds env)
-        AgentError err -> do
+        Left err -> do
           logError logger "Heartbeat failed" [("error", err)]
 
 -- | Check and run due cron jobs
@@ -201,42 +201,36 @@ runCronJob env job = do
 
   logInfo logger "Running cron job" [("job", jobName)]
 
-  -- Determine session ID - use hash for isolated jobs
-  let sessionId =
+  -- Create event environment
+  let eventEnv = schedulerToEventEnv env
+
+  -- Create cron job event
+  now <- getCurrentTime
+  let sessionConfig =
         if cjIsolated job
-          then negate (fromIntegral (abs (hashJobName jobName)) + 2) -- Unique negative ID per job
-          else heartbeatChatId
+          then Isolated
+          else Named ("cron:" <> jobName)
+      event =
+        Event
+          { evSource = CronSource jobName,
+            evTimestamp = now,
+            evPayload = Null,
+            evPrompt = cjPrompt job,
+            evImage = Nothing,
+            evSession = sessionConfig,
+            -- We handle delivery manually with job name prefix
+            evDelivery = [LogOnly]
+          }
 
-  let userMsg = ClaudeMessage User [TextBlock (cjPrompt job)]
-
-  -- Get existing conversation for this session
-  conv <- getConversation (seConversations env) sessionId
-
-  result <-
-    runAgentTurn
-      logger
-      (seClaude env)
-      (seRegistry env)
-      (seToolEnv env)
-      (seCompaction env)
-      (seSystemPrompt env)
-      (seModel env)
-      (convMessages conv)
-      userMsg
-      `catch` \(e :: SomeException) -> do
-        logError logger "Cron job agent error" [("job", jobName), ("error", T.pack (show e))]
-        pure $ AgentError $ "Agent error: " <> T.pack (show e)
+  result <- handleEvent eventEnv event
 
   case result of
-    AgentSuccess responseText allMessages -> do
-      -- Update conversation
-      updateConversation (seConversations env) sessionId allMessages
-
+    Right responseText -> do
       -- Notify with job name prefix
       let notification = "[" <> jobName <> "] " <> responseText
       logInfo logger "Cron job completed" [("job", jobName)]
       mapM_ (\chatId -> notifySafe env chatId notification) (seNotifyChatIds env)
-    AgentError err -> do
+    Left err -> do
       logError logger "Cron job failed" [("job", jobName), ("error", err)]
 
 -- | DJB2 hash function for Text (better distribution than XOR)
@@ -246,6 +240,22 @@ hashJobName = T.foldl' step 5381
   where
     step :: Int -> Char -> Int
     step h c = ((h `shiftL` 5) + h) `xor` fromEnum c
+
+-- | Convert SchedulerEnv to EventEnv
+schedulerToEventEnv :: SchedulerEnv -> EventEnv
+schedulerToEventEnv env =
+  EventEnv
+    { eeLogger = seLogger env,
+      eeTelegram = seTelegram env,
+      eeClaude = seClaude env,
+      eeConversations = seConversations env,
+      eeRegistry = seRegistry env,
+      eeToolEnv = seToolEnv env,
+      eeCompaction = seCompaction env,
+      eeSystemPrompt = seSystemPrompt env,
+      eeModel = seModel env,
+      eeNotifyChatIds = seNotifyChatIds env
+    }
 
 -- | Safely send notification, catching any errors
 notifySafe :: SchedulerEnv -> Int64 -> Text -> IO ()

@@ -4,8 +4,9 @@ module Elwood.App
   )
 where
 
-import Control.Concurrent.Async (concurrently_)
+import Control.Concurrent.Async (async, concurrently_, wait)
 import Control.Exception (SomeException, catch, finally)
+import Data.Foldable (for_)
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -24,6 +25,7 @@ import Elwood.Claude.Client (ClaudeClient, newClaudeClient)
 import Elwood.Claude.Conversation
 import Elwood.Claude.Handler
 import Elwood.Config
+import Elwood.Event (EventEnv (..))
 import Elwood.Logging
 import Elwood.MCP.Client (stopMCPServer)
 import Elwood.MCP.Registry (startMCPServers)
@@ -51,6 +53,7 @@ import Elwood.Tools.Memory (saveMemoryTool, searchMemoryTool)
 import Elwood.Tools.Registry
 import Elwood.Tools.Types (ApprovalOutcome (..), ToolEnv (..))
 import Elwood.Tools.Web (webFetchTool, webSearchTool)
+import Elwood.Webhook.Server (runWebhookServer)
 import Network.HTTP.Client (newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -226,17 +229,57 @@ runApp config = do
   -- Create callback handler for approval responses
   let callbackHandler = handleApprovalCallback logger telegram approvalCoordinator
 
-  -- Run polling and scheduler concurrently, with MCP cleanup on exit
+  -- Create webhook event environment
+  let webhookEventEnv =
+        EventEnv
+          { eeLogger = logger,
+            eeTelegram = telegram,
+            eeClaude = claude,
+            eeConversations = conversations,
+            eeRegistry = registry,
+            eeToolEnv = baseToolEnv,
+            eeCompaction = compactionConfig,
+            eeSystemPrompt = systemPrompt,
+            eeModel = cfgModel config,
+            eeNotifyChatIds = cfgAllowedChatIds config
+          }
+
+  -- Log webhook configuration
+  let webhookConfig = cfgWebhook config
+  if wscEnabled webhookConfig
+    then
+      logInfo
+        logger
+        "Webhook server enabled"
+        [ ("port", T.pack (show (wscPort webhookConfig))),
+          ("endpoints", T.pack (show (length (wscWebhooks webhookConfig))))
+        ]
+    else logInfo logger "Webhook server disabled" []
+
+  -- Run polling, scheduler, and optionally webhook server concurrently, with MCP cleanup on exit
   finally
-    ( concurrently_
-        ( runPolling
-            logger
-            telegram
-            (cfgAllowedChatIds config)
-            (claudeHandlerWithApproval logger claude telegram conversations registry mkToolEnvWithApproval compactionConfig systemPrompt (cfgModel config))
-            callbackHandler
-        )
-        (runScheduler schedulerEnv)
+    ( do
+        -- Start webhook server in background if enabled
+        webhookThread <-
+          if wscEnabled webhookConfig
+            then do
+              logInfo logger "Starting webhook server" [("port", T.pack (show (wscPort webhookConfig)))]
+              Just <$> async (runWebhookServer webhookConfig webhookEventEnv)
+            else pure Nothing
+
+        -- Run polling and scheduler concurrently
+        concurrently_
+          ( runPolling
+              logger
+              telegram
+              (cfgAllowedChatIds config)
+              (claudeHandlerWithApproval logger claude telegram conversations registry mkToolEnvWithApproval compactionConfig systemPrompt (cfgModel config) (cfgAllowedChatIds config))
+              callbackHandler
+          )
+          (runScheduler schedulerEnv)
+
+        -- Wait for webhook thread (this won't happen in normal operation)
+        for_ webhookThread wait
     )
     ( do
         logInfo logger "Shutting down MCP servers" []
@@ -269,12 +312,13 @@ claudeHandlerWithApproval ::
   CompactionConfig ->
   Maybe Text ->
   Text ->
+  [Int64] ->
   Message ->
   IO (Maybe Text)
-claudeHandlerWithApproval logger client telegram store registry mkToolEnv compactionConfig systemPrompt model msg = do
+claudeHandlerWithApproval logger client telegram store registry mkToolEnv compactionConfig systemPrompt model allowedChatIds msg = do
   let cid = chatId (chat msg)
       toolEnvForChat = mkToolEnv cid
-  claudeHandler logger client telegram store registry toolEnvForChat compactionConfig systemPrompt model msg
+  claudeHandler logger client telegram store registry toolEnvForChat compactionConfig systemPrompt model allowedChatIds msg
 
 -- | Request tool approval via Telegram inline keyboard
 requestToolApproval ::

@@ -4,10 +4,12 @@ import Test.Elwood.Claude.Client qualified
 import Test.Elwood.Claude.Compaction qualified
 import Test.Elwood.Claude.Types qualified
 import Test.Elwood.Config qualified
+import Test.Elwood.Event qualified
 import Test.Elwood.MCP qualified
 import Test.Elwood.Memory qualified
 import Test.Elwood.Permissions qualified
 import Test.Elwood.Scheduler qualified
+import Test.Elwood.Webhook qualified
 import Test.Tasty
 
 main :: IO ()
@@ -24,5 +26,7 @@ tests =
       Test.Elwood.Claude.Types.tests,
       Test.Elwood.Claude.Compaction.tests,
       Test.Elwood.Claude.Client.tests,
-      Test.Elwood.MCP.tests
+      Test.Elwood.MCP.tests,
+      Test.Elwood.Event.tests,
+      Test.Elwood.Webhook.tests
     ]
