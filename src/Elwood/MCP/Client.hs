@@ -102,6 +102,15 @@ spawnMCPServer logger config = do
           initResult <- initializeMCPServer logger server
           case initResult of
             Left err -> do
+              -- Capture stderr to help diagnose initialization failures
+              stderrContent <- hGetContents stderr `catch` \(_ :: SomeException) -> pure ""
+              logError
+                logger
+                "MCP server initialization failed"
+                [ ("name", mscName config),
+                  ("error", T.pack (show err)),
+                  ("stderr", T.pack (take 1000 stderrContent))
+                ]
               terminateProcess procHandle
               pure $ Left err
             Right () -> do
