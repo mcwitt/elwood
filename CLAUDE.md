@@ -21,10 +21,14 @@ Before completing a task:
 
 ## Config Maintenance
 
-When adding or changing a config field in `Config.hs`, update **both** of:
+When adding or changing a config field in `Config.hs`, update all of:
 
-1. **`config.yaml.example`** — must exhaustively document every config option with comments showing defaults and valid values. Every field in `ConfigFile` and its nested types (`CompactionConfigFile`, `PermissionConfigFile`, `MCPServerConfigFile`, `WebhookServerConfigFile`, `WebhookConfigFile`) should have a corresponding commented-out entry.
+1. **`config.yaml.example`** — must exhaustively document every config option with comments showing defaults and valid values. Every field in `ConfigFile` and its nested types (`CompactionConfigFile`, `PermissionConfigFile`, `MCPServerConfigFile`, `WebhookServerConfigFile`, `WebhookConfigFile`) should have a corresponding entry.
 2. **`modules/assistant.nix`** — the NixOS module must expose a matching option in the `agentModule` and include it in `configContent` generation so it lands in the generated YAML.
+3. **`README.md`** — the config example and NixOS deployment example should reflect the current options. The architecture diagram, feature list, and workspace files section should stay accurate. In particular:
+   - The architecture diagram should reflect how components actually interact (e.g. cron scheduling is done by systemd timers that POST to webhook endpoints, not by an internal scheduler).
+   - The config example paths should match `config.yaml.example` defaults (e.g. `/var/lib/assistant`).
+   - The NixOS deployment example should demonstrate current module options.
 
 ## Architecture
 

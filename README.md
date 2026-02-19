@@ -15,33 +15,39 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Tool execution** — Run commands, read/write files, search the web
 - **MCP support** — Extend capabilities with Model Context Protocol servers
 - **Persistent memory** — Cross-session knowledge store
-- **Proactive scheduling** — Heartbeat checks and cron jobs
+- **Scheduled tasks** — Cron jobs via systemd timers that call webhooks
 - **Tool approval flow** — Approve sensitive operations via inline keyboard
 - **Image support** — Send photos and Claude can see them
+- **Extended thinking** — Configurable reasoning budget for complex tasks
 - **Context compaction** — Automatic summarization for long conversations
 - **NixOS module** — Multi-agent support with systemd hardening
 
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│                     System Service                        │
-│                   (systemd, NixOS)                        │
-│                                                           │
-│  ┌──────────┐                                             │
-│  │ Telegram │───┐                                         │
-│  └──────────┘   │                                         │
-│  ┌──────────┐   │  ┌────────────┐   ┌──────────────────┐  │
-│  │ Webhooks │───┼─▶│   Event    │──▶│  Tool Dispatch   │  │
-│  │ (HTTP)   │   │  │  Handler   │◀──│  (built-in +     │  │
-│  └──────────┘   │  │            │   │   MCP servers)   │  │
-│  ┌──────────┐   │  │  ┌───────┐ │   └──────────────────┘  │
-│  │Scheduler │───┘  │  │Session│ │   ┌──────────────────┐  │
-│  │(heartbeat│      │  │Store  │ │   │     Memory       │  │
-│  │ + cron)  │      │  │(JSON) │ │   │  (file-based)    │  │
-│  └──────────┘      │  └───────┘ │   └──────────────────┘  │
-│                    └────────────┘                         │
-└───────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                      System Service                          │
+│                    (systemd, NixOS)                          │
+│                                                              │
+│  ┌──────────┐                                                │
+│  │ Telegram │───┐                                            │
+│  │(polling) │   │                                            │
+│  └──────────┘   │  ┌────────────┐   ┌───────────────────┐    │
+│  ┌──────────┐   ├─>│   Event    │──>│  Tool Dispatch    │    │
+│  │ Webhooks │───┘  │  Handler   │<──│  (built-in +      │    │
+│  │ (HTTP)   │      │            │   │   MCP servers)    │    │
+│  └──────────┘      │  ┌───────┐ │   └───────────────────┘    │
+│       ^            │  │Session│ │   ┌───────────────────┐    │
+│       │            │  │Store  │ │   │     Memory        │    │
+│       │            │  │(JSON) │ │   │  (file-based)     │    │
+│       │            │  └───────┘ │   └───────────────────┘    │
+│       │            └────────────┘                            │
+│       │                                                      │
+│  ┌────┴─────────────────────────────┐                        │
+│  │  systemd timers (cron jobs)      │                        │
+│  │  POST to webhook endpoints       │                        │
+│  └──────────────────────────────────┘                        │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## Building
@@ -64,54 +70,39 @@ cabal run elwood
 
 ## Configuration
 
-Create a `config.yaml` file:
+Create a `config.yaml` file (see [`config.yaml.example`](config.yaml.example) for all options):
 
 ```yaml
-# Directory for persistent state (conversations, memory)
-stateDir: /var/lib/elwood
+stateDir: /var/lib/assistant
+workspaceDir: /var/lib/assistant/workspace
 
-# Directory containing SOUL.md, HEARTBEAT.md, etc.
-workspaceDir: /var/lib/elwood/workspace
-
-# Telegram chat IDs allowed to interact with the bot
-# Find yours by messaging @userinfobot on Telegram
 allowedChatIds:
   - 123456789
 
-# Claude model to use
 model: claude-sonnet-4-20250514
+maxHistory: 50
+thinking: off  # off | low | medium | high
 
-# Heartbeat/proactive check settings
-heartbeat:
-  intervalMinutes: 30
-  activeHoursStart: 8
-  activeHoursEnd: 22
+compaction:
+  tokenThreshold: 80000
+  compactionModel: claude-3-5-haiku-20241022
 
-# Permission settings for tools
 permissions:
-  # Commands that are always allowed (prefix match)
+  defaultPolicy: allow  # allow | ask | deny
+  approvalTimeoutSeconds: 120
+  toolPolicies:
+    run_command: ask
+    write_file: ask
   safeCommands:
     - ls
     - cat
     - git status
-    - git log
-  # Regex patterns that are always blocked
   dangerousPatterns:
-    - "\\brm\\b"
-    - "\\bsudo\\b"
-  # Paths allowed for file operations
+    - "rm -rf"
+    - "sudo"
   allowedPaths:
-    - workspace
-    - "."
-  # Per-tool approval policies: allow, ask, or deny
-  toolPolicies:
-    run_command: ask
-    read_file: allow
-    write_file: allow
-  defaultPolicy: allow
-  approvalTimeoutSeconds: 300
+    - /var/lib/assistant/workspace
 
-# Webhook server (optional)
 webhook:
   enabled: true
   port: 8080
@@ -122,12 +113,12 @@ webhook:
         Motion detected at front door at {{.timestamp}}.
         Please describe what you see.
       session: isolated
-      deliver: [telegram]
+      deliver:
+        - telegram
 
-# MCP Server configurations (optional)
 mcpServers:
   filesystem:
-    command: "npx"
+    command: npx
     args:
       - "-y"
       - "@modelcontextprotocol/server-filesystem"
@@ -148,7 +139,8 @@ export WEBHOOK_SECRET="your-webhook-secret"   # optional, overrides config file
 Place these files in your `workspaceDir`:
 
 - **SOUL.md** — Personality, tone, behavioral guidelines (system prompt)
-- **HEARTBEAT.md** — Checklist for proactive monitoring
+
+Webhook endpoints and cron jobs can reference additional workspace files via `promptFile` (e.g. a checklist for periodic monitoring tasks).
 
 ## NixOS Deployment
 
@@ -163,37 +155,34 @@ Add the flake to your NixOS configuration:
       modules = [
         elwood.nixosModules.default
         {
-          # Multiple agents can be configured
           services.assistant.agents.elwood = {
             enable = true;
             allowedChatIds = [ 123456789 ];
             environmentFile = "/run/secrets/elwood-env";
             workspaceDir = "/var/lib/assistant/elwood/workspace";
 
-            heartbeat = {
-              enable = true;
-              intervalMinutes = 30;
-              activeHoursStart = 8;
-              activeHoursEnd = 22;
-            };
-
-            # Webhook server for external integrations
             webhook = {
               enable = true;
               port = 8080;
               globalSecret = "your-secret";
-              endpoints."daily-report" = {
-                promptTemplate = "Generate daily report for {{.date}}";
+              endpoints."doorbell" = {
+                promptTemplate = "Motion detected at {{.timestamp}}";
                 session = "isolated";
                 deliver = [ "telegram" ];
               };
             };
 
-            # Cron jobs via systemd timers
+            # Cron jobs are systemd timers that POST to auto-generated webhook endpoints
+            cronJobs.heartbeat = {
+              promptFile = "HEARTBEAT.md";
+              schedule = "*-*-* *:00/30";  # every 30 minutes
+              isolated = true;
+              suppressIfContains = "HEARTBEAT_OK";
+            };
+
             cronJobs.daily-summary = {
               prompt = "Generate my daily summary";
-              useSystemdTimer = true;
-              schedule = "08:00";
+              schedule = "*-*-* 08:00";
               isolated = true;
             };
 
@@ -218,7 +207,7 @@ Add the flake to your NixOS configuration:
 }
 ```
 
-Each agent runs as a separate systemd service (`assistant-<name>.service`) with hardening (restricted capabilities, protected system paths, etc.). Cron jobs with `useSystemdTimer = true` create systemd timers that trigger webhooks.
+Each agent runs as a separate systemd service (`assistant-<name>.service`) with hardening (restricted capabilities, protected system paths, etc.). Cron jobs create systemd timers that trigger auto-generated webhook endpoints.
 
 ## Built-in Tools
 
