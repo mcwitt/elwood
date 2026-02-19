@@ -8,6 +8,7 @@ module Elwood.Webhook.Types
     -- * Configuration File Types (for YAML parsing)
     WebhookServerConfigFile (..),
     WebhookConfigFile (..),
+    DeliveryTargetFile (..),
   )
 where
 
@@ -76,10 +77,24 @@ data WebhookConfigFile = WebhookConfigFile
     wcfPromptTemplate :: Maybe Text,
     wcfPromptFile :: Maybe FilePath,
     wcfSession :: Maybe Text,
-    wcfDeliver :: Maybe [Text],
+    wcfDeliver :: Maybe [DeliveryTargetFile],
     wcfSuppressIfContains :: Maybe Text
   }
   deriving stock (Show, Generic)
+
+-- | YAML file configuration for a delivery target
+data DeliveryTargetFile = DeliveryTargetFile
+  { dtfType :: Text,
+    dtfSession :: Maybe Text
+  }
+  deriving stock (Show, Generic)
+
+instance FromJSON DeliveryTargetFile where
+  parseJSON = withObject "DeliveryTargetFile" $ \v -> do
+    rejectUnknownKeys "DeliveryTargetFile" ["type", "session"] v
+    DeliveryTargetFile
+      <$> v .: "type"
+      <*> v .:? "session"
 
 instance FromJSON WebhookServerConfigFile where
   parseJSON = withObject "WebhookServerConfigFile" $ \v -> do

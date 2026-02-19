@@ -113,7 +113,7 @@ webhook:
         Motion detected at front door at {{.timestamp}}.
         Please describe what you see.
       deliver:
-        - telegram
+        - type: telegram
 
 mcpServers:
   filesystem:
@@ -166,7 +166,7 @@ Add the flake to your NixOS configuration:
               globalSecret = "your-secret";
               endpoints."doorbell" = {
                 promptTemplate = "Motion detected at {{.timestamp}}";
-                deliver = [ "telegram" ];
+                deliver = [ { type = "telegram"; } ];
               };
             };
 
@@ -175,12 +175,14 @@ Add the flake to your NixOS configuration:
               promptFile = "HEARTBEAT.md";
               schedule = "*-*-* *:00/30";  # every 30 minutes
               session = "123456789";       # share conversation with Telegram chat
+              deliver = [ { type = "telegram"; session = "123456789"; } ];
               suppressIfContains = "HEARTBEAT_OK";
             };
 
             cronJobs.daily-summary = {
               prompt = "Generate my daily summary";
               schedule = "*-*-* 08:00";
+              deliver = [ { type = "telegram"; } ];  # broadcast (default)
               # session = null (default); each run is isolated
             };
 

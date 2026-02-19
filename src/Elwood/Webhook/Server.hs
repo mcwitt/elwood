@@ -11,10 +11,12 @@ module Elwood.Webhook.Server
 where
 
 import Control.Exception (SomeException, catch)
+import Control.Monad (unless)
 import Data.Aeson (Value (..), eitherDecode, encode)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as LBS
+import Data.IORef (readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
@@ -23,7 +25,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
-import Elwood.Event (Event (..), EventEnv (..), EventSource (..), handleEvent)
+import Elwood.Event (Event (..), EventEnv (..), EventSource (..), handleEvent, sendAttachmentSafe)
 import Elwood.Event.Types (DeliveryTarget (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Telegram.Client qualified
@@ -50,6 +52,7 @@ import Network.Wai
   )
 import Network.Wai.Handler.Warp (run)
 import System.FilePath ((</>))
+import Text.Read (readMaybe)
 
 -- | Header name for webhook secret
 webhookSecretHeader :: HeaderName
@@ -177,21 +180,35 @@ handleWebhookRequest logger webhookConfig env request respond = do
               logError logger "Webhook processing failed" [("name", wcName webhookConfig), ("error", err)]
               respond $ jsonResponse status500 $ errorJson err
 
--- | Deliver response to the specified targets
+-- | Deliver response to the specified targets, then send queued attachments
 deliverToTargets :: EventEnv -> [DeliveryTarget] -> Text -> IO ()
-deliverToTargets env targets msg = mapM_ deliver targets
+deliverToTargets env targets msg = do
+  mapM_ deliver targets
+  -- Drain attachment queue and send to all resolved Telegram chat IDs
+  let chatIds = concatMap targetChatIds targets
+  unless (null chatIds) $ do
+    attachments <- readIORef (eeAttachmentQueue env)
+    mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) attachments
+    writeIORef (eeAttachmentQueue env) []
   where
     deliver :: DeliveryTarget -> IO ()
     deliver target = case target of
-      TelegramDelivery chatId ->
-        notifyChat env chatId msg
+      TelegramDelivery session ->
+        case readMaybe (T.unpack session) :: Maybe Int64 of
+          Just chatId -> notifyChat env chatId msg
+          Nothing -> logError (eeLogger env) "Invalid chat ID in TelegramDelivery" [("session", session)]
       TelegramBroadcast ->
-        mapM_ (\cid -> notifyChat env cid msg) (eeNotifyChatIds env)
-      TelegramReply ->
-        -- For webhooks, TelegramReply acts like TelegramBroadcast
         mapM_ (\cid -> notifyChat env cid msg) (eeNotifyChatIds env)
       LogOnly ->
         logInfo (eeLogger env) "Webhook response (log only)" [("response", T.take 100 msg)]
+
+    targetChatIds :: DeliveryTarget -> [Int64]
+    targetChatIds (TelegramDelivery session) =
+      case readMaybe (T.unpack session) :: Maybe Int64 of
+        Just cid -> [cid]
+        Nothing -> []
+    targetChatIds TelegramBroadcast = eeNotifyChatIds env
+    targetChatIds LogOnly = []
 
     notifyChat :: EventEnv -> Int64 -> Text -> IO ()
     notifyChat e cid m = do

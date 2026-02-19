@@ -13,6 +13,16 @@ let
     name: agentCfg:
     let
       # Build webhook endpoints (includes auto-generated cron endpoints)
+      # Serialize a deliver target submodule to a YAML-ready attrset
+      mkDeliverTarget =
+        dt:
+        {
+          type = dt.type;
+        }
+        // lib.optionalAttrs (dt.session != null) {
+          session = dt.session;
+        };
+
       allWebhookEndpoints =
         let
           # User-defined endpoints
@@ -22,7 +32,7 @@ let
               name = epName;
               promptTemplate = epCfg.promptTemplate;
               session = epCfg.session;
-              deliver = epCfg.deliver;
+              deliver = map mkDeliverTarget epCfg.deliver;
             }
             // lib.optionalAttrs (epCfg.secret != null) {
               secret = epCfg.secret;
@@ -38,7 +48,7 @@ let
             {
               name = "cron-${cronName}";
               session = cronCfg.session;
-              deliver = [ "telegram" ];
+              deliver = map mkDeliverTarget cronCfg.deliver;
             }
             // lib.optionalAttrs (cronCfg.prompt != null) {
               promptTemplate = cronCfg.prompt;
@@ -116,6 +126,26 @@ let
     in
     pkgs.writeText "assistant-${name}-config.yaml" (lib.generators.toYAML { } configContent);
 
+  # Submodule for delivery targets
+  deliverTargetModule = lib.types.submodule {
+    options = {
+      type = lib.mkOption {
+        type = lib.types.enum [
+          "telegram"
+          "log"
+        ];
+        description = "Delivery target type.";
+      };
+
+      session = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Telegram chat ID to send to. If null, broadcasts to all allowedChatIds.";
+        example = "123456789";
+      };
+    };
+  };
+
   # Submodule for webhook endpoints
   webhookEndpointModule = lib.types.submodule {
     options = {
@@ -137,9 +167,9 @@ let
       };
 
       deliver = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [ "telegram" ];
-        description = "Delivery targets: telegram, log.";
+        type = lib.types.listOf deliverTargetModule;
+        default = [ { type = "telegram"; } ];
+        description = "Delivery targets.";
       };
 
       suppressIfContains = lib.mkOption {
@@ -172,6 +202,12 @@ let
         default = null;
         description = "Session name for persistent conversation. Null means isolated (no history). Use a Telegram chat ID to share conversation with that chat.";
         example = "123456789";
+      };
+
+      deliver = lib.mkOption {
+        type = lib.types.listOf deliverTargetModule;
+        default = [ { type = "telegram"; } ];
+        description = "Delivery targets.";
       };
 
       schedule = lib.mkOption {

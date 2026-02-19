@@ -1,6 +1,7 @@
 module Test.Elwood.Config (tests) where
 
 import Elwood.Config
+import Elwood.Event.Types (DeliveryTarget (..))
 import Paths_elwood (getDataFileName)
 import System.Environment (setEnv, unsetEnv)
 import Test.Tasty
@@ -66,4 +67,9 @@ exampleConfigTests =
         cfgThinking config @?= ThinkingOff
         cfgAllowedChatIds config @?= [123456789]
         ccTokenThreshold (cfgCompaction config) @?= 80000
+        -- Verify delivery targets from example config
+        let webhooks = wscWebhooks (cfgWebhook config)
+        length webhooks @?= 1
+        let wh = head webhooks
+        wcDelivery wh @?= [TelegramBroadcast, LogOnly]
     ]

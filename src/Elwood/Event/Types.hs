@@ -37,12 +37,10 @@ data SessionConfig
 
 -- | Where to deliver event responses
 data DeliveryTarget
-  = -- | Send to specific Telegram chat
-    TelegramDelivery Int64
+  = -- | Send to specific Telegram chat (session name = chat ID as text)
+    TelegramDelivery Text
   | -- | Broadcast to all allowed chats
     TelegramBroadcast
-  | -- | Reply to originating chat (for TelegramSource)
-    TelegramReply
   | -- | Just log, no notification
     LogOnly
   deriving stock (Show, Eq)

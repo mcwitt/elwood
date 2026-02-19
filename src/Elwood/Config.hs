@@ -30,7 +30,8 @@ import Data.Yaml qualified as Yaml
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), ToolPolicy (..), defaultPermissionConfig)
 import Elwood.Webhook.Types
-  ( WebhookConfig (..),
+  ( DeliveryTargetFile (..),
+    WebhookConfig (..),
     WebhookConfigFile (..),
     WebhookServerConfig (..),
     WebhookServerConfigFile (..),
@@ -281,15 +282,14 @@ loadConfig path = do
           | (name, mcf) <- Map.toList serverMap
           ]
 
-  -- Helper to parse delivery targets from strings
-  let parseDeliveryTarget :: Text -> Maybe DeliveryTarget
-      parseDeliveryTarget t = case T.toLower t of
-        "telegram" -> Just TelegramBroadcast
-        "telegram_broadcast" -> Just TelegramBroadcast
+  -- Helper to resolve delivery targets from file objects
+  let resolveDeliveryTarget :: DeliveryTargetFile -> Maybe DeliveryTarget
+      resolveDeliveryTarget dtf = case T.toLower (dtfType dtf) of
+        "telegram" -> Just $ maybe TelegramBroadcast TelegramDelivery (dtfSession dtf)
         "log" -> Just LogOnly
-        "logonly" -> Just LogOnly
-        _ -> Nothing -- Skip unknown targets
-        -- Webhook secret: env var takes precedence over config file
+        _ -> Nothing
+
+  -- Webhook secret: env var takes precedence over config file
   let webhookGlobalSecret = webhookSecretEnv <|> (cfWebhook configFile >>= wscfGlobalSecret)
 
   let webhook = case cfWebhook configFile of
@@ -311,7 +311,7 @@ loadConfig path = do
                         wcDelivery = case wcfDeliver ep of
                           Nothing -> [TelegramBroadcast]
                           Just targets ->
-                            let parsed = mapMaybe parseDeliveryTarget targets
+                            let parsed = mapMaybe resolveDeliveryTarget targets
                              in if null parsed
                                   then [TelegramBroadcast]
                                   else parsed,

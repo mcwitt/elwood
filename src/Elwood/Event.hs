@@ -17,6 +17,9 @@ module Elwood.Event
 
     -- * Session ID Utilities
     sessionToConversationId,
+
+    -- * Attachment Delivery
+    sendAttachmentSafe,
   )
 where
 
@@ -40,10 +43,11 @@ import Elwood.Event.Types
     SessionConfig (..),
   )
 import Elwood.Logging (Logger, logError, logInfo)
-import Elwood.Telegram.Client (TelegramClient, notify, sendDocument, sendMessage, sendPhoto)
+import Elwood.Telegram.Client (TelegramClient, notify, sendDocument, sendPhoto)
 import Elwood.Tools.Attachment (isPhotoExtension)
 import Elwood.Tools.Registry (ToolRegistry)
 import Elwood.Tools.Types (Attachment (..), AttachmentType (..), ToolEnv (..))
+import Text.Read (readMaybe)
 
 -- | Unified event type for all sources
 data Event = Event
@@ -173,27 +177,21 @@ deliverResponse env event responseText = do
   where
     deliver :: DeliveryTarget -> IO ()
     deliver target = case target of
-      TelegramDelivery chatId ->
-        notifySafe env chatId responseText
+      TelegramDelivery session ->
+        case readMaybe (T.unpack session) :: Maybe Int64 of
+          Just chatId -> notifySafe env chatId responseText
+          Nothing -> logError (eeLogger env) "Invalid chat ID in TelegramDelivery" [("session", session)]
       TelegramBroadcast ->
         mapM_ (\cid -> notifySafe env cid responseText) (eeNotifyChatIds env)
-      TelegramReply ->
-        case evSource event of
-          TelegramSource chatId ->
-            sendMessageSafe env chatId responseText
-          _ ->
-            -- Can't reply if not from Telegram, fall back to broadcast
-            mapM_ (\cid -> notifySafe env cid responseText) (eeNotifyChatIds env)
       LogOnly ->
         logInfo (eeLogger env) "Event response (log only)" [("response", T.take 100 responseText)]
 
     targetChatIds :: DeliveryTarget -> [Int64]
-    targetChatIds (TelegramDelivery cid) = [cid]
+    targetChatIds (TelegramDelivery session) =
+      case readMaybe (T.unpack session) :: Maybe Int64 of
+        Just cid -> [cid]
+        Nothing -> []
     targetChatIds TelegramBroadcast = eeNotifyChatIds env
-    targetChatIds TelegramReply =
-      case evSource event of
-        TelegramSource cid -> [cid]
-        _ -> eeNotifyChatIds env
     targetChatIds LogOnly = []
 
 -- | Send a single attachment to a chat, choosing photo vs document
@@ -222,13 +220,6 @@ notifySafe env chatId msg = do
     `catch` \(e :: SomeException) ->
       logError (eeLogger env) "Failed to send notification" [("chat_id", T.pack (show chatId)), ("error", T.pack (show e))]
 
--- | Safely send message, catching any errors
-sendMessageSafe :: EventEnv -> Int64 -> Text -> IO ()
-sendMessageSafe env chatId msg = do
-  sendMessage (eeTelegram env) chatId msg
-    `catch` \(e :: SomeException) ->
-      logError (eeLogger env) "Failed to send message" [("chat_id", T.pack (show chatId)), ("error", T.pack (show e))]
-
 -- | Convert session config to conversation ID
 --
 -- For Isolated sessions, returns Nothing (no conversation persistence).
@@ -246,17 +237,12 @@ mkRateLimitCallback env event attemptNum waitSecs = do
   where
     notifyRateLimit :: Text -> DeliveryTarget -> IO ()
     notifyRateLimit msg target = case target of
-      TelegramDelivery chatId ->
-        notifySafe env chatId msg
+      TelegramDelivery session ->
+        case readMaybe (T.unpack session) :: Maybe Int64 of
+          Just chatId -> notifySafe env chatId msg
+          Nothing -> pure ()
       TelegramBroadcast ->
         mapM_ (\cid -> notifySafe env cid msg) (eeNotifyChatIds env)
-      TelegramReply ->
-        case evSource event of
-          TelegramSource chatId ->
-            sendMessageSafe env chatId msg
-          _ ->
-            -- Can't reply if not from Telegram, fall back to broadcast
-            mapM_ (\cid -> notifySafe env cid msg) (eeNotifyChatIds env)
       LogOnly ->
         logInfo (eeLogger env) "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
 

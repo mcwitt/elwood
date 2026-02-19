@@ -137,7 +137,7 @@ webhookConfigTests =
                   wcPromptTemplate = Just "Test",
                   wcPromptFile = Nothing,
                   wcSession = Isolated,
-                  wcDelivery = [TelegramBroadcast, TelegramDelivery 123, LogOnly],
+                  wcDelivery = [TelegramBroadcast, TelegramDelivery "123", LogOnly],
                   wcSuppressIfContains = Nothing
                 }
         length (wcDelivery config) @?= 3,

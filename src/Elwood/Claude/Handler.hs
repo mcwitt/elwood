@@ -139,7 +139,6 @@ claudeHandler logger client telegram store registry toolEnv compactionConfig sys
                     evPrompt = userText,
                     evImage = imageData,
                     evSession = Named (T.pack (show chatIdVal)),
-                    -- Don't use TelegramReply since polling handles reply
                     evDelivery = [LogOnly]
                   }
 
