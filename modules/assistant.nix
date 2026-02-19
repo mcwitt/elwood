@@ -249,6 +249,13 @@ let
           '';
         };
 
+        extraPackages = lib.mkOption {
+          type = lib.types.listOf lib.types.package;
+          default = [ ];
+          description = "Extra packages to add to PATH for run_command tool.";
+          example = lib.literalExpression "[ pkgs.python3 pkgs.jq ]";
+        };
+
         allowedChatIds = lib.mkOption {
           type = lib.types.listOf lib.types.int;
           default = [ ];
@@ -540,6 +547,9 @@ in
           wantedBy = [ "multi-user.target" ];
           after = [ "network-online.target" ];
           wants = [ "network-online.target" ];
+
+          # Extra packages available in PATH for run_command
+          path = agentCfg.extraPackages;
 
           serviceConfig = {
             Type = "simple";
