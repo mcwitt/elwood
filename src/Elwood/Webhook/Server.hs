@@ -10,14 +10,12 @@ module Elwood.Webhook.Server
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Exception (SomeException, catch)
-import Control.Monad (unless)
 import Data.Aeson (Value (..), eitherDecode, encode)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as LBS
-import Data.IORef (readIORef, writeIORef)
-import Data.Int (Int64)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -25,10 +23,8 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
-import Elwood.Event (Event (..), EventEnv (..), EventSource (..), handleEvent, sendAttachmentSafe)
-import Elwood.Event.Types (DeliveryTarget (..))
+import Elwood.Event (AppEnv (..), DeliveryTarget (..), Event (..), EventSource (..), deliverToTargets, handleEvent)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
-import Elwood.Telegram.Client qualified
 import Elwood.Tools.Types (ToolEnv (..))
 import Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..))
 import Network.HTTP.Types
@@ -52,14 +48,13 @@ import Network.Wai
   )
 import Network.Wai.Handler.Warp (run)
 import System.FilePath ((</>))
-import Text.Read (readMaybe)
 
 -- | Header name for webhook secret
 webhookSecretHeader :: HeaderName
 webhookSecretHeader = "X-Webhook-Secret"
 
 -- | Start the webhook server
-runWebhookServer :: WebhookServerConfig -> EventEnv -> IO ()
+runWebhookServer :: WebhookServerConfig -> AppEnv -> IO ()
 runWebhookServer config env = do
   let logger = eeLogger env
       port = wscPort config
@@ -71,7 +66,7 @@ runWebhookServer config env = do
       logError logger "Webhook server error" [("error", T.pack (show e))]
 
 -- | WAI application for webhook handling
-webhookApp :: WebhookServerConfig -> EventEnv -> Application
+webhookApp :: WebhookServerConfig -> AppEnv -> Application
 webhookApp config env request respond = do
   let logger = eeLogger env
       path = pathInfo request
@@ -103,13 +98,9 @@ webhookApp config env request respond = do
     _ -> do
       logWarn logger "Unknown path" [("path", T.intercalate "/" path)]
       respond $ jsonResponse status404 $ errorJson "Not found"
-  where
-    (<|>) :: Maybe a -> Maybe a -> Maybe a
-    (<|>) (Just x) _ = Just x
-    (<|>) Nothing y = y
 
 -- | Handle a webhook request after authentication
-handleWebhookRequest :: Logger -> WebhookConfig -> EventEnv -> Request -> (Response -> IO a) -> IO a
+handleWebhookRequest :: Logger -> WebhookConfig -> AppEnv -> Request -> (Response -> IO a) -> IO a
 handleWebhookRequest logger webhookConfig env request respond = do
   -- Read and parse request body
   body <- strictRequestBody request
@@ -179,42 +170,6 @@ handleWebhookRequest logger webhookConfig env request respond = do
             Left err -> do
               logError logger "Webhook processing failed" [("name", wcName webhookConfig), ("error", err)]
               respond $ jsonResponse status500 $ errorJson err
-
--- | Deliver response to the specified targets, then send queued attachments
-deliverToTargets :: EventEnv -> [DeliveryTarget] -> Text -> IO ()
-deliverToTargets env targets msg = do
-  mapM_ deliver targets
-  -- Drain attachment queue and send to all resolved Telegram chat IDs
-  let chatIds = concatMap targetChatIds targets
-  unless (null chatIds) $ do
-    attachments <- readIORef (eeAttachmentQueue env)
-    mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) attachments
-    writeIORef (eeAttachmentQueue env) []
-  where
-    deliver :: DeliveryTarget -> IO ()
-    deliver target = case target of
-      TelegramDelivery session ->
-        case readMaybe (T.unpack session) :: Maybe Int64 of
-          Just chatId -> notifyChat env chatId msg
-          Nothing -> logError (eeLogger env) "Invalid chat ID in TelegramDelivery" [("session", session)]
-      TelegramBroadcast ->
-        mapM_ (\cid -> notifyChat env cid msg) (eeNotifyChatIds env)
-      LogOnly ->
-        logInfo (eeLogger env) "Webhook response (log only)" [("response", T.take 100 msg)]
-
-    targetChatIds :: DeliveryTarget -> [Int64]
-    targetChatIds (TelegramDelivery session) =
-      case readMaybe (T.unpack session) :: Maybe Int64 of
-        Just cid -> [cid]
-        Nothing -> []
-    targetChatIds TelegramBroadcast = eeNotifyChatIds env
-    targetChatIds LogOnly = []
-
-    notifyChat :: EventEnv -> Int64 -> Text -> IO ()
-    notifyChat e cid m = do
-      Elwood.Telegram.Client.notify (eeLogger e) (eeTelegram e) cid m
-        `catch` \(ex :: SomeException) ->
-          logError (eeLogger e) "Failed to send notification" [("chat_id", T.pack (show cid)), ("error", T.pack (show ex))]
 
 -- | Read prompt from a file
 readPromptFile :: FilePath -> IO (Either String Text)

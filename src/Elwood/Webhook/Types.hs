@@ -13,21 +13,10 @@ module Elwood.Webhook.Types
 where
 
 import Data.Aeson
-import Data.Aeson.Key qualified as Key
-import Data.Aeson.KeyMap qualified as KM
-import Data.Aeson.Types (Parser)
-import Data.Set qualified as Set
 import Data.Text (Text)
+import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import GHC.Generics (Generic)
-
--- | Fail if an object contains keys not in the given set
-rejectUnknownKeys :: String -> [Key] -> Object -> Parser ()
-rejectUnknownKeys name knownKeys obj =
-  let unknown = Set.toList $ Set.difference (Set.fromList (KM.keys obj)) (Set.fromList knownKeys)
-   in case unknown of
-        [] -> pure ()
-        ks -> fail $ name <> ": unknown keys: " <> show (map Key.toText ks)
 
 -- | Configuration for a single webhook endpoint
 data WebhookConfig = WebhookConfig

@@ -23,6 +23,7 @@ common warnings
 library
   import:             warnings
   exposed-modules:
+    Elwood.Aeson
     Elwood.App
     Elwood.Approval
     Elwood.Claude.AgentLoop

@@ -22,9 +22,9 @@ import Elwood.Claude.Compaction (CompactionConfig)
 import Elwood.Claude.Conversation (ConversationStore, clearConversation)
 import Elwood.Config (ThinkingLevel)
 import Elwood.Event
-  ( DeliveryTarget (..),
+  ( AppEnv (..),
+    DeliveryTarget (..),
     Event (..),
-    EventEnv (..),
     EventSource (..),
     SessionConfig (..),
     handleEvent,
@@ -114,7 +114,7 @@ claudeHandler logger client telegram store registry toolEnv compactionConfig sys
         else do
           -- Create event environment
           let eventEnv =
-                EventEnv
+                AppEnv
                   { eeLogger = logger,
                     eeTelegram = telegram,
                     eeClaude = client,

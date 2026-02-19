@@ -16,17 +16,14 @@ where
 
 import Control.Applicative ((<|>))
 import Data.Aeson
-import Data.Aeson.Key qualified as Key
-import Data.Aeson.KeyMap qualified as KM
-import Data.Aeson.Types (Parser)
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe)
-import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Yaml qualified as Yaml
+import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), ToolPolicy (..), defaultPermissionConfig)
 import Elwood.Webhook.Types
@@ -38,14 +35,6 @@ import Elwood.Webhook.Types
   )
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
-
--- | Fail if an object contains keys not in the given set
-rejectUnknownKeys :: String -> [Key] -> Object -> Parser ()
-rejectUnknownKeys name knownKeys obj =
-  let unknown = Set.toList $ Set.difference (Set.fromList (KM.keys obj)) (Set.fromList knownKeys)
-   in case unknown of
-        [] -> pure ()
-        ks -> fail $ name <> ": unknown keys: " <> show (map Key.toText ks)
 
 -- | Extended thinking level for Claude
 data ThinkingLevel

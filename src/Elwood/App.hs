@@ -1,6 +1,5 @@
 module Elwood.App
-  ( AppEnv (..),
-    runApp,
+  ( runApp,
   )
 where
 
@@ -25,7 +24,7 @@ import Elwood.Claude.Client (ClaudeClient, newClaudeClient)
 import Elwood.Claude.Conversation
 import Elwood.Claude.Handler
 import Elwood.Config
-import Elwood.Event (EventEnv (..))
+import Elwood.Event (AppEnv (..))
 import Elwood.Logging
 import Elwood.MCP.Client (stopMCPServer)
 import Elwood.MCP.Registry (startMCPServers)
@@ -59,18 +58,6 @@ import Elwood.Webhook.Server (runWebhookServer)
 import Network.HTTP.Client (newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import System.Directory (createDirectoryIfMissing)
-
--- | Application environment containing all initialized components
-data AppEnv = AppEnv
-  { appConfig :: Config,
-    appLogger :: Logger,
-    appTelegram :: TelegramClient,
-    appClaude :: ClaudeClient,
-    appConversations :: ConversationStore,
-    appSystemPrompt :: Maybe Text,
-    appToolRegistry :: ToolRegistry,
-    appToolEnv :: ToolEnv
-  }
 
 -- | Initialize and run the application
 runApp :: Config -> IO ()
@@ -181,18 +168,6 @@ runApp config = do
     "Tool registry initialized"
     [("tool_count", T.pack (show (length (allTools registry))))]
 
-  let _env =
-        AppEnv
-          { appConfig = config,
-            appLogger = logger,
-            appTelegram = telegram,
-            appClaude = claude,
-            appConversations = conversations,
-            appSystemPrompt = systemPrompt,
-            appToolRegistry = registry,
-            appToolEnv = baseToolEnv
-          }
-
   -- Log allowed chats
   logInfo
     logger
@@ -207,9 +182,9 @@ runApp config = do
   -- Create callback handler for approval responses
   let callbackHandler = handleApprovalCallback logger telegram approvalCoordinator
 
-  -- Create webhook event environment
-  let webhookEventEnv =
-        EventEnv
+  -- Create webhook app environment
+  let webhookAppEnv =
+        AppEnv
           { eeLogger = logger,
             eeTelegram = telegram,
             eeClaude = claude,
@@ -244,7 +219,7 @@ runApp config = do
           if wscEnabled webhookConfig
             then do
               logInfo logger "Starting webhook server" [("port", T.pack (show (wscPort webhookConfig)))]
-              Just <$> async (runWebhookServer webhookConfig webhookEventEnv)
+              Just <$> async (runWebhookServer webhookConfig webhookAppEnv)
             else pure Nothing
 
         -- Run Telegram polling

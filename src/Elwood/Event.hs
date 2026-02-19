@@ -10,15 +10,19 @@ module Elwood.Event
     DeliveryTarget (..),
 
     -- * Event Environment
-    EventEnv (..),
+    AppEnv (..),
 
     -- * Event Handling
     handleEvent,
 
+    -- * Delivery
+    deliverToTargets,
+
     -- * Session ID Utilities
     sessionToConversationId,
 
-    -- * Attachment Delivery
+    -- * Utilities
+    parseChatId,
     sendAttachmentSafe,
   )
 where
@@ -69,7 +73,7 @@ data Event = Event
   deriving stock (Show)
 
 -- | Environment for event handling
-data EventEnv = EventEnv
+data AppEnv = AppEnv
   { eeLogger :: Logger,
     eeTelegram :: TelegramClient,
     eeClaude :: ClaudeClient,
@@ -90,7 +94,7 @@ data EventEnv = EventEnv
 -- | Handle any event through the agent pipeline
 --
 -- Returns Either error message or success response text
-handleEvent :: EventEnv -> Event -> IO (Either Text Text)
+handleEvent :: AppEnv -> Event -> IO (Either Text Text)
 handleEvent env event = do
   let logger = eeLogger env
       source = evSource event
@@ -163,13 +167,17 @@ handleEvent env event = do
       pure (Left err)
 
 -- | Deliver response to configured targets, then send queued attachments
-deliverResponse :: EventEnv -> Event -> Text -> IO ()
-deliverResponse env event responseText = do
-  mapM_ deliver (evDelivery event)
+deliverResponse :: AppEnv -> Event -> Text -> IO ()
+deliverResponse env event = deliverToTargets env (evDelivery event)
+
+-- | Deliver a message to the specified targets, then send queued attachments
+deliverToTargets :: AppEnv -> [DeliveryTarget] -> Text -> IO ()
+deliverToTargets env targets msg = do
+  mapM_ deliver targets
   -- Send queued attachments to Telegram targets (if any)
   -- Only drain the queue when there are real Telegram targets; for LogOnly
   -- the polling path in App.hs handles attachment delivery separately.
-  let chatIds = concatMap targetChatIds (evDelivery event)
+  let chatIds = concatMap (targetChatIds env) targets
   unless (null chatIds) $ do
     attachments <- readIORef (eeAttachmentQueue env)
     mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) attachments
@@ -178,24 +186,29 @@ deliverResponse env event responseText = do
     deliver :: DeliveryTarget -> IO ()
     deliver target = case target of
       TelegramDelivery session ->
-        case readMaybe (T.unpack session) :: Maybe Int64 of
-          Just chatId -> notifySafe env chatId responseText
+        case parseChatId session of
+          Just chatId -> notifySafe env chatId msg
           Nothing -> logError (eeLogger env) "Invalid chat ID in TelegramDelivery" [("session", session)]
       TelegramBroadcast ->
-        mapM_ (\cid -> notifySafe env cid responseText) (eeNotifyChatIds env)
+        mapM_ (\cid -> notifySafe env cid msg) (eeNotifyChatIds env)
       LogOnly ->
-        logInfo (eeLogger env) "Event response (log only)" [("response", T.take 100 responseText)]
+        logInfo (eeLogger env) "Event response (log only)" [("response", T.take 100 msg)]
 
-    targetChatIds :: DeliveryTarget -> [Int64]
-    targetChatIds (TelegramDelivery session) =
-      case readMaybe (T.unpack session) :: Maybe Int64 of
-        Just cid -> [cid]
-        Nothing -> []
-    targetChatIds TelegramBroadcast = eeNotifyChatIds env
-    targetChatIds LogOnly = []
+-- | Resolve a delivery target to its Telegram chat IDs
+targetChatIds :: AppEnv -> DeliveryTarget -> [Int64]
+targetChatIds _ (TelegramDelivery session) =
+  case parseChatId session of
+    Just cid -> [cid]
+    Nothing -> []
+targetChatIds env TelegramBroadcast = eeNotifyChatIds env
+targetChatIds _ LogOnly = []
+
+-- | Parse a chat ID from text
+parseChatId :: Text -> Maybe Int64
+parseChatId = readMaybe . T.unpack
 
 -- | Send a single attachment to a chat, choosing photo vs document
-sendAttachmentSafe :: EventEnv -> Int64 -> Attachment -> IO ()
+sendAttachmentSafe :: AppEnv -> Int64 -> Attachment -> IO ()
 sendAttachmentSafe env chatId att = do
   let send = case attType att of
         AttachPhoto -> sendPhoto
@@ -214,7 +227,7 @@ sendAttachmentSafe env chatId att = do
         ]
 
 -- | Safely send notification, catching any errors
-notifySafe :: EventEnv -> Int64 -> Text -> IO ()
+notifySafe :: AppEnv -> Int64 -> Text -> IO ()
 notifySafe env chatId msg = do
   notify (eeLogger env) (eeTelegram env) chatId msg
     `catch` \(e :: SomeException) ->
@@ -229,7 +242,7 @@ sessionToConversationId Isolated = Nothing
 sessionToConversationId (Named name) = Just name
 
 -- | Create rate limit notification callback based on event delivery targets
-mkRateLimitCallback :: EventEnv -> Event -> RateLimitCallback
+mkRateLimitCallback :: AppEnv -> Event -> RateLimitCallback
 mkRateLimitCallback env event attemptNum waitSecs = do
   let msg = "(rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s)"
   -- Notify based on delivery targets
@@ -238,7 +251,7 @@ mkRateLimitCallback env event attemptNum waitSecs = do
     notifyRateLimit :: Text -> DeliveryTarget -> IO ()
     notifyRateLimit msg target = case target of
       TelegramDelivery session ->
-        case readMaybe (T.unpack session) :: Maybe Int64 of
+        case parseChatId session of
           Just chatId -> notifySafe env chatId msg
           Nothing -> pure ()
       TelegramBroadcast ->
