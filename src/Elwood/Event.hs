@@ -27,7 +27,7 @@ import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
-import Elwood.Claude.AgentLoop (AgentResult (..), runAgentTurn)
+import Elwood.Claude.AgentLoop (AgentResult (..), RateLimitCallback, runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Compaction (CompactionConfig)
 import Elwood.Claude.Conversation (ConversationStore, getConversation, updateConversation)
@@ -106,6 +106,9 @@ handleEvent env event = do
           [TextBlock (evPrompt event)]
       userMsg = ClaudeMessage User contentBlocks
 
+  -- Create rate limit notification callback based on delivery targets
+  let rateLimitCallback = mkRateLimitCallback env event
+
   -- Run the agent turn
   result <-
     runAgentTurn
@@ -118,6 +121,7 @@ handleEvent env event = do
       (eeModel env)
       (if evSession event == Isolated then [] else convMessages conv)
       userMsg
+      (Just rateLimitCallback)
       `catch` \(e :: SomeException) -> do
         logError logger "Event handler agent error" [("error", T.pack (show e))]
         pure $ AgentError $ "Agent error: " <> T.pack (show e)
@@ -205,6 +209,29 @@ hashSessionName = T.foldl' step 5381
   where
     step :: Int -> Char -> Int
     step h c = ((h `shiftL` 5) + h) `xor` fromEnum c
+
+-- | Create rate limit notification callback based on event delivery targets
+mkRateLimitCallback :: EventEnv -> Event -> RateLimitCallback
+mkRateLimitCallback env event attemptNum waitSecs = do
+  let msg = "(rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s)"
+  -- Notify based on delivery targets
+  mapM_ (notifyRateLimit msg) (evDelivery event)
+  where
+    notifyRateLimit :: Text -> DeliveryTarget -> IO ()
+    notifyRateLimit msg target = case target of
+      TelegramDelivery chatId ->
+        notifySafe env chatId msg
+      TelegramBroadcast ->
+        mapM_ (\cid -> notifySafe env cid msg) (eeNotifyChatIds env)
+      TelegramReply ->
+        case evSource event of
+          TelegramSource chatId ->
+            sendMessageSafe env chatId msg
+          _ ->
+            -- Can't reply if not from Telegram, fall back to broadcast
+            mapM_ (\cid -> notifySafe env cid msg) (eeNotifyChatIds env)
+      LogOnly ->
+        logInfo (eeLogger env) "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
 
 -- | Format event source for logging
 formatSource :: EventSource -> Text

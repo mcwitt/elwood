@@ -3,6 +3,7 @@
 module Elwood.Claude.AgentLoop
   ( runAgentTurn,
     AgentResult (..),
+    RateLimitCallback,
   )
 where
 
@@ -28,6 +29,10 @@ data AgentResult
     AgentError Text
   deriving stock (Show)
 
+-- | Callback for rate limit notifications
+-- Arguments: retry attempt number, wait seconds
+type RateLimitCallback = Int -> Int -> IO ()
+
 -- | Maximum iterations to prevent infinite loops
 maxIterations :: Int
 maxIterations = 10
@@ -47,12 +52,14 @@ runAgentTurn ::
   [ClaudeMessage] ->
   -- | New user message
   ClaudeMessage ->
+  -- | Optional callback for rate limit notifications
+  Maybe RateLimitCallback ->
   IO AgentResult
-runAgentTurn logger client registry toolEnv compactionConfig systemPrompt model history userMessage = do
+runAgentTurn logger client registry toolEnv compactionConfig systemPrompt model history userMessage onRateLimit = do
   -- Compact history if needed before adding new message
   compactedHistory <- compactIfNeeded logger client compactionConfig history
   let messages = compactedHistory ++ [userMessage]
-  agentLoop logger client registry toolEnv compactionConfig systemPrompt model messages 0
+  agentLoop logger client registry toolEnv compactionConfig systemPrompt model messages 0 onRateLimit
 
 -- | The main agent loop
 agentLoop ::
@@ -65,8 +72,9 @@ agentLoop ::
   Text ->
   [ClaudeMessage] ->
   Int ->
+  Maybe RateLimitCallback ->
   IO AgentResult
-agentLoop logger client registry toolEnv compactionConfig systemPrompt model messages iteration
+agentLoop logger client registry toolEnv compactionConfig systemPrompt model messages iteration onRateLimit
   | iteration >= maxIterations = do
       logError logger "Agent loop exceeded max iterations" []
       pure $ AgentError "I've been thinking in circles. Let me try a different approach."
@@ -88,10 +96,10 @@ agentLoop logger client registry toolEnv compactionConfig systemPrompt model mes
           ("message_count", T.pack (show (length messages)))
         ]
 
-      -- Configure retry with logging callback
+      -- Configure retry with logging callback and optional user notification
       let retryConfig =
             defaultRetryConfig
-              { rcOnRetry = Just $ \attemptNum waitSecs err ->
+              { rcOnRetry = Just $ \attemptNum waitSecs err -> do
                   logWarn
                     logger
                     "Rate limited, retrying"
@@ -99,6 +107,10 @@ agentLoop logger client registry toolEnv compactionConfig systemPrompt model mes
                       ("wait_seconds", T.pack (show waitSecs)),
                       ("error", T.pack (show err))
                     ]
+                  -- Notify user if callback is configured
+                  case onRateLimit of
+                    Just notify -> notify attemptNum waitSecs
+                    Nothing -> pure ()
               }
 
       result <- sendMessagesWithRetry client retryConfig request
@@ -115,7 +127,7 @@ agentLoop logger client registry toolEnv compactionConfig systemPrompt model mes
               ("content_blocks", T.pack (show (length (mresContent response))))
             ]
 
-          handleResponse logger client registry toolEnv compactionConfig systemPrompt model messages response iteration
+          handleResponse logger client registry toolEnv compactionConfig systemPrompt model messages response iteration onRateLimit
 
 -- | Handle Claude's response
 handleResponse ::
@@ -129,8 +141,9 @@ handleResponse ::
   [ClaudeMessage] ->
   MessagesResponse ->
   Int ->
+  Maybe RateLimitCallback ->
   IO AgentResult
-handleResponse logger client registry toolEnv compactionConfig systemPrompt model messages response iteration =
+handleResponse logger client registry toolEnv compactionConfig systemPrompt model messages response iteration onRateLimit =
   case mresStopReason response of
     Just "end_turn" -> do
       -- Normal completion - extract text and return
@@ -157,7 +170,7 @@ handleResponse logger client registry toolEnv compactionConfig systemPrompt mode
           newMessages = messages ++ [assistantMsg, userMsg]
 
       -- Continue the loop
-      agentLoop logger client registry toolEnv compactionConfig systemPrompt model newMessages (iteration + 1)
+      agentLoop logger client registry toolEnv compactionConfig systemPrompt model newMessages (iteration + 1) onRateLimit
     Just "max_tokens" -> do
       -- Hit token limit - return what we have
       let responseText = extractTextContent (mresContent response)
