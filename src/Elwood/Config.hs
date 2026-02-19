@@ -4,6 +4,7 @@ module Elwood.Config
   ( Config (..),
     CompactionConfig (..),
     MCPServerConfig (..),
+    ThinkingLevel (..),
     PermissionConfigFile (..),
     loadConfig,
 
@@ -33,6 +34,22 @@ import Elwood.Webhook.Types
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
 
+-- | Extended thinking level for Claude
+data ThinkingLevel
+  = ThinkingOff
+  | ThinkingLow
+  | ThinkingMedium
+  | ThinkingHigh
+  deriving stock (Show, Eq, Generic)
+
+-- | Parse a thinking level from text
+parseThinkingLevel :: Text -> ThinkingLevel
+parseThinkingLevel t = case T.toLower t of
+  "low" -> ThinkingLow
+  "medium" -> ThinkingMedium
+  "high" -> ThinkingHigh
+  _ -> ThinkingOff
+
 -- | Main configuration for Elwood
 data Config = Config
   { -- | Directory for persistent state
@@ -58,7 +75,9 @@ data Config = Config
     -- | MCP server configurations
     cfgMCPServers :: [MCPServerConfig],
     -- | Webhook server configuration
-    cfgWebhook :: WebhookServerConfig
+    cfgWebhook :: WebhookServerConfig,
+    -- | Extended thinking level
+    cfgThinking :: ThinkingLevel
   }
   deriving stock (Show, Generic)
 
@@ -96,7 +115,8 @@ data ConfigFile = ConfigFile
     cfPermissions :: Maybe PermissionConfigFile,
     cfCompaction :: Maybe CompactionConfigFile,
     cfMCPServers :: Maybe (Map Text MCPServerConfigFile),
-    cfWebhook :: Maybe WebhookServerConfigFile
+    cfWebhook :: Maybe WebhookServerConfigFile,
+    cfThinking :: Maybe Text
   }
   deriving stock (Show, Generic)
 
@@ -139,6 +159,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "compaction"
       <*> v .:? "mcpServers"
       <*> v .:? "webhook"
+      <*> v .:? "thinking"
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v ->
@@ -301,7 +322,8 @@ loadConfig path = do
         cfgPermissions = permissions,
         cfgCompaction = compaction,
         cfgMCPServers = mcpServers,
-        cfgWebhook = webhook
+        cfgWebhook = webhook,
+        cfgThinking = maybe ThinkingOff parseThinkingLevel (cfThinking configFile)
       }
 
 -- | Default webhook server configuration (disabled)

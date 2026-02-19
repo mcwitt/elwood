@@ -16,6 +16,7 @@ import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Types
+import Elwood.Config (ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy, pcConfig)
 import Elwood.Tools.Registry (ToolRegistry, lookupTool, toolSchemas)
@@ -37,6 +38,20 @@ type RateLimitCallback = Int -> Int -> IO ()
 maxIterations :: Int
 maxIterations = 10
 
+-- | Convert a thinking level to the API thinking config
+thinkingToConfig :: ThinkingLevel -> Maybe ThinkingConfig
+thinkingToConfig ThinkingOff = Nothing
+thinkingToConfig ThinkingLow = Just (ThinkingConfig 1024)
+thinkingToConfig ThinkingMedium = Just (ThinkingConfig 4096)
+thinkingToConfig ThinkingHigh = Just (ThinkingConfig 16384)
+
+-- | Get the max_tokens value for a thinking level
+thinkingMaxTokens :: ThinkingLevel -> Int
+thinkingMaxTokens ThinkingOff = 4096
+thinkingMaxTokens ThinkingLow = 4096
+thinkingMaxTokens ThinkingMedium = 8192
+thinkingMaxTokens ThinkingHigh = 32768
+
 -- | Run a complete agent turn, handling tool use loops
 runAgentTurn ::
   Logger ->
@@ -48,6 +63,8 @@ runAgentTurn ::
   Maybe Text ->
   -- | Model name
   Text ->
+  -- | Extended thinking level
+  ThinkingLevel ->
   -- | Existing conversation history
   [ClaudeMessage] ->
   -- | New user message
@@ -55,11 +72,11 @@ runAgentTurn ::
   -- | Optional callback for rate limit notifications
   Maybe RateLimitCallback ->
   IO AgentResult
-runAgentTurn logger client registry toolEnv compactionConfig systemPrompt model history userMessage onRateLimit = do
+runAgentTurn logger client registry toolEnv compactionConfig systemPrompt model thinking history userMessage onRateLimit = do
   -- Compact history if needed before adding new message
   compactedHistory <- compactIfNeeded logger client compactionConfig history
   let messages = compactedHistory ++ [userMessage]
-  agentLoop logger client registry toolEnv compactionConfig systemPrompt model messages 0 onRateLimit
+  agentLoop logger client registry toolEnv compactionConfig systemPrompt model thinking messages 0 onRateLimit
 
 -- | The main agent loop
 agentLoop ::
@@ -70,11 +87,12 @@ agentLoop ::
   CompactionConfig ->
   Maybe Text ->
   Text ->
+  ThinkingLevel ->
   [ClaudeMessage] ->
   Int ->
   Maybe RateLimitCallback ->
   IO AgentResult
-agentLoop logger client registry toolEnv compactionConfig systemPrompt model messages iteration onRateLimit
+agentLoop logger client registry toolEnv compactionConfig systemPrompt model thinking messages iteration onRateLimit
   | iteration >= maxIterations = do
       logError logger "Agent loop exceeded max iterations" []
       pure $ AgentError "I've been thinking in circles. Let me try a different approach."
@@ -83,10 +101,11 @@ agentLoop logger client registry toolEnv compactionConfig systemPrompt model mes
       let request =
             MessagesRequest
               { mrModel = model,
-                mrMaxTokens = 4096,
+                mrMaxTokens = thinkingMaxTokens thinking,
                 mrSystem = systemPrompt,
                 mrMessages = messages,
-                mrTools = toolSchemas registry
+                mrTools = toolSchemas registry,
+                mrThinking = thinkingToConfig thinking
               }
 
       logInfo
@@ -127,7 +146,7 @@ agentLoop logger client registry toolEnv compactionConfig systemPrompt model mes
               ("content_blocks", T.pack (show (length (mresContent response))))
             ]
 
-          handleResponse logger client registry toolEnv compactionConfig systemPrompt model messages response iteration onRateLimit
+          handleResponse logger client registry toolEnv compactionConfig systemPrompt model thinking messages response iteration onRateLimit
 
 -- | Handle Claude's response
 handleResponse ::
@@ -138,12 +157,13 @@ handleResponse ::
   CompactionConfig ->
   Maybe Text ->
   Text ->
+  ThinkingLevel ->
   [ClaudeMessage] ->
   MessagesResponse ->
   Int ->
   Maybe RateLimitCallback ->
   IO AgentResult
-handleResponse logger client registry toolEnv compactionConfig systemPrompt model messages response iteration onRateLimit =
+handleResponse logger client registry toolEnv compactionConfig systemPrompt model thinking messages response iteration onRateLimit =
   case mresStopReason response of
     Just "end_turn" -> do
       -- Normal completion - extract text and return
@@ -170,7 +190,7 @@ handleResponse logger client registry toolEnv compactionConfig systemPrompt mode
           newMessages = messages ++ [assistantMsg, userMsg]
 
       -- Continue the loop
-      agentLoop logger client registry toolEnv compactionConfig systemPrompt model newMessages (iteration + 1) onRateLimit
+      agentLoop logger client registry toolEnv compactionConfig systemPrompt model thinking newMessages (iteration + 1) onRateLimit
     Just "max_tokens" -> do
       -- Hit token limit - return what we have
       let responseText = extractTextContent (mresContent response)

@@ -10,6 +10,9 @@ module Elwood.Claude.Types
     -- * Content Blocks
     ContentBlock (..),
 
+    -- * Thinking
+    ThinkingConfig (..),
+
     -- * API Request/Response
     MessagesRequest (..),
     MessagesResponse (..),
@@ -42,6 +45,12 @@ instance FromJSON Role where
     "assistant" -> pure Assistant
     other -> fail $ "Unknown role: " <> show other
 
+-- | Configuration for extended thinking
+newtype ThinkingConfig = ThinkingConfig
+  { tcBudgetTokens :: Int
+  }
+  deriving stock (Show, Eq, Generic)
+
 -- | Content block in a message - can be text, image, tool use, or tool result
 data ContentBlock
   = TextBlock Text
@@ -66,6 +75,16 @@ data ContentBlock
         trbContent :: Text,
         -- | Whether this is an error result
         trbIsError :: Bool
+      }
+  | ThinkingBlock
+      { -- | The thinking text
+        tbThinking :: Text,
+        -- | Signature for verification
+        tbSignature :: Text
+      }
+  | RedactedThinkingBlock
+      { -- | Opaque data for redacted thinking
+        rtbData :: Text
       }
   deriving stock (Show, Eq, Generic)
 
@@ -99,6 +118,17 @@ instance ToJSON ContentBlock where
         "content" .= content
       ]
         ++ ["is_error" .= True | isErr]
+  toJSON (ThinkingBlock thinking sig) =
+    object
+      [ "type" .= ("thinking" :: Text),
+        "thinking" .= thinking,
+        "signature" .= sig
+      ]
+  toJSON (RedactedThinkingBlock d) =
+    object
+      [ "type" .= ("redacted_thinking" :: Text),
+        "data" .= d
+      ]
 
 instance FromJSON ContentBlock where
   parseJSON = withObject "ContentBlock" $ \v -> do
@@ -120,6 +150,13 @@ instance FromJSON ContentBlock where
           <$> v .: "tool_use_id"
           <*> v .: "content"
           <*> v .:? "is_error" .!= False
+      "thinking" ->
+        ThinkingBlock
+          <$> v .: "thinking"
+          <*> v .: "signature"
+      "redacted_thinking" ->
+        RedactedThinkingBlock
+          <$> v .: "data"
       other -> fail $ "Unknown content block type: " <> show other
 
 -- | A message in a Claude conversation
@@ -198,7 +235,9 @@ data MessagesRequest = MessagesRequest
     -- | Conversation messages
     mrMessages :: [ClaudeMessage],
     -- | Available tools
-    mrTools :: [ToolSchema]
+    mrTools :: [ToolSchema],
+    -- | Extended thinking configuration (optional)
+    mrThinking :: Maybe ThinkingConfig
   }
   deriving stock (Show, Generic)
 
@@ -211,6 +250,17 @@ instance ToJSON MessagesRequest where
       ]
         ++ maybe [] (\s -> ["system" .= s]) (mrSystem req)
         ++ ["tools" .= mrTools req | not (null (mrTools req))]
+        ++ maybe
+          []
+          ( \tc ->
+              [ "thinking"
+                  .= object
+                    [ "type" .= ("enabled" :: Text),
+                      "budget_tokens" .= tcBudgetTokens tc
+                    ]
+              ]
+          )
+          (mrThinking req)
 
 -- | Token usage information
 data Usage = Usage

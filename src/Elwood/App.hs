@@ -210,6 +210,7 @@ runApp config = do
             eeCompaction = compactionConfig,
             eeSystemPrompt = systemPrompt,
             eeModel = cfgModel config,
+            eeThinking = cfgThinking config,
             eeNotifyChatIds = cfgAllowedChatIds config
           }
 
@@ -241,7 +242,7 @@ runApp config = do
           logger
           telegram
           (cfgAllowedChatIds config)
-          (claudeHandlerWithApproval logger claude telegram conversations registry mkToolEnvWithApproval compactionConfig systemPrompt (cfgModel config) (cfgAllowedChatIds config))
+          (claudeHandlerWithApproval logger claude telegram conversations registry mkToolEnvWithApproval compactionConfig systemPrompt (cfgModel config) (cfgThinking config) (cfgAllowedChatIds config))
           callbackHandler
 
         -- Wait for webhook thread (this won't happen in normal operation)
@@ -263,13 +264,14 @@ claudeHandlerWithApproval ::
   CompactionConfig ->
   Maybe Text ->
   Text ->
+  ThinkingLevel ->
   [Int64] ->
   Message ->
   IO (Maybe Text)
-claudeHandlerWithApproval logger client telegram store registry mkToolEnv compactionConfig systemPrompt model allowedChatIds msg = do
+claudeHandlerWithApproval logger client telegram store registry mkToolEnv compactionConfig systemPrompt model thinking allowedChatIds msg = do
   let cid = chatId (chat msg)
       toolEnvForChat = mkToolEnv cid
-  claudeHandler logger client telegram store registry toolEnvForChat compactionConfig systemPrompt model allowedChatIds msg
+  claudeHandler logger client telegram store registry toolEnvForChat compactionConfig systemPrompt model thinking allowedChatIds msg
 
 -- | Request tool approval via Telegram inline keyboard
 requestToolApproval ::

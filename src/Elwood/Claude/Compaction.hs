@@ -125,7 +125,8 @@ summarizeMessages client config msgs = do
             mrMaxTokens = 2048,
             mrSystem = Just "You are a helpful assistant that summarizes conversations concisely.",
             mrMessages = [summaryRequest],
-            mrTools = []
+            mrTools = [],
+            mrThinking = Nothing
           }
 
   result <- sendMessages client request

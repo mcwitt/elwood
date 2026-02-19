@@ -20,6 +20,7 @@ import Data.Time (getCurrentTime)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Compaction (CompactionConfig)
 import Elwood.Claude.Conversation (ConversationStore, clearConversation)
+import Elwood.Config (ThinkingLevel)
 import Elwood.Event
   ( DeliveryTarget (..),
     Event (..),
@@ -64,11 +65,13 @@ claudeHandler ::
   Maybe Text ->
   -- | Model name
   Text ->
+  -- | Extended thinking level
+  ThinkingLevel ->
   -- | Allowed chat IDs (for event env)
   [Int64] ->
   Message ->
   IO (Maybe Text)
-claudeHandler logger client telegram store registry toolEnv compactionConfig systemPrompt model allowedChatIds msg =
+claudeHandler logger client telegram store registry toolEnv compactionConfig systemPrompt model thinking allowedChatIds msg =
   case (text msg, photo msg) of
     -- Handle /clear command
     (Just txt, _) | T.strip txt == "/clear" -> handleClear
@@ -121,6 +124,7 @@ claudeHandler logger client telegram store registry toolEnv compactionConfig sys
                     eeCompaction = compactionConfig,
                     eeSystemPrompt = systemPrompt,
                     eeModel = model,
+                    eeThinking = thinking,
                     eeNotifyChatIds = allowedChatIds
                   }
 

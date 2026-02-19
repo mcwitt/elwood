@@ -15,6 +15,9 @@ allowedChatIds:
 # Claude model to use
 model: claude-sonnet-4-20250514
 
+# Extended thinking level: off, low, medium, high (default: off)
+# thinking: medium
+
 # Heartbeat/proactive check settings
 heartbeat:
   intervalMinutes: 30

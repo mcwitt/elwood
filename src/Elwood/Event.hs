@@ -32,6 +32,7 @@ import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Compaction (CompactionConfig)
 import Elwood.Claude.Conversation (ConversationStore, getConversation, updateConversation)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Conversation (..), Role (..))
+import Elwood.Config (ThinkingLevel)
 import Elwood.Event.Types
   ( DeliveryTarget (..),
     EventSource (..),
@@ -72,6 +73,8 @@ data EventEnv = EventEnv
     eeCompaction :: CompactionConfig,
     eeSystemPrompt :: Maybe Text,
     eeModel :: Text,
+    -- | Extended thinking level
+    eeThinking :: ThinkingLevel,
     -- | All allowed chat IDs (for broadcast)
     eeNotifyChatIds :: [Int64]
   }
@@ -119,6 +122,7 @@ handleEvent env event = do
       (eeCompaction env)
       (eeSystemPrompt env)
       (eeModel env)
+      (eeThinking env)
       (if evSession event == Isolated then [] else convMessages conv)
       userMsg
       (Just rateLimitCallback)
