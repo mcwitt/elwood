@@ -281,13 +281,6 @@ loadConfig path = do
           | (name, mcf) <- Map.toList serverMap
           ]
 
-  -- Helper to parse session config from string
-  let parseSessionConfig :: Text -> SessionConfig
-      parseSessionConfig t
-        | T.toLower t == "isolated" = Isolated
-        | "named:" `T.isPrefixOf` T.toLower t = Named (T.drop 6 t)
-        | otherwise = Named t -- Default to named with the given string
-
   -- Helper to parse delivery targets from strings
   let parseDeliveryTarget :: Text -> Maybe DeliveryTarget
       parseDeliveryTarget t = case T.toLower t of
@@ -314,7 +307,7 @@ loadConfig path = do
                         wcSecret = wcfSecret ep,
                         wcPromptTemplate = wcfPromptTemplate ep,
                         wcPromptFile = wcfPromptFile ep,
-                        wcSession = maybe Isolated parseSessionConfig (wcfSession ep),
+                        wcSession = maybe Isolated Named (wcfSession ep),
                         wcDelivery = case wcfDeliver ep of
                           Nothing -> [TelegramBroadcast]
                           Just targets ->

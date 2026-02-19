@@ -112,7 +112,6 @@ webhook:
       promptTemplate: |
         Motion detected at front door at {{.timestamp}}.
         Please describe what you see.
-      session: isolated
       deliver:
         - telegram
 
@@ -167,7 +166,6 @@ Add the flake to your NixOS configuration:
               globalSecret = "your-secret";
               endpoints."doorbell" = {
                 promptTemplate = "Motion detected at {{.timestamp}}";
-                session = "isolated";
                 deliver = [ "telegram" ];
               };
             };
@@ -176,14 +174,14 @@ Add the flake to your NixOS configuration:
             cronJobs.heartbeat = {
               promptFile = "HEARTBEAT.md";
               schedule = "*-*-* *:00/30";  # every 30 minutes
-              isolated = true;
+              session = "123456789";       # share conversation with Telegram chat
               suppressIfContains = "HEARTBEAT_OK";
             };
 
             cronJobs.daily-summary = {
               prompt = "Generate my daily summary";
               schedule = "*-*-* 08:00";
-              isolated = true;
+              # session = null (default); each run is isolated
             };
 
             permissions = {

@@ -37,7 +37,7 @@ let
             cronName: cronCfg:
             {
               name = "cron-${cronName}";
-              session = if cronCfg.isolated then "isolated" else "named:cron-${cronName}";
+              session = cronCfg.session;
               deliver = [ "telegram" ];
             }
             // lib.optionalAttrs (cronCfg.prompt != null) {
@@ -131,9 +131,9 @@ let
       };
 
       session = lib.mkOption {
-        type = lib.types.str;
-        default = "isolated";
-        description = "Session mode: 'isolated' or 'named:<id>'.";
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Session name for persistent conversation. Null means isolated (no history).";
       };
 
       deliver = lib.mkOption {
@@ -167,10 +167,11 @@ let
         example = "HEARTBEAT.md";
       };
 
-      isolated = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Whether to use an isolated session for each run.";
+      session = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Session name for persistent conversation. Null means isolated (no history). Use a Telegram chat ID to share conversation with that chat.";
+        example = "123456789";
       };
 
       schedule = lib.mkOption {
