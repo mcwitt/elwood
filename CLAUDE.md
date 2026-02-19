@@ -16,6 +16,7 @@ nix fmt                  # Format and lint
 Before completing a task:
 - [ ] Code compiles: `nix develop -c cabal build`
 - [ ] Tests pass: `nix develop -c cabal test`
+- [ ] Relevant documentation and examples updated (e.g. README.md, config.yaml.example)
 - [ ] Formatted and linted: `nix fmt`
 
 ## Architecture
