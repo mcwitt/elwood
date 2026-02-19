@@ -12,9 +12,21 @@ module Elwood.Webhook.Types
 where
 
 import Data.Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
+import Data.Aeson.Types (Parser)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import GHC.Generics (Generic)
+
+-- | Fail if an object contains keys not in the given set
+rejectUnknownKeys :: String -> [Key] -> Object -> Parser ()
+rejectUnknownKeys name knownKeys obj =
+  let unknown = Set.toList $ Set.difference (Set.fromList (KM.keys obj)) (Set.fromList knownKeys)
+   in case unknown of
+        [] -> pure ()
+        ks -> fail $ name <> ": unknown keys: " <> show (map Key.toText ks)
 
 -- | Configuration for a single webhook endpoint
 data WebhookConfig = WebhookConfig
@@ -70,7 +82,8 @@ data WebhookConfigFile = WebhookConfigFile
   deriving stock (Show, Generic)
 
 instance FromJSON WebhookServerConfigFile where
-  parseJSON = withObject "WebhookServerConfigFile" $ \v ->
+  parseJSON = withObject "WebhookServerConfigFile" $ \v -> do
+    rejectUnknownKeys "WebhookServerConfigFile" ["enabled", "port", "globalSecret", "endpoints"] v
     WebhookServerConfigFile
       <$> v .:? "enabled"
       <*> v .:? "port"
@@ -78,7 +91,8 @@ instance FromJSON WebhookServerConfigFile where
       <*> v .:? "endpoints"
 
 instance FromJSON WebhookConfigFile where
-  parseJSON = withObject "WebhookConfigFile" $ \v ->
+  parseJSON = withObject "WebhookConfigFile" $ \v -> do
+    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "promptTemplate", "promptFile", "session", "deliver", "suppressIfContains"] v
     WebhookConfigFile
       <$> v .: "name"
       <*> v .:? "secret"

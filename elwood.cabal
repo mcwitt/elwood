@@ -12,6 +12,7 @@ maintainer:      matt@example.com
 category:        AI, Bot
 build-type:      Simple
 extra-doc-files: CHANGELOG.md
+data-files:      config.yaml.example
 
 common warnings
   ghc-options:
@@ -106,6 +107,7 @@ test-suite elwood-test
   type:               exitcode-stdio-1.0
   main-is:            Main.hs
   other-modules:
+    Paths_elwood
     Test.Elwood.Claude.Client
     Test.Elwood.Claude.Compaction
     Test.Elwood.Claude.Types

@@ -16,10 +16,14 @@ where
 
 import Control.Applicative ((<|>))
 import Data.Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
+import Data.Aeson.Types (Parser)
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Yaml qualified as Yaml
@@ -34,6 +38,14 @@ import Elwood.Webhook.Types
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
 
+-- | Fail if an object contains keys not in the given set
+rejectUnknownKeys :: String -> [Key] -> Object -> Parser ()
+rejectUnknownKeys name knownKeys obj =
+  let unknown = Set.toList $ Set.difference (Set.fromList (KM.keys obj)) (Set.fromList knownKeys)
+   in case unknown of
+        [] -> pure ()
+        ks -> fail $ name <> ": unknown keys: " <> show (map Key.toText ks)
+
 -- | Extended thinking level for Claude
 data ThinkingLevel
   = ThinkingOff
@@ -42,13 +54,16 @@ data ThinkingLevel
   | ThinkingHigh
   deriving stock (Show, Eq, Generic)
 
--- | Parse a thinking level from text
-parseThinkingLevel :: Text -> ThinkingLevel
-parseThinkingLevel t = case T.toLower t of
+-- | Parse a thinking level from a YAML value
+-- YAML parses "off" as boolean False, so we handle both Text and Bool
+parseThinkingLevel :: Value -> ThinkingLevel
+parseThinkingLevel (String t) = case T.toLower t of
   "low" -> ThinkingLow
   "medium" -> ThinkingMedium
   "high" -> ThinkingHigh
   _ -> ThinkingOff
+parseThinkingLevel (Bool False) = ThinkingOff
+parseThinkingLevel _ = ThinkingOff
 
 -- | Main configuration for Elwood
 data Config = Config
@@ -116,7 +131,7 @@ data ConfigFile = ConfigFile
     cfCompaction :: Maybe CompactionConfigFile,
     cfMCPServers :: Maybe (Map Text MCPServerConfigFile),
     cfWebhook :: Maybe WebhookServerConfigFile,
-    cfThinking :: Maybe Text
+    cfThinking :: Maybe Value
   }
   deriving stock (Show, Generic)
 
@@ -148,7 +163,8 @@ data MCPServerConfigFile = MCPServerConfigFile
   deriving stock (Show, Generic)
 
 instance FromJSON ConfigFile where
-  parseJSON = withObject "ConfigFile" $ \v ->
+  parseJSON = withObject "ConfigFile" $ \v -> do
+    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "maxHistory", "permissions", "compaction", "mcpServers", "webhook", "thinking"] v
     ConfigFile
       <$> v .:? "stateDir"
       <*> v .:? "workspaceDir"
@@ -162,7 +178,8 @@ instance FromJSON ConfigFile where
       <*> v .:? "thinking"
 
 instance FromJSON PermissionConfigFile where
-  parseJSON = withObject "PermissionConfigFile" $ \v ->
+  parseJSON = withObject "PermissionConfigFile" $ \v -> do
+    rejectUnknownKeys "PermissionConfigFile" ["safeCommands", "dangerousPatterns", "allowedPaths", "toolPolicies", "defaultPolicy", "approvalTimeoutSeconds"] v
     PermissionConfigFile
       <$> v .:? "safeCommands"
       <*> v .:? "dangerousPatterns"
@@ -172,13 +189,15 @@ instance FromJSON PermissionConfigFile where
       <*> v .:? "approvalTimeoutSeconds"
 
 instance FromJSON CompactionConfigFile where
-  parseJSON = withObject "CompactionConfigFile" $ \v ->
+  parseJSON = withObject "CompactionConfigFile" $ \v -> do
+    rejectUnknownKeys "CompactionConfigFile" ["tokenThreshold", "compactionModel"] v
     CompactionConfigFile
       <$> v .:? "tokenThreshold"
       <*> v .:? "compactionModel"
 
 instance FromJSON MCPServerConfigFile where
-  parseJSON = withObject "MCPServerConfigFile" $ \v ->
+  parseJSON = withObject "MCPServerConfigFile" $ \v -> do
+    rejectUnknownKeys "MCPServerConfigFile" ["command", "args", "env", "startupDelay"] v
     MCPServerConfigFile
       <$> v .: "command"
       <*> v .:? "args"
