@@ -11,6 +11,7 @@ module Elwood.Claude.Compaction
     -- * Exported for testing
     extractText,
     formatMessagesForSummary,
+    safeSplit,
   )
 where
 
@@ -61,9 +62,10 @@ compactMessages ::
   IO [ClaudeMessage]
 compactMessages logger client config msgs = do
   -- Split messages: keep recent half, summarize old half
+  -- We must be careful not to split in the middle of a tool_use/tool_result pair
   let totalMsgs = length msgs
       splitPoint = totalMsgs `div` 2
-      (oldMsgs, recentMsgs) = splitAt splitPoint msgs
+      (oldMsgs, recentMsgs) = safeSplit splitPoint msgs
 
   logInfo
     logger
@@ -158,3 +160,41 @@ formatMessagesForSummary msgs =
 extractText :: [ContentBlock] -> Text
 extractText blocks =
   T.intercalate "\n" [t | TextBlock t <- blocks]
+
+-- | Split messages at a safe boundary that doesn't break tool_use/tool_result pairs
+-- If the split point would leave tool_results without their tool_uses,
+-- adjust the split to include both in the recent messages
+safeSplit :: Int -> [ClaudeMessage] -> ([ClaudeMessage], [ClaudeMessage])
+safeSplit splitPoint msgs =
+  let (old, recent) = splitAt splitPoint msgs
+   in if startsWithToolResult recent
+        then adjustSplit old recent
+        else (old, recent)
+  where
+    -- Check if messages start with a user message containing tool_result blocks
+    startsWithToolResult :: [ClaudeMessage] -> Bool
+    startsWithToolResult [] = False
+    startsWithToolResult (m : _) =
+      cmRole m == User && any isToolResult (cmContent m)
+
+    isToolResult :: ContentBlock -> Bool
+    isToolResult (ToolResultBlock {}) = True
+    isToolResult _ = False
+
+    -- Move messages from old to recent until we find the matching tool_use
+    adjustSplit :: [ClaudeMessage] -> [ClaudeMessage] -> ([ClaudeMessage], [ClaudeMessage])
+    adjustSplit [] recent = ([], recent)
+    adjustSplit old recent =
+      let lastOld = last old
+          initOld = init old
+       in if hasToolUse lastOld
+            then (initOld, lastOld : recent)
+            else adjustSplit initOld (lastOld : recent)
+
+    hasToolUse :: ClaudeMessage -> Bool
+    hasToolUse m =
+      cmRole m == Assistant && any isToolUse (cmContent m)
+
+    isToolUse :: ContentBlock -> Bool
+    isToolUse (ToolUseBlock {}) = True
+    isToolUse _ = False

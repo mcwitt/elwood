@@ -2,7 +2,7 @@ module Test.Elwood.Claude.Compaction (tests) where
 
 import Data.Aeson qualified as Aeson
 import Data.Text qualified as T
-import Elwood.Claude.Compaction (estimateTokens, extractText, formatMessagesForSummary)
+import Elwood.Claude.Compaction (estimateTokens, extractText, formatMessagesForSummary, safeSplit)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..))
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -15,6 +15,7 @@ tests =
     [ estimateTokensTests,
       extractTextTests,
       formatMessagesTests,
+      safeSplitTests,
       estimateTokensProperties
     ]
 
@@ -102,6 +103,73 @@ formatMessagesTests =
         -- Should be truncated to ~1000 chars plus "..."
         T.length formatted < 1100 @?= True
         T.isSuffixOf "..." formatted @?= True
+    ]
+
+safeSplitTests :: TestTree
+safeSplitTests =
+  testGroup
+    "safeSplit"
+    [ testCase "splits normally when no tool_result at boundary" $ do
+        let msgs =
+              [ ClaudeMessage User [TextBlock "Hello"],
+                ClaudeMessage Assistant [TextBlock "Hi there"],
+                ClaudeMessage User [TextBlock "How are you?"],
+                ClaudeMessage Assistant [TextBlock "I'm good"]
+              ]
+            (old, recent) = safeSplit 2 msgs
+        length old @?= 2
+        length recent @?= 2,
+      testCase "adjusts split when tool_result at boundary" $ do
+        let msgs =
+              [ ClaudeMessage User [TextBlock "Hello"],
+                ClaudeMessage Assistant [ToolUseBlock "tool-1" "some_tool" (Aeson.object [])],
+                ClaudeMessage User [ToolResultBlock "tool-1" "result" False],
+                ClaudeMessage Assistant [TextBlock "Done"]
+              ]
+            -- Naive split at 2 would put tool_result in recent without its tool_use
+            (old, recent) = safeSplit 2 msgs
+        -- Should adjust to include the tool_use message in recent
+        length old @?= 1
+        length recent @?= 3,
+      testCase "handles multiple tool_use/tool_result pairs" $ do
+        let msgs =
+              [ ClaudeMessage User [TextBlock "Do two things"],
+                ClaudeMessage Assistant [ToolUseBlock "tool-1" "first_tool" (Aeson.object [])],
+                ClaudeMessage User [ToolResultBlock "tool-1" "result1" False],
+                ClaudeMessage Assistant [ToolUseBlock "tool-2" "second_tool" (Aeson.object [])],
+                ClaudeMessage User [ToolResultBlock "tool-2" "result2" False],
+                ClaudeMessage Assistant [TextBlock "Both done"]
+              ]
+            -- Split at 4 would put tool_result at start of recent
+            (old, recent) = safeSplit 4 msgs
+        -- Should adjust to include the tool_use
+        length old @?= 3
+        length recent @?= 3,
+      testCase "handles empty list" $ do
+        let (old, recent) = safeSplit 0 ([] :: [ClaudeMessage])
+        old @?= []
+        recent @?= [],
+      testCase "handles split at 0" $ do
+        let msgs = [ClaudeMessage User [TextBlock "Hello"]]
+            (old, recent) = safeSplit 0 msgs
+        old @?= []
+        length recent @?= 1,
+      testCase "handles split beyond length" $ do
+        let msgs = [ClaudeMessage User [TextBlock "Hello"]]
+            (old, recent) = safeSplit 10 msgs
+        length old @?= 1
+        recent @?= [],
+      testCase "no adjustment needed when recent starts with text" $ do
+        let msgs =
+              [ ClaudeMessage Assistant [ToolUseBlock "tool-1" "some_tool" (Aeson.object [])],
+                ClaudeMessage User [ToolResultBlock "tool-1" "result" False],
+                ClaudeMessage User [TextBlock "Thanks"],
+                ClaudeMessage Assistant [TextBlock "You're welcome"]
+              ]
+            -- Split at 2 puts text message at start of recent
+            (old, recent) = safeSplit 2 msgs
+        length old @?= 2
+        length recent @?= 2
     ]
 
 estimateTokensProperties :: TestTree
