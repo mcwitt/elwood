@@ -96,7 +96,7 @@ roundTripTests =
     [ testCase "Conversation round-trips" $ do
         let conv =
               Conversation
-                { convChatId = 12345,
+                { convSessionId = "12345",
                   convMessages =
                     [ ClaudeMessage User [TextBlock "Hi"],
                       ClaudeMessage Assistant [TextBlock "Hello!"]
@@ -105,7 +105,7 @@ roundTripTests =
                 }
         case decode (encode conv) of
           Just decoded -> do
-            convChatId decoded @?= convChatId conv
+            convSessionId decoded @?= convSessionId conv
             length (convMessages decoded) @?= length (convMessages conv)
           Nothing -> assertFailure "Failed to decode Conversation",
       testCase "ToolSchema encodes name and description" $ do

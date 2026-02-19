@@ -26,7 +26,6 @@ where
 
 import Control.Exception (Exception)
 import Data.Aeson
-import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Time (UTCTime)
 import GHC.Generics (Generic)
@@ -181,8 +180,8 @@ instance FromJSON ClaudeMessage where
 
 -- | A conversation with history
 data Conversation = Conversation
-  { -- | Telegram chat ID
-    convChatId :: Int64,
+  { -- | Session identifier (e.g. chat ID or named session)
+    convSessionId :: Text,
     -- | Message history (oldest first)
     convMessages :: [ClaudeMessage],
     -- | When conversation was last updated
@@ -193,7 +192,7 @@ data Conversation = Conversation
 instance ToJSON Conversation where
   toJSON conv =
     object
-      [ "chatId" .= convChatId conv,
+      [ "sessionId" .= convSessionId conv,
         "messages" .= convMessages conv,
         "lastUpdated" .= convLastUpdated conv
       ]
@@ -201,7 +200,7 @@ instance ToJSON Conversation where
 instance FromJSON Conversation where
   parseJSON = withObject "Conversation" $ \v ->
     Conversation
-      <$> v .: "chatId"
+      <$> v .: "sessionId"
       <*> v .: "messages"
       <*> v .: "lastUpdated"
 

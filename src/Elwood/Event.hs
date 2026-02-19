@@ -22,7 +22,6 @@ where
 
 import Control.Exception (SomeException, catch)
 import Data.Aeson (Value)
-import Data.Bits (shiftL, xor)
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -96,10 +95,12 @@ handleEvent env event = do
     ]
 
   -- Determine conversation ID from session config
-  let conversationId = sessionToConversationId (evSession event) source
+  let mConversationId = sessionToConversationId (evSession event)
 
-  -- Get existing conversation (empty for Isolated)
-  conv <- getConversation (eeConversations env) conversationId
+  -- Get existing conversation history (empty for Isolated)
+  history <- case mConversationId of
+    Nothing -> pure []
+    Just cid -> convMessages <$> getConversation (eeConversations env) cid
 
   -- Build user message with optional image
   let contentBlocks = case evImage event of
@@ -123,7 +124,7 @@ handleEvent env event = do
       (eeSystemPrompt env)
       (eeModel env)
       (eeThinking env)
-      (if evSession event == Isolated then [] else convMessages conv)
+      history
       userMsg
       (Just rateLimitCallback)
       `catch` \(e :: SomeException) -> do
@@ -133,9 +134,9 @@ handleEvent env event = do
   case result of
     AgentSuccess responseText allMessages -> do
       -- Update conversation (skip for isolated sessions)
-      case evSession event of
-        Isolated -> pure ()
-        Named _ -> updateConversation (eeConversations env) conversationId allMessages
+      case mConversationId of
+        Nothing -> pure ()
+        Just cid -> updateConversation (eeConversations env) cid allMessages
 
       -- Deliver response
       deliverResponse env event responseText
@@ -189,30 +190,11 @@ sendMessageSafe env chatId msg = do
 
 -- | Convert session config to conversation ID
 --
--- For Isolated sessions, returns a unique negative ID based on timestamp.
--- For Named sessions, returns a stable negative ID based on hash.
--- For TelegramSource with Named, uses the chat ID directly.
-sessionToConversationId :: SessionConfig -> EventSource -> Int64
-sessionToConversationId session source = case session of
-  Isolated ->
-    -- Use a large negative number - in practice, unique per invocation
-    -- The caller should use a timestamp-based ID for true uniqueness
-    -999999
-  Named name ->
-    case source of
-      TelegramSource chatId ->
-        -- For Telegram, use the actual chat ID for conversation continuity
-        chatId
-      _ ->
-        -- For other sources, hash the session name to a stable negative ID
-        negate (fromIntegral (abs (hashSessionName name)) + 2)
-
--- | DJB2 hash function for session names
-hashSessionName :: Text -> Int
-hashSessionName = T.foldl' step 5381
-  where
-    step :: Int -> Char -> Int
-    step h c = ((h `shiftL` 5) + h) `xor` fromEnum c
+-- For Isolated sessions, returns Nothing (no conversation persistence).
+-- For Named sessions, returns the session name as the conversation key.
+sessionToConversationId :: SessionConfig -> Maybe Text
+sessionToConversationId Isolated = Nothing
+sessionToConversationId (Named name) = Just name
 
 -- | Create rate limit notification callback based on event delivery targets
 mkRateLimitCallback :: EventEnv -> Event -> RateLimitCallback

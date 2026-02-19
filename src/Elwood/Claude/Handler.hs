@@ -89,7 +89,7 @@ claudeHandler logger client telegram store registry toolEnv compactionConfig sys
 
     handleClear :: IO (Maybe Text)
     handleClear = do
-      clearConversation store chatIdVal
+      clearConversation store (T.pack (show chatIdVal))
       logInfo logger "Conversation cleared" [("chat_id", T.pack (show chatIdVal))]
       pure (Just "Conversation cleared. Starting fresh!")
 

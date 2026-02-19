@@ -1,6 +1,5 @@
 module Test.Elwood.Event (tests) where
 
-import Data.Text qualified as T
 import Elwood.Event (sessionToConversationId)
 import Elwood.Event.Types
   ( DeliveryTarget (..),
@@ -9,7 +8,6 @@ import Elwood.Event.Types
   )
 import Test.Tasty
 import Test.Tasty.HUnit
-import Test.Tasty.QuickCheck
 
 tests :: TestTree
 tests =
@@ -75,32 +73,14 @@ sessionIdTests :: TestTree
 sessionIdTests =
   testGroup
     "sessionToConversationId"
-    [ testCase "Isolated returns fixed ID" $ do
-        let id1 = sessionToConversationId Isolated (WebhookSource "test")
-        let id2 = sessionToConversationId Isolated (CronSource "job")
-        -- Both should return the same fixed ID for isolated sessions
-        id1 @?= id2,
-      testCase "Isolated returns negative ID" $ do
-        let convId = sessionToConversationId Isolated (WebhookSource "test")
-        convId < 0 @?= True,
-      testCase "Named with TelegramSource uses chat ID" $ do
-        let convId = sessionToConversationId (Named "chat") (TelegramSource 12345)
-        convId @?= 12345,
-      testCase "Named with WebhookSource returns negative ID" $ do
-        let convId = sessionToConversationId (Named "session") (WebhookSource "hook")
-        convId < 0 @?= True,
-      testCase "Named sessions with same name produce same ID" $ do
-        let id1 = sessionToConversationId (Named "mysession") (WebhookSource "hook1")
-        let id2 = sessionToConversationId (Named "mysession") (WebhookSource "hook2")
-        id1 @?= id2,
-      testCase "Named sessions with different names produce different IDs" $ do
-        let id1 = sessionToConversationId (Named "session1") (WebhookSource "hook")
-        let id2 = sessionToConversationId (Named "session2") (WebhookSource "hook")
-        id1 /= id2 @?= True,
-      testProperty "Named session IDs are deterministic" $
-        \(name :: String) ->
-          let t = T.pack name
-              id1 = sessionToConversationId (Named t) (WebhookSource "test")
-              id2 = sessionToConversationId (Named t) (WebhookSource "test")
-           in id1 == id2
+    [ testCase "Isolated returns Nothing" $
+        sessionToConversationId Isolated @?= Nothing,
+      testCase "Named returns Just with session name" $
+        sessionToConversationId (Named "my-session") @?= Just "my-session",
+      testCase "Named with numeric name passes through as-is" $
+        sessionToConversationId (Named "12345") @?= Just "12345",
+      testCase "Named sessions with different names return different IDs" $ do
+        let id1 = sessionToConversationId (Named "session1")
+        let id2 = sessionToConversationId (Named "session2")
+        id1 /= id2 @?= True
     ]
