@@ -13,6 +13,8 @@ module Elwood.Telegram.Client
     notify,
     getFile,
     downloadFile,
+    sendPhoto,
+    sendDocument,
   )
 where
 
@@ -23,6 +25,7 @@ import Data.ByteString.Lazy (ByteString)
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Elwood.Logging (Logger, logInfo)
 import Elwood.Telegram.Types
   ( AnswerCallbackQueryRequest (..),
@@ -38,6 +41,7 @@ import Elwood.Telegram.Types
     Update,
   )
 import Network.HTTP.Client
+import Network.HTTP.Client.MultipartFormData (formDataBody, partBS, partFileSource)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Status (statusCode)
 
@@ -273,3 +277,35 @@ downloadFile client filePath = do
   if status /= 200
     then throwIO $ TelegramHttpError status (responseBody response)
     else pure (responseBody response)
+
+-- | Send a photo to a chat via multipart upload
+sendPhoto :: TelegramClient -> Int64 -> FilePath -> Maybe Text -> IO ()
+sendPhoto client chatIdVal path mCaption = do
+  req <- parseRequest $ tcBaseUrl client <> "/sendPhoto"
+  let parts =
+        [ partBS "chat_id" (TE.encodeUtf8 $ T.pack $ show chatIdVal),
+          partFileSource "photo" path
+        ]
+          <> maybe [] (\c -> [partBS "caption" (TE.encodeUtf8 c)]) mCaption
+  req' <- formDataBody parts req
+  response <- httpLbs req' (tcManager client)
+  let status = statusCode $ responseStatus response
+  when (status /= 200) $
+    throwIO $
+      TelegramHttpError status (responseBody response)
+
+-- | Send a document to a chat via multipart upload
+sendDocument :: TelegramClient -> Int64 -> FilePath -> Maybe Text -> IO ()
+sendDocument client chatIdVal path mCaption = do
+  req <- parseRequest $ tcBaseUrl client <> "/sendDocument"
+  let parts =
+        [ partBS "chat_id" (TE.encodeUtf8 $ T.pack $ show chatIdVal),
+          partFileSource "document" path
+        ]
+          <> maybe [] (\c -> [partBS "caption" (TE.encodeUtf8 c)]) mCaption
+  req' <- formDataBody parts req
+  response <- httpLbs req' (tcManager client)
+  let status = statusCode $ responseStatus response
+  when (status /= 200) $
+    throwIO $
+      TelegramHttpError status (responseBody response)

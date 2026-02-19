@@ -22,6 +22,7 @@ where
 
 import Control.Exception (SomeException, catch)
 import Data.Aeson (Value)
+import Data.IORef (IORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -38,9 +39,10 @@ import Elwood.Event.Types
     SessionConfig (..),
   )
 import Elwood.Logging (Logger, logError, logInfo)
-import Elwood.Telegram.Client (TelegramClient, notify, sendMessage)
+import Elwood.Telegram.Client (TelegramClient, notify, sendDocument, sendMessage, sendPhoto)
+import Elwood.Tools.Attachment (isPhotoExtension)
 import Elwood.Tools.Registry (ToolRegistry)
-import Elwood.Tools.Types (ToolEnv)
+import Elwood.Tools.Types (Attachment (..), AttachmentType (..), ToolEnv (..))
 
 -- | Unified event type for all sources
 data Event = Event
@@ -75,7 +77,9 @@ data EventEnv = EventEnv
     -- | Extended thinking level
     eeThinking :: ThinkingLevel,
     -- | All allowed chat IDs (for broadcast)
-    eeNotifyChatIds :: [Int64]
+    eeNotifyChatIds :: [Int64],
+    -- | Attachment queue (shared with ToolEnv)
+    eeAttachmentQueue :: IORef [Attachment]
   }
 
 -- | Handle any event through the agent pipeline
@@ -153,10 +157,14 @@ handleEvent env event = do
       logError logger "Event handling failed" [("source", formatSource source), ("error", err)]
       pure (Left err)
 
--- | Deliver response to configured targets
+-- | Deliver response to configured targets, then send queued attachments
 deliverResponse :: EventEnv -> Event -> Text -> IO ()
 deliverResponse env event responseText = do
   mapM_ deliver (evDelivery event)
+  -- Send queued attachments
+  attachments <- readIORef (eeAttachmentQueue env)
+  mapM_ (deliverAttachments env event) attachments
+  writeIORef (eeAttachmentQueue env) []
   where
     deliver :: DeliveryTarget -> IO ()
     deliver target = case target of
@@ -173,6 +181,40 @@ deliverResponse env event responseText = do
             mapM_ (\cid -> notifySafe env cid responseText) (eeNotifyChatIds env)
       LogOnly ->
         logInfo (eeLogger env) "Event response (log only)" [("response", T.take 100 responseText)]
+
+-- | Send an attachment to all delivery targets
+deliverAttachments :: EventEnv -> Event -> Attachment -> IO ()
+deliverAttachments env event att = do
+  let chatIds = concatMap targetChatIds (evDelivery event)
+  mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds
+  where
+    targetChatIds :: DeliveryTarget -> [Int64]
+    targetChatIds (TelegramDelivery cid) = [cid]
+    targetChatIds TelegramBroadcast = eeNotifyChatIds env
+    targetChatIds TelegramReply =
+      case evSource event of
+        TelegramSource cid -> [cid]
+        _ -> eeNotifyChatIds env
+    targetChatIds LogOnly = []
+
+-- | Send a single attachment to a chat, choosing photo vs document
+sendAttachmentSafe :: EventEnv -> Int64 -> Attachment -> IO ()
+sendAttachmentSafe env chatId att = do
+  let send = case attType att of
+        AttachPhoto -> sendPhoto
+        AttachDocument -> sendDocument
+        AttachAuto
+          | isPhotoExtension (attPath att) -> sendPhoto
+          | otherwise -> sendDocument
+  send (eeTelegram env) chatId (attPath att) (attCaption att)
+    `catch` \(e :: SomeException) ->
+      logError
+        (eeLogger env)
+        "Failed to send attachment"
+        [ ("chat_id", T.pack (show chatId)),
+          ("path", T.pack (attPath att)),
+          ("error", T.pack (show e))
+        ]
 
 -- | Safely send notification, catching any errors
 notifySafe :: EventEnv -> Int64 -> Text -> IO ()

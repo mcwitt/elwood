@@ -7,6 +7,10 @@ module Elwood.Tools.Types
     ToolEnv (..),
     ApprovalOutcome (..),
 
+    -- * Attachment Types
+    Attachment (..),
+    AttachmentType (..),
+
     -- * Result Helpers
     toolSuccess,
     toolError,
@@ -14,6 +18,7 @@ module Elwood.Tools.Types
 where
 
 import Data.Aeson (Value)
+import Data.IORef (IORef)
 import Data.Int (Int64)
 import Data.Text (Text)
 import Elwood.Logging (Logger)
@@ -48,7 +53,9 @@ data ToolEnv = ToolEnv
     -- | Chat ID for the current conversation (for approval requests)
     teChatId :: Maybe Int64,
     -- | Approval request function (sends Telegram message, returns result)
-    teRequestApproval :: Maybe (Text -> Text -> IO ApprovalOutcome)
+    teRequestApproval :: Maybe (Text -> Text -> IO ApprovalOutcome),
+    -- | Queue of attachments to send after the text response
+    teAttachmentQueue :: IORef [Attachment]
   }
 
 -- | Outcome of an approval request (simplified for ToolEnv)
@@ -56,6 +63,27 @@ data ApprovalOutcome
   = ApprovalGranted
   | ApprovalDenied
   | ApprovalTimeout
+  deriving stock (Show, Eq)
+
+-- | Type of attachment to send
+data AttachmentType
+  = -- | Send as a photo (compressed, preview in chat)
+    AttachPhoto
+  | -- | Send as a document (uncompressed, no preview)
+    AttachDocument
+  | -- | Auto-detect based on file extension
+    AttachAuto
+  deriving stock (Show, Eq)
+
+-- | An attachment queued for sending after the text response
+data Attachment = Attachment
+  { -- | Absolute path to the file
+    attPath :: FilePath,
+    -- | How to send the file
+    attType :: AttachmentType,
+    -- | Optional caption
+    attCaption :: Maybe Text
+  }
   deriving stock (Show, Eq)
 
 -- | A tool that can be used by Claude

@@ -33,7 +33,7 @@ import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.Telegram.Client (TelegramClient, downloadFile, getFile)
 import Elwood.Telegram.Types (Chat (..), Message (..), PhotoSize (..), TelegramFile (..))
 import Elwood.Tools.Registry (ToolRegistry)
-import Elwood.Tools.Types (ToolEnv)
+import Elwood.Tools.Types (ToolEnv (..))
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 
@@ -125,7 +125,8 @@ claudeHandler logger client telegram store registry toolEnv compactionConfig sys
                     eeSystemPrompt = systemPrompt,
                     eeModel = model,
                     eeThinking = thinking,
-                    eeNotifyChatIds = allowedChatIds
+                    eeNotifyChatIds = allowedChatIds,
+                    eeAttachmentQueue = teAttachmentQueue toolEnv
                   }
 
           -- Create Telegram event

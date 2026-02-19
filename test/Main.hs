@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Test.Elwood.Attachment qualified
 import Test.Elwood.Claude.Client qualified
 import Test.Elwood.Claude.Compaction qualified
 import Test.Elwood.Claude.Types qualified
@@ -26,5 +27,6 @@ tests =
       Test.Elwood.Claude.Client.tests,
       Test.Elwood.MCP.tests,
       Test.Elwood.Event.tests,
-      Test.Elwood.Webhook.tests
+      Test.Elwood.Webhook.tests,
+      Test.Elwood.Attachment.tests
     ]

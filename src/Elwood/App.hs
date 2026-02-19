@@ -5,8 +5,9 @@ module Elwood.App
 where
 
 import Control.Concurrent.Async (async, wait)
-import Control.Exception (finally)
+import Control.Exception (SomeException, catch, finally)
 import Data.Foldable (for_)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -35,7 +36,9 @@ import Elwood.Telegram.Client
     answerCallbackQuery,
     editMessageReplyMarkup,
     newTelegramClient,
+    sendDocument,
     sendMessageWithKeyboard,
+    sendPhoto,
   )
 import Elwood.Telegram.Polling
 import Elwood.Telegram.Types
@@ -45,11 +48,12 @@ import Elwood.Telegram.Types
     InlineKeyboardMarkup (..),
     Message (..),
   )
+import Elwood.Tools.Attachment (isPhotoExtension, queueAttachmentTool)
 import Elwood.Tools.Command (runCommandTool)
 import Elwood.Tools.FileSystem (readFileTool, writeFileTool)
 import Elwood.Tools.Memory (saveMemoryTool, searchMemoryTool)
 import Elwood.Tools.Registry
-import Elwood.Tools.Types (ApprovalOutcome (..), ToolEnv (..))
+import Elwood.Tools.Types (ApprovalOutcome (..), Attachment (..), AttachmentType (..), ToolEnv (..))
 import Elwood.Tools.Web (webFetchTool, webSearchTool)
 import Elwood.Webhook.Server (runWebhookServer)
 import Network.HTTP.Client (newManager)
@@ -117,6 +121,9 @@ runApp config = do
   approvalCoordinator <- newApprovalCoordinator timeoutSeconds
   logInfo logger "Approval coordinator initialized" [("timeout_seconds", T.pack (show timeoutSeconds))]
 
+  -- Initialize attachment queue
+  attachmentQueue <- newIORef []
+
   -- Create base tool environment (without per-chat approval function)
   let baseToolEnv =
         ToolEnv
@@ -128,7 +135,8 @@ runApp config = do
             teBraveApiKey = cfgBraveApiKey config,
             teMemoryStore = memoryStore,
             teChatId = Nothing,
-            teRequestApproval = Nothing
+            teRequestApproval = Nothing,
+            teAttachmentQueue = attachmentQueue
           }
 
   -- Helper to create tool environment with approval function for a specific chat
@@ -141,15 +149,16 @@ runApp config = do
 
   -- Initialize tool registry with built-in tools
   let builtinRegistry =
-        registerTool runCommandTool $
-          registerTool readFileTool $
-            registerTool writeFileTool $
-              registerTool webSearchTool $
-                registerTool webFetchTool $
-                  registerTool saveMemoryTool $
-                    registerTool
-                      searchMemoryTool
-                      newToolRegistry
+        registerTool queueAttachmentTool $
+          registerTool runCommandTool $
+            registerTool readFileTool $
+              registerTool writeFileTool $
+                registerTool webSearchTool $
+                  registerTool webFetchTool $
+                    registerTool saveMemoryTool $
+                      registerTool
+                        searchMemoryTool
+                        newToolRegistry
 
   logInfo
     logger
@@ -211,7 +220,8 @@ runApp config = do
             eeSystemPrompt = systemPrompt,
             eeModel = cfgModel config,
             eeThinking = cfgThinking config,
-            eeNotifyChatIds = cfgAllowedChatIds config
+            eeNotifyChatIds = cfgAllowedChatIds config,
+            eeAttachmentQueue = attachmentQueue
           }
 
   -- Log webhook configuration
@@ -254,6 +264,7 @@ runApp config = do
     )
 
 -- | Claude handler that injects per-chat approval function into ToolEnv
+--   and sends queued attachments after the text reply
 claudeHandlerWithApproval ::
   Logger ->
   ClaudeClient ->
@@ -271,7 +282,31 @@ claudeHandlerWithApproval ::
 claudeHandlerWithApproval logger client telegram store registry mkToolEnv compactionConfig systemPrompt model thinking allowedChatIds msg = do
   let cid = chatId (chat msg)
       toolEnvForChat = mkToolEnv cid
-  claudeHandler logger client telegram store registry toolEnvForChat compactionConfig systemPrompt model thinking allowedChatIds msg
+  result <- claudeHandler logger client telegram store registry toolEnvForChat compactionConfig systemPrompt model thinking allowedChatIds msg
+  -- Send queued attachments after the text reply
+  attachments <- readIORef (teAttachmentQueue toolEnvForChat)
+  mapM_ (sendAttachmentToChat logger telegram cid) attachments
+  writeIORef (teAttachmentQueue toolEnvForChat) []
+  pure result
+
+-- | Send a single attachment to a specific chat
+sendAttachmentToChat :: Logger -> TelegramClient -> Int64 -> Attachment -> IO ()
+sendAttachmentToChat logger telegram cid att = do
+  let send = case attType att of
+        AttachPhoto -> sendPhoto
+        AttachDocument -> sendDocument
+        AttachAuto
+          | isPhotoExtension (attPath att) -> sendPhoto
+          | otherwise -> sendDocument
+  send telegram cid (attPath att) (attCaption att)
+    `catch` \(e :: SomeException) ->
+      logError
+        logger
+        "Failed to send attachment"
+        [ ("chat_id", T.pack (show cid)),
+          ("path", T.pack (attPath att)),
+          ("error", T.pack (show e))
+        ]
 
 -- | Request tool approval via Telegram inline keyboard
 requestToolApproval ::
