@@ -21,6 +21,7 @@ module Elwood.Event
 where
 
 import Control.Exception (SomeException, catch)
+import Control.Monad (unless)
 import Data.Aeson (Value)
 import Data.IORef (IORef, readIORef, writeIORef)
 import Data.Int (Int64)
@@ -161,10 +162,14 @@ handleEvent env event = do
 deliverResponse :: EventEnv -> Event -> Text -> IO ()
 deliverResponse env event responseText = do
   mapM_ deliver (evDelivery event)
-  -- Send queued attachments
-  attachments <- readIORef (eeAttachmentQueue env)
-  mapM_ (deliverAttachments env event) attachments
-  writeIORef (eeAttachmentQueue env) []
+  -- Send queued attachments to Telegram targets (if any)
+  -- Only drain the queue when there are real Telegram targets; for LogOnly
+  -- the polling path in App.hs handles attachment delivery separately.
+  let chatIds = concatMap targetChatIds (evDelivery event)
+  unless (null chatIds) $ do
+    attachments <- readIORef (eeAttachmentQueue env)
+    mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) attachments
+    writeIORef (eeAttachmentQueue env) []
   where
     deliver :: DeliveryTarget -> IO ()
     deliver target = case target of
@@ -182,12 +187,6 @@ deliverResponse env event responseText = do
       LogOnly ->
         logInfo (eeLogger env) "Event response (log only)" [("response", T.take 100 responseText)]
 
--- | Send an attachment to all delivery targets
-deliverAttachments :: EventEnv -> Event -> Attachment -> IO ()
-deliverAttachments env event att = do
-  let chatIds = concatMap targetChatIds (evDelivery event)
-  mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds
-  where
     targetChatIds :: DeliveryTarget -> [Int64]
     targetChatIds (TelegramDelivery cid) = [cid]
     targetChatIds TelegramBroadcast = eeNotifyChatIds env
