@@ -99,7 +99,9 @@ webhookConfigTests =
                   wcPromptFile = Nothing,
                   wcSession = Isolated,
                   wcDelivery = [LogOnly],
-                  wcSuppressIfContains = Nothing
+                  wcSuppressIfContains = Nothing,
+                  wcModel = Nothing,
+                  wcThinking = Nothing
                 }
         wcName config @?= "test-hook"
         wcPromptTemplate config @?= Just "Hello"
@@ -113,7 +115,9 @@ webhookConfigTests =
                   wcPromptFile = Just "HEARTBEAT.md",
                   wcSession = Isolated,
                   wcDelivery = [TelegramBroadcast],
-                  wcSuppressIfContains = Nothing
+                  wcSuppressIfContains = Nothing,
+                  wcModel = Nothing,
+                  wcThinking = Nothing
                 }
         wcPromptFile config @?= Just "HEARTBEAT.md",
       testCase "can create config with secret" $ do
@@ -125,7 +129,9 @@ webhookConfigTests =
                   wcPromptFile = Nothing,
                   wcSession = Named "session",
                   wcDelivery = [TelegramBroadcast],
-                  wcSuppressIfContains = Nothing
+                  wcSuppressIfContains = Nothing,
+                  wcModel = Nothing,
+                  wcThinking = Nothing
                 }
         wcSecret config @?= Just "my-secret"
         wcSession config @?= Named "session",
@@ -138,7 +144,9 @@ webhookConfigTests =
                   wcPromptFile = Nothing,
                   wcSession = Isolated,
                   wcDelivery = [TelegramBroadcast, TelegramDelivery "123", LogOnly],
-                  wcSuppressIfContains = Nothing
+                  wcSuppressIfContains = Nothing,
+                  wcModel = Nothing,
+                  wcThinking = Nothing
                 }
         length (wcDelivery config) @?= 3,
       testCase "can have suppressIfContains" $ do
@@ -150,7 +158,9 @@ webhookConfigTests =
                   wcPromptFile = Just "HEARTBEAT.md",
                   wcSession = Isolated,
                   wcDelivery = [TelegramBroadcast],
-                  wcSuppressIfContains = Just "HEARTBEAT_OK"
+                  wcSuppressIfContains = Just "HEARTBEAT_OK",
+                  wcModel = Nothing,
+                  wcThinking = Nothing
                 }
         wcSuppressIfContains config @?= Just "HEARTBEAT_OK"
     ]
@@ -178,7 +188,9 @@ webhookServerConfigTests =
                   wcPromptFile = Nothing,
                   wcSession = Isolated,
                   wcDelivery = [LogOnly],
-                  wcSuppressIfContains = Nothing
+                  wcSuppressIfContains = Nothing,
+                  wcModel = Nothing,
+                  wcThinking = Nothing
                 }
             config =
               WebhookServerConfig

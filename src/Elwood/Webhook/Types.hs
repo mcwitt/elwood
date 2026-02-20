@@ -33,7 +33,11 @@ data WebhookConfig = WebhookConfig
     -- | Where to deliver responses
     wcDelivery :: [DeliveryTarget],
     -- | Suppress notification if response contains this string
-    wcSuppressIfContains :: Maybe Text
+    wcSuppressIfContains :: Maybe Text,
+    -- | Model override for this endpoint (Nothing = use global)
+    wcModel :: Maybe Text,
+    -- | Thinking level override for this endpoint (Nothing = use global)
+    wcThinking :: Maybe Text
   }
   deriving stock (Show, Eq, Generic)
 
@@ -67,7 +71,9 @@ data WebhookConfigFile = WebhookConfigFile
     wcfPromptFile :: Maybe FilePath,
     wcfSession :: Maybe Text,
     wcfDeliver :: Maybe [DeliveryTargetFile],
-    wcfSuppressIfContains :: Maybe Text
+    wcfSuppressIfContains :: Maybe Text,
+    wcfModel :: Maybe Text,
+    wcfThinking :: Maybe Text
   }
   deriving stock (Show, Generic)
 
@@ -96,7 +102,7 @@ instance FromJSON WebhookServerConfigFile where
 
 instance FromJSON WebhookConfigFile where
   parseJSON = withObject "WebhookConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "promptTemplate", "promptFile", "session", "deliver", "suppressIfContains"] v
+    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "promptTemplate", "promptFile", "session", "deliver", "suppressIfContains", "model", "thinking"] v
     WebhookConfigFile
       <$> v .: "name"
       <*> v .:? "secret"
@@ -105,3 +111,5 @@ instance FromJSON WebhookConfigFile where
       <*> v .:? "session"
       <*> v .:? "deliver"
       <*> v .:? "suppressIfContains"
+      <*> v .:? "model"
+      <*> v .:? "thinking"

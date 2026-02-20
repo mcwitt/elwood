@@ -23,6 +23,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
+import Elwood.Config (parseThinkingLevelText)
 import Elwood.Event (AppEnv (..), DeliveryTarget (..), Event (..), EventSource (..), deliverToTargets, handleEvent)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (renderMetrics)
@@ -121,11 +122,18 @@ handleWebhookRequest logger webhookConfig env request respond = do
           ("payload_size", T.pack (show (LBS.length body)))
         ]
 
+      -- Apply per-endpoint model/thinking overrides
+      let envWithOverrides =
+            env
+              { eeModel = fromMaybe (eeModel env) (wcModel webhookConfig),
+                eeThinking = maybe (eeThinking env) parseThinkingLevelText (wcThinking webhookConfig)
+              }
+
       -- Get prompt: either from template or from file
       promptResult <- case (wcPromptTemplate webhookConfig, wcPromptFile webhookConfig) of
         (Just template, _) -> pure $ Right $ renderTemplate template payload
         (Nothing, Just filePath) -> do
-          let fullPath = eeWorkspaceDir env </> filePath
+          let fullPath = eeWorkspaceDir envWithOverrides </> filePath
           readPromptFile fullPath
         (Nothing, Nothing) -> pure $ Left "No prompt or promptFile configured"
 
@@ -149,7 +157,7 @@ handleWebhookRequest logger webhookConfig env request respond = do
                   }
 
           -- Handle the event
-          result <- handleEvent env event
+          result <- handleEvent envWithOverrides event
 
           case result of
             Right responseText -> do
@@ -167,7 +175,7 @@ handleWebhookRequest logger webhookConfig env request respond = do
                   respond $ jsonResponse status200 $ successJson responseText
                 else do
                   -- Deliver to configured targets
-                  deliverToTargets env (wcDelivery webhookConfig) responseText
+                  deliverToTargets envWithOverrides (wcDelivery webhookConfig) responseText
                   logInfo logger "Webhook processed successfully" [("name", wcName webhookConfig)]
                   respond $ jsonResponse status200 $ successJson responseText
             Left err -> do

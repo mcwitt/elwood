@@ -7,6 +7,8 @@ module Elwood.Config
     ThinkingLevel (..),
     PermissionConfigFile (..),
     loadConfig,
+    parseThinkingLevel,
+    parseThinkingLevelText,
 
     -- * Re-exports for webhook config
     WebhookServerConfig (..),
@@ -47,13 +49,17 @@ data ThinkingLevel
 -- | Parse a thinking level from a YAML value
 -- YAML parses "off" as boolean False, so we handle both Text and Bool
 parseThinkingLevel :: Value -> ThinkingLevel
-parseThinkingLevel (String t) = case T.toLower t of
+parseThinkingLevel (String t) = parseThinkingLevelText t
+parseThinkingLevel (Bool False) = ThinkingOff
+parseThinkingLevel _ = ThinkingOff
+
+-- | Parse a thinking level from a text string
+parseThinkingLevelText :: Text -> ThinkingLevel
+parseThinkingLevelText t = case T.toLower t of
   "low" -> ThinkingLow
   "medium" -> ThinkingMedium
   "high" -> ThinkingHigh
   _ -> ThinkingOff
-parseThinkingLevel (Bool False) = ThinkingOff
-parseThinkingLevel _ = ThinkingOff
 
 -- | Main configuration for Elwood
 data Config = Config
@@ -300,7 +306,9 @@ loadConfig path = do
                              in if null parsed
                                   then [TelegramBroadcast]
                                   else parsed,
-                        wcSuppressIfContains = wcfSuppressIfContains ep
+                        wcSuppressIfContains = wcfSuppressIfContains ep,
+                        wcModel = wcfModel ep,
+                        wcThinking = wcfThinking ep
                       }
                   | ep <- endpoints
                   ]

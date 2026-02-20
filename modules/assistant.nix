@@ -40,6 +40,12 @@ let
             // lib.optionalAttrs (epCfg.suppressIfContains != null) {
               suppressIfContains = epCfg.suppressIfContains;
             }
+            // lib.optionalAttrs (epCfg.model != null) {
+              model = epCfg.model;
+            }
+            // lib.optionalAttrs (epCfg.thinking != null) {
+              thinking = epCfg.thinking;
+            }
           ) agentCfg.webhook.endpoints;
 
           # Auto-generated cron job endpoints
@@ -61,6 +67,12 @@ let
             }
             // lib.optionalAttrs (cronCfg.suppressIfContains != null) {
               suppressIfContains = cronCfg.suppressIfContains;
+            }
+            // lib.optionalAttrs (cronCfg.model != null) {
+              model = cronCfg.model;
+            }
+            // lib.optionalAttrs (cronCfg.thinking != null) {
+              thinking = cronCfg.thinking;
             }
           ) agentCfg.cronJobs;
         in
@@ -180,6 +192,20 @@ let
         description = "Suppress notification if response contains this string.";
         example = "HEARTBEAT_OK";
       };
+
+      model = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Model override for this endpoint. Null means use the agent's global model.";
+        example = "claude-haiku-4-20250414";
+      };
+
+      thinking = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Thinking level override for this endpoint. Null means use the agent's global thinking level.";
+        example = "off";
+      };
     };
   };
 
@@ -230,6 +256,20 @@ let
         default = null;
         description = "Suppress notification if response contains this string.";
         example = "HEARTBEAT_OK";
+      };
+
+      model = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Model override for this cron job. Null means use the agent's global model.";
+        example = "claude-haiku-4-20250414";
+      };
+
+      thinking = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Thinking level override for this cron job. Null means use the agent's global thinking level.";
+        example = "off";
       };
     };
   };
