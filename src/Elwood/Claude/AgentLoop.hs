@@ -146,11 +146,16 @@ agentLoop logger client registry ctx compactionConfig systemPrompt model thinkin
           logError logger "Claude API error" [("error", T.pack (show err))]
           pure $ AgentError $ formatError err
         Right response -> do
+          let usage = mresUsage response
           logInfo
             logger
             "Claude response received"
             [ ("stop_reason", fromMaybe "none" (mresStopReason response)),
-              ("content_blocks", T.pack (show (length (mresContent response))))
+              ("content_blocks", T.pack (show (length (mresContent response)))),
+              ("input_tokens", T.pack (show (usageInputTokens usage))),
+              ("output_tokens", T.pack (show (usageOutputTokens usage))),
+              ("cache_read_tokens", T.pack (show (usageCacheReadInputTokens usage))),
+              ("cache_creation_tokens", T.pack (show (usageCacheCreationInputTokens usage)))
             ]
 
           -- Record API metrics
