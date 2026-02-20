@@ -29,15 +29,13 @@ type ConversationCache = Map.Map Text Conversation
 data ConversationStore = ConversationStore
   { -- | Directory for conversation files
     csStateDir :: FilePath,
-    -- | Maximum messages to keep per conversation
-    csMaxHistory :: Int,
     -- | In-memory cache
     csCache :: MVar ConversationCache
   }
 
 -- | Create a new conversation store
-newConversationStore :: FilePath -> Int -> IO ConversationStore
-newConversationStore stateDir maxHistory = do
+newConversationStore :: FilePath -> IO ConversationStore
+newConversationStore stateDir = do
   -- Ensure conversations directory exists
   let convDir = stateDir </> "conversations"
   createDirectoryIfMissing True convDir
@@ -46,7 +44,6 @@ newConversationStore stateDir maxHistory = do
   pure
     ConversationStore
       { csStateDir = convDir,
-        csMaxHistory = maxHistory,
         csCache = cache
       }
 

@@ -88,7 +88,6 @@ let
         workspaceDir = agentCfg.workspaceDir;
         allowedChatIds = agentCfg.allowedChatIds;
         model = agentCfg.model;
-        maxHistory = agentCfg.maxHistory;
         thinking = agentCfg.thinking;
 
         # Heartbeat and cronJobs are now handled externally via systemd timers
@@ -303,12 +302,6 @@ let
           type = lib.types.str;
           default = "claude-sonnet-4-20250514";
           description = "Claude model to use.";
-        };
-
-        maxHistory = lib.mkOption {
-          type = lib.types.int;
-          default = 50;
-          description = "Maximum messages to keep per conversation.";
         };
 
         thinking = lib.mkOption {

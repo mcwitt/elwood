@@ -76,11 +76,8 @@ runApp config = do
   logInfo logger "Claude client initialized" [("model", cfgModel config)]
 
   -- Initialize conversation store
-  conversations <- newConversationStore (cfgStateDir config) (cfgMaxHistory config)
-  logInfo
-    logger
-    "Conversation store initialized"
-    [("max_history", T.pack (show (cfgMaxHistory config)))]
+  conversations <- newConversationStore (cfgStateDir config)
+  logInfo logger "Conversation store initialized" []
 
   -- Load system prompt
   systemPrompt <- loadSystemPrompt (cfgWorkspaceDir config)

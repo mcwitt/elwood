@@ -69,8 +69,6 @@ data Config = Config
     cfgAllowedChatIds :: [Int64],
     -- | Claude model to use (e.g., "claude-sonnet-4-20250514")
     cfgModel :: Text,
-    -- | Maximum messages to keep per conversation
-    cfgMaxHistory :: Int,
     -- | Permission configuration for tools
     cfgPermissions :: PermissionConfig,
     -- | Context compaction configuration
@@ -114,7 +112,6 @@ data ConfigFile = ConfigFile
     cfWorkspaceDir :: Maybe FilePath,
     cfAllowedChatIds :: Maybe [Int64],
     cfModel :: Maybe Text,
-    cfMaxHistory :: Maybe Int,
     cfPermissions :: Maybe PermissionConfigFile,
     cfCompaction :: Maybe CompactionConfigFile,
     cfMCPServers :: Maybe (Map Text MCPServerConfigFile),
@@ -151,13 +148,12 @@ data MCPServerConfigFile = MCPServerConfigFile
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "maxHistory", "permissions", "compaction", "mcpServers", "webhook", "thinking"] v
+    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "permissions", "compaction", "mcpServers", "webhook", "thinking"] v
     ConfigFile
       <$> v .:? "stateDir"
       <*> v .:? "workspaceDir"
       <*> v .:? "allowedChatIds"
       <*> v .:? "model"
-      <*> v .:? "maxHistory"
       <*> v .:? "permissions"
       <*> v .:? "compaction"
       <*> v .:? "mcpServers"
@@ -310,7 +306,6 @@ loadConfig path = do
         cfgAnthropicApiKey = anthropicApiKey,
         cfgAllowedChatIds = fromMaybe [] (cfAllowedChatIds configFile),
         cfgModel = fromMaybe "claude-sonnet-4-20250514" (cfModel configFile),
-        cfgMaxHistory = fromMaybe 50 (cfMaxHistory configFile),
         cfgPermissions = permissions,
         cfgCompaction = compaction,
         cfgMCPServers = mcpServers,

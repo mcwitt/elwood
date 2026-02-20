@@ -238,7 +238,6 @@ in
             222
           ];
           model = "claude-test-model";
-          maxHistory = 100;
 
           # Heartbeat is now handled via systemd timer, not in config
           # We still need webhook enabled for it to work
@@ -279,7 +278,6 @@ in
       # Verify key config values are present (JSON format)
       # Note: heartbeat config is no longer in the YAML - it's handled via systemd timers
       assert "claude-test-model" in config, f"Model not in config: {config}"
-      assert '"maxHistory":100' in config, f"maxHistory not in config: {config}"
       assert '"tokenThreshold":50000' in config, f"tokenThreshold not in config: {config}"
       assert '"port":9000' in config, f"webhook port not in config: {config}"
       assert '"defaultPolicy":"ask"' in config, f"defaultPolicy not in config: {config}"

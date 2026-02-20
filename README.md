@@ -80,7 +80,6 @@ allowedChatIds:
   - 123456789
 
 model: claude-sonnet-4-20250514
-maxHistory: 50
 thinking: off  # off | low | medium | high
 
 compaction:

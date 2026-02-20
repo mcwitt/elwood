@@ -63,7 +63,6 @@ exampleConfigTests =
         unsetEnv "ANTHROPIC_API_KEY"
         -- Verify some fields parsed correctly
         cfgModel config @?= "claude-sonnet-4-20250514"
-        cfgMaxHistory config @?= 50
         cfgThinking config @?= ThinkingOff
         cfgAllowedChatIds config @?= [123456789]
         ccTokenThreshold (cfgCompaction config) @?= 80000

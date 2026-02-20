@@ -18,10 +18,6 @@ allowedChatIds:
 # Default: claude-sonnet-4-20250514
 model: claude-sonnet-4-20250514
 
-# Maximum messages to keep per conversation
-# Default: 50
-maxHistory: 50
-
 # Extended thinking level: off | low | medium | high
 # Controls Claude's internal reasoning before responding.
 #   off    - disabled (default)
