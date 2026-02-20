@@ -236,7 +236,9 @@ data MessagesRequest = MessagesRequest
     -- | Available tools
     mrTools :: [ToolSchema],
     -- | Extended thinking configuration (optional)
-    mrThinking :: Maybe ThinkingConfig
+    mrThinking :: Maybe ThinkingConfig,
+    -- | Enable automatic prompt caching
+    mrCacheControl :: Bool
   }
   deriving stock (Show, Generic)
 
@@ -260,6 +262,7 @@ instance ToJSON MessagesRequest where
               ]
           )
           (mrThinking req)
+        ++ ["cache_control" .= object ["type" .= ("ephemeral" :: Text)] | mrCacheControl req]
 
 -- | Token usage information
 data Usage = Usage

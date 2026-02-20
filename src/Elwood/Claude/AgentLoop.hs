@@ -111,7 +111,8 @@ agentLoop logger client registry ctx compactionConfig systemPrompt model thinkin
                 mrSystem = systemPrompt,
                 mrMessages = messages,
                 mrTools = toolSchemas registry,
-                mrThinking = thinkingToConfig thinking
+                mrThinking = thinkingToConfig thinking,
+                mrCacheControl = True
               }
 
       logInfo

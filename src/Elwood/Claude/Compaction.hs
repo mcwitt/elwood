@@ -138,7 +138,8 @@ summarizeMessages client config metrics source msgs = do
             mrSystem = Just "You are a helpful assistant that summarizes conversations concisely.",
             mrMessages = [summaryRequest],
             mrTools = [],
-            mrThinking = Nothing
+            mrThinking = Nothing,
+            mrCacheControl = False
           }
 
   result <- sendMessages client request
