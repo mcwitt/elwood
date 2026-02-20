@@ -90,8 +90,12 @@ findToolsTests =
                 ([1 .. 8] :: [Int])
         activeRef <- newIORef newActiveToolSet
         let tool = mkFindToolsTool bigRegistry activeRef
-        _ <- toolExecute tool (object ["query" .= ("match" :: Text)])
+        result <- toolExecute tool (object ["query" .= ("match" :: Text)])
         ats <- readIORef activeRef
         let schemas = activeToolSchemas bigRegistry ats
         assertBool "Should load at most 5 tools" (length schemas <= 5)
+        case result of
+          ToolError err -> assertFailure $ "Expected success, got error: " <> T.unpack err
+          ToolSuccess output ->
+            assertBool "Should indicate more matches exist" ("5 of 8" `T.isInfixOf` output)
     ]

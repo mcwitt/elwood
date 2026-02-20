@@ -50,16 +50,24 @@ mkFindToolsTool registry activeRef =
                 matches ts =
                   q `T.isInfixOf` T.toLower (tsName ts)
                     || q `T.isInfixOf` T.toLower (tsDescription ts)
-                filtered = take 5 (filter matches schemas)
+                allMatches = filter matches schemas
+                totalCount = length allMatches
+                shown = take 5 allMatches
 
-            if null filtered
+            if null shown
               then pure $ ToolSuccess "No tools found matching your query. Try different keywords."
               else do
-                -- Activate all matched tools
-                mapM_ (modifyIORef' activeRef . activateTool . tsName) filtered
+                -- Activate shown tools
+                mapM_ (modifyIORef' activeRef . activateTool . tsName) shown
 
                 let formatTool ts = tsName ts <> " — " <> tsDescription ts
-                pure $ ToolSuccess $ T.unlines (map formatTool filtered)
+                    header
+                      | totalCount > 5 =
+                          "Showing 5 of "
+                            <> T.pack (show totalCount)
+                            <> " matches. Try a more specific query to find other tools.\n"
+                      | otherwise = ""
+                pure $ ToolSuccess $ header <> T.unlines (map formatTool shown)
     }
 
 extractQuery :: Value -> Maybe Text
