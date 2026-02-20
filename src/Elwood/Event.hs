@@ -90,7 +90,9 @@ data AppEnv = AppEnv
     -- | Attachment queue
     eeAttachmentQueue :: IORef [Attachment],
     -- | Workspace directory (for webhook prompt files)
-    eeWorkspaceDir :: FilePath
+    eeWorkspaceDir :: FilePath,
+    -- | Maximum agent loop iterations per turn
+    eeMaxIterations :: Int
   }
 
 -- | Handle any event through the agent pipeline
@@ -139,6 +141,7 @@ handleEvent env event = do
       (eeSystemPrompt env)
       (eeModel env)
       (eeThinking env)
+      (eeMaxIterations env)
       history
       userMsg
       (Just rateLimitCallback)

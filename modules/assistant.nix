@@ -89,6 +89,7 @@ let
         allowedChatIds = agentCfg.allowedChatIds;
         model = agentCfg.model;
         thinking = agentCfg.thinking;
+        maxIterations = agentCfg.maxIterations;
 
         # Heartbeat and cronJobs are now handled externally via systemd timers
         # The Haskell app no longer needs these config sections
@@ -313,6 +314,12 @@ let
           ];
           default = "off";
           description = "Extended thinking level. Controls Claude's internal reasoning budget before responding.";
+        };
+
+        maxIterations = lib.mkOption {
+          type = lib.types.int;
+          default = 30;
+          description = "Maximum agent loop iterations per turn (prevents infinite tool-use loops).";
         };
 
         permissions = {

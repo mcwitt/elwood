@@ -34,10 +34,6 @@ data AgentResult
 -- Arguments: retry attempt number, wait seconds
 type RateLimitCallback = Int -> Int -> IO ()
 
--- | Maximum iterations to prevent infinite loops
-maxIterations :: Int
-maxIterations = 30
-
 -- | Convert a thinking level to the API thinking config
 thinkingToConfig :: ThinkingLevel -> Maybe ThinkingConfig
 thinkingToConfig ThinkingOff = Nothing
@@ -65,6 +61,8 @@ runAgentTurn ::
   Text ->
   -- | Extended thinking level
   ThinkingLevel ->
+  -- | Maximum agent loop iterations
+  Int ->
   -- | Existing conversation history
   [ClaudeMessage] ->
   -- | New user message
@@ -72,11 +70,11 @@ runAgentTurn ::
   -- | Optional callback for rate limit notifications
   Maybe RateLimitCallback ->
   IO AgentResult
-runAgentTurn logger client registry ctx compactionConfig systemPrompt model thinking history userMessage onRateLimit = do
+runAgentTurn logger client registry ctx compactionConfig systemPrompt model thinking maxIter history userMessage onRateLimit = do
   -- Compact history if needed before adding new message
   compactedHistory <- compactIfNeeded logger client compactionConfig history
   let messages = compactedHistory ++ [userMessage]
-  agentLoop logger client registry ctx compactionConfig systemPrompt model thinking messages 0 onRateLimit
+  agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter messages 0 onRateLimit
 
 -- | The main agent loop
 agentLoop ::
@@ -88,12 +86,13 @@ agentLoop ::
   Maybe Text ->
   Text ->
   ThinkingLevel ->
+  Int ->
   [ClaudeMessage] ->
   Int ->
   Maybe RateLimitCallback ->
   IO AgentResult
-agentLoop logger client registry ctx compactionConfig systemPrompt model thinking messages iteration onRateLimit
-  | iteration >= maxIterations = do
+agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter messages iteration onRateLimit
+  | iteration >= maxIter = do
       logError logger "Agent loop exceeded max iterations" []
       pure $ AgentError "(Agent loop exceeded max iterations)"
   | otherwise = do
@@ -146,7 +145,7 @@ agentLoop logger client registry ctx compactionConfig systemPrompt model thinkin
               ("content_blocks", T.pack (show (length (mresContent response))))
             ]
 
-          handleResponse logger client registry ctx compactionConfig systemPrompt model thinking messages response iteration onRateLimit
+          handleResponse logger client registry ctx compactionConfig systemPrompt model thinking maxIter messages response iteration onRateLimit
 
 -- | Handle Claude's response
 handleResponse ::
@@ -158,12 +157,13 @@ handleResponse ::
   Maybe Text ->
   Text ->
   ThinkingLevel ->
+  Int ->
   [ClaudeMessage] ->
   MessagesResponse ->
   Int ->
   Maybe RateLimitCallback ->
   IO AgentResult
-handleResponse logger client registry ctx compactionConfig systemPrompt model thinking messages response iteration onRateLimit =
+handleResponse logger client registry ctx compactionConfig systemPrompt model thinking maxIter messages response iteration onRateLimit =
   case mresStopReason response of
     Just "end_turn" -> do
       -- Normal completion - extract text and return
@@ -190,7 +190,7 @@ handleResponse logger client registry ctx compactionConfig systemPrompt model th
           newMessages = messages ++ [assistantMsg, userMsg]
 
       -- Continue the loop
-      agentLoop logger client registry ctx compactionConfig systemPrompt model thinking newMessages (iteration + 1) onRateLimit
+      agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter newMessages (iteration + 1) onRateLimit
     Just "max_tokens" -> do
       -- Hit token limit - return what we have
       let responseText = extractTextContent (mresContent response)

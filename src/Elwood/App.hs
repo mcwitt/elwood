@@ -165,7 +165,8 @@ runApp config = do
             eeThinking = cfgThinking config,
             eeNotifyChatIds = cfgAllowedChatIds config,
             eeAttachmentQueue = attachmentQueue,
-            eeWorkspaceDir = cfgWorkspaceDir config
+            eeWorkspaceDir = cfgWorkspaceDir config,
+            eeMaxIterations = cfgMaxIterations config
           }
 
   -- Log webhook configuration
@@ -196,7 +197,7 @@ runApp config = do
           logger
           telegram
           (cfgAllowedChatIds config)
-          (claudeHandlerWithApproval logger claude telegram conversations registry mkAgentContextWithApproval compactionConfig systemPrompt (cfgModel config) (cfgThinking config) (cfgAllowedChatIds config) attachmentQueue (cfgWorkspaceDir config))
+          (claudeHandlerWithApproval logger claude telegram conversations registry mkAgentContextWithApproval compactionConfig systemPrompt (cfgModel config) (cfgThinking config) (cfgMaxIterations config) (cfgAllowedChatIds config) attachmentQueue (cfgWorkspaceDir config))
           callbackHandler
 
         -- Wait for webhook thread (this won't happen in normal operation)
@@ -220,15 +221,16 @@ claudeHandlerWithApproval ::
   Maybe Text ->
   Text ->
   ThinkingLevel ->
+  Int ->
   [Int64] ->
   IORef [Attachment] ->
   FilePath ->
   Message ->
   IO (Maybe Text)
-claudeHandlerWithApproval logger client telegram store registry mkCtx compactionConfig systemPrompt model thinking allowedChatIds attachmentQueue workspaceDir msg = do
+claudeHandlerWithApproval logger client telegram store registry mkCtx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir msg = do
   let cid = chatId (chat msg)
       ctxForChat = mkCtx cid
-  result <- claudeHandler logger client telegram store registry ctxForChat compactionConfig systemPrompt model thinking allowedChatIds attachmentQueue workspaceDir msg
+  result <- claudeHandler logger client telegram store registry ctxForChat compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir msg
   -- Send queued attachments after the text reply
   attachments <- readIORef attachmentQueue
   mapM_ (sendAttachmentToChat logger telegram cid) attachments

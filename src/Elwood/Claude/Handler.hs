@@ -68,6 +68,8 @@ claudeHandler ::
   Text ->
   -- | Extended thinking level
   ThinkingLevel ->
+  -- | Maximum agent loop iterations
+  Int ->
   -- | Allowed chat IDs (for event env)
   [Int64] ->
   -- | Attachment queue
@@ -76,7 +78,7 @@ claudeHandler ::
   FilePath ->
   Message ->
   IO (Maybe Text)
-claudeHandler logger client telegram store registry ctx compactionConfig systemPrompt model thinking allowedChatIds attachmentQueue workspaceDir msg =
+claudeHandler logger client telegram store registry ctx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir msg =
   case (text msg, photo msg) of
     -- Handle /clear command
     (Just txt, _) | T.strip txt == "/clear" -> handleClear
@@ -132,7 +134,8 @@ claudeHandler logger client telegram store registry ctx compactionConfig systemP
                     eeThinking = thinking,
                     eeNotifyChatIds = allowedChatIds,
                     eeAttachmentQueue = attachmentQueue,
-                    eeWorkspaceDir = workspaceDir
+                    eeWorkspaceDir = workspaceDir,
+                    eeMaxIterations = maxIterations
                   }
 
           -- Create Telegram event

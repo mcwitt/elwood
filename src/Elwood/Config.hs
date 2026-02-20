@@ -78,7 +78,9 @@ data Config = Config
     -- | Webhook server configuration
     cfgWebhook :: WebhookServerConfig,
     -- | Extended thinking level
-    cfgThinking :: ThinkingLevel
+    cfgThinking :: ThinkingLevel,
+    -- | Maximum agent loop iterations per turn (prevents infinite tool-use loops)
+    cfgMaxIterations :: Int
   }
   deriving stock (Show, Generic)
 
@@ -116,7 +118,8 @@ data ConfigFile = ConfigFile
     cfCompaction :: Maybe CompactionConfigFile,
     cfMCPServers :: Maybe (Map Text MCPServerConfigFile),
     cfWebhook :: Maybe WebhookServerConfigFile,
-    cfThinking :: Maybe Value
+    cfThinking :: Maybe Value,
+    cfMaxIterations :: Maybe Int
   }
   deriving stock (Show, Generic)
 
@@ -148,7 +151,7 @@ data MCPServerConfigFile = MCPServerConfigFile
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "permissions", "compaction", "mcpServers", "webhook", "thinking"] v
+    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "permissions", "compaction", "mcpServers", "webhook", "thinking", "maxIterations"] v
     ConfigFile
       <$> v .:? "stateDir"
       <*> v .:? "workspaceDir"
@@ -159,6 +162,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "mcpServers"
       <*> v .:? "webhook"
       <*> v .:? "thinking"
+      <*> v .:? "maxIterations"
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v -> do
@@ -310,7 +314,8 @@ loadConfig path = do
         cfgCompaction = compaction,
         cfgMCPServers = mcpServers,
         cfgWebhook = webhook,
-        cfgThinking = maybe ThinkingOff parseThinkingLevel (cfThinking configFile)
+        cfgThinking = maybe ThinkingOff parseThinkingLevel (cfThinking configFile),
+        cfgMaxIterations = fromMaybe 30 (cfMaxIterations configFile)
       }
 
 -- | Default webhook server configuration (disabled)

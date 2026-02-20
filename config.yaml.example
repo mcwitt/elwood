@@ -26,6 +26,10 @@ model: claude-sonnet-4-20250514
 #   high   - budget_tokens: 16384, max_tokens: 32768
 thinking: off
 
+# Maximum agent loop iterations per turn (prevents infinite tool-use loops)
+# Default: 30
+maxIterations: 30
+
 # Context compaction settings
 # When conversation history exceeds the token threshold, older messages
 # are summarized using a fast model to stay within context limits.
