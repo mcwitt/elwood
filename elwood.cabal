@@ -40,6 +40,7 @@ library
     Elwood.MCP.Registry
     Elwood.MCP.Types
     Elwood.Memory
+    Elwood.Metrics
     Elwood.Permissions
     Elwood.Telegram.Client
     Elwood.Telegram.Polling
@@ -115,6 +116,7 @@ test-suite elwood-test
     Test.Elwood.Event
     Test.Elwood.MCP
     Test.Elwood.Memory
+    Test.Elwood.Metrics
     Test.Elwood.Permissions
     Test.Elwood.Webhook
 

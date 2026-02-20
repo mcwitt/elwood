@@ -25,6 +25,7 @@ import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
 import Elwood.Event (AppEnv (..), DeliveryTarget (..), Event (..), EventSource (..), deliverToTargets, handleEvent)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
+import Elwood.Metrics (renderMetrics)
 import Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..))
 import Network.HTTP.Types
   ( HeaderName,
@@ -94,6 +95,10 @@ webhookApp config env request respond = do
     ["health"] -> do
       -- Health check endpoint
       respond $ jsonResponse status200 "{\"status\": \"ok\"}"
+    ["metrics"] -> do
+      -- Prometheus metrics endpoint
+      body <- renderMetrics (eeMetrics env) (eeConversations env) (eeRegistry env) (eeMCPServerCount env)
+      respond $ responseLBS status200 [("Content-Type", "text/plain; version=0.0.4; charset=utf-8")] body
     _ -> do
       logWarn logger "Unknown path" [("path", T.intercalate "/" path)]
       respond $ jsonResponse status404 $ errorJson "Not found"

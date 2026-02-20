@@ -17,12 +17,14 @@ where
 
 import Data.Aeson (encode)
 import Data.ByteString.Lazy qualified as LBS
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Claude.Client (ClaudeClient, sendMessages)
 import Elwood.Claude.Types
 import Elwood.Config (CompactionConfig (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
+import Elwood.Metrics (MetricsStore, recordApiResponse, recordCompaction)
 
 -- | Estimate the number of tokens in a message list
 -- Uses a rough heuristic: JSON length / 4
@@ -37,9 +39,12 @@ compactIfNeeded ::
   Logger ->
   ClaudeClient ->
   CompactionConfig ->
+  MetricsStore ->
+  -- | Source label for metrics
+  Text ->
   [ClaudeMessage] ->
   IO [ClaudeMessage]
-compactIfNeeded logger client config msgs = do
+compactIfNeeded logger client config metrics source msgs = do
   let tokens = estimateTokens msgs
   if tokens < ccTokenThreshold config
     then pure msgs
@@ -51,16 +56,18 @@ compactIfNeeded logger client config msgs = do
           ("threshold", T.pack (show (ccTokenThreshold config))),
           ("message_count", T.pack (show (length msgs)))
         ]
-      compactMessages logger client config msgs
+      compactMessages logger client config metrics source msgs
 
 -- | Perform the actual compaction
 compactMessages ::
   Logger ->
   ClaudeClient ->
   CompactionConfig ->
+  MetricsStore ->
+  Text ->
   [ClaudeMessage] ->
   IO [ClaudeMessage]
-compactMessages logger client config msgs = do
+compactMessages logger client config metrics source msgs = do
   -- Split messages: keep recent half, summarize old half
   -- We must be careful not to split in the middle of a tool_use/tool_result pair
   let totalMsgs = length msgs
@@ -74,8 +81,11 @@ compactMessages logger client config msgs = do
       ("recent_messages", T.pack (show (length recentMsgs)))
     ]
 
+  -- Record compaction event
+  recordCompaction metrics
+
   -- Generate summary of old messages
-  summaryResult <- summarizeMessages client config oldMsgs
+  summaryResult <- summarizeMessages client config metrics source oldMsgs
 
   case summaryResult of
     Left err -> do
@@ -102,9 +112,11 @@ compactMessages logger client config msgs = do
 summarizeMessages ::
   ClaudeClient ->
   CompactionConfig ->
+  MetricsStore ->
+  Text ->
   [ClaudeMessage] ->
   IO (Either Text Text)
-summarizeMessages client config msgs = do
+summarizeMessages client config metrics source msgs = do
   -- Build a prompt asking for a summary
   let conversationText = formatMessagesForSummary msgs
       summaryRequest =
@@ -133,7 +145,9 @@ summarizeMessages client config msgs = do
 
   case result of
     Left err -> pure $ Left $ T.pack (show err)
-    Right response ->
+    Right response -> do
+      let stopReason = fromMaybe "unknown" (mresStopReason response)
+      recordApiResponse metrics (ccCompactionModel config) source stopReason (mresUsage response)
       let text = extractText (mresContent response)
        in if T.null text
             then pure $ Left "Empty summary response"

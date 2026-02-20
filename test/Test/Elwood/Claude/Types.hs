@@ -14,6 +14,7 @@ tests =
     [ roleTests,
       contentBlockTests,
       claudeMessageTests,
+      usageTests,
       roundTripTests
     ]
 
@@ -87,6 +88,40 @@ claudeMessageTests =
         case decode (encode msg) of
           Just decoded -> decoded @?= msg
           Nothing -> assertFailure "Failed to decode empty message"
+    ]
+
+usageTests :: TestTree
+usageTests =
+  testGroup
+    "Usage"
+    [ testCase "parses with cache fields present" $ do
+        let json =
+              Aeson.object
+                [ "input_tokens" Aeson..= (100 :: Int),
+                  "output_tokens" Aeson..= (50 :: Int),
+                  "cache_creation_input_tokens" Aeson..= (10 :: Int),
+                  "cache_read_input_tokens" Aeson..= (20 :: Int)
+                ]
+        case Aeson.fromJSON json of
+          Aeson.Success usage -> do
+            usageInputTokens usage @?= 100
+            usageOutputTokens usage @?= 50
+            usageCacheCreationInputTokens usage @?= 10
+            usageCacheReadInputTokens usage @?= 20
+          Aeson.Error err -> assertFailure $ "Failed to parse Usage: " <> err,
+      testCase "parses with cache fields absent (defaults to 0)" $ do
+        let json =
+              Aeson.object
+                [ "input_tokens" Aeson..= (100 :: Int),
+                  "output_tokens" Aeson..= (50 :: Int)
+                ]
+        case Aeson.fromJSON json of
+          Aeson.Success usage -> do
+            usageInputTokens usage @?= 100
+            usageOutputTokens usage @?= 50
+            usageCacheCreationInputTokens usage @?= 0
+            usageCacheReadInputTokens usage @?= 0
+          Aeson.Error err -> assertFailure $ "Failed to parse Usage: " <> err
     ]
 
 roundTripTests :: TestTree

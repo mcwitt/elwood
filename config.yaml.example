@@ -66,6 +66,9 @@ mcpServers:
 
 # Webhook server configuration
 # Exposes HTTP endpoints that trigger agent conversations.
+# Built-in endpoints (no auth required):
+#   GET /health   - health check (returns {"status":"ok"})
+#   GET /metrics  - Prometheus metrics endpoint
 webhook:
   enabled: false                # default: false
   port: 8080                    # default: 8080

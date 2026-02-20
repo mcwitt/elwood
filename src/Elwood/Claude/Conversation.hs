@@ -4,6 +4,7 @@ module Elwood.Claude.Conversation
   ( ConversationStore (..),
     newConversationStore,
     getConversation,
+    allConversations,
     appendMessage,
     updateConversation,
     clearConversation,
@@ -162,3 +163,7 @@ clearConversation store sessionId = do
 
   -- Persist empty conversation
   saveConversation store conv
+
+-- | Get all conversations currently in the cache
+allConversations :: ConversationStore -> IO (Map.Map Text Conversation)
+allConversations store = readMVar (csCache store)

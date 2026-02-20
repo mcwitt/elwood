@@ -47,6 +47,7 @@ import Elwood.Event.Types
     SessionConfig (..),
   )
 import Elwood.Logging (Logger, logError, logInfo)
+import Elwood.Metrics (MetricsStore, metricsSource)
 import Elwood.Telegram.Client (TelegramClient, notify, sendDocument, sendPhoto)
 import Elwood.Tools.Attachment (isPhotoExtension)
 import Elwood.Tools.Registry (ToolRegistry)
@@ -92,7 +93,11 @@ data AppEnv = AppEnv
     -- | Workspace directory (for webhook prompt files)
     eeWorkspaceDir :: FilePath,
     -- | Maximum agent loop iterations per turn
-    eeMaxIterations :: Int
+    eeMaxIterations :: Int,
+    -- | Metrics store for Prometheus counters
+    eeMetrics :: MetricsStore,
+    -- | Number of active MCP servers
+    eeMCPServerCount :: Int
   }
 
 -- | Handle any event through the agent pipeline
@@ -130,6 +135,9 @@ handleEvent env event = do
   -- Create rate limit notification callback based on delivery targets
   let rateLimitCallback = mkRateLimitCallback env event
 
+  -- Compute metrics source label
+  let sourceLabel = metricsSource source
+
   -- Run the agent turn
   result <-
     runAgentTurn
@@ -142,6 +150,8 @@ handleEvent env event = do
       (eeModel env)
       (eeThinking env)
       (eeMaxIterations env)
+      (eeMetrics env)
+      sourceLabel
       history
       userMsg
       (Just rateLimitCallback)

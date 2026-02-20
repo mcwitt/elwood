@@ -264,15 +264,19 @@ instance ToJSON MessagesRequest where
 -- | Token usage information
 data Usage = Usage
   { usageInputTokens :: Int,
-    usageOutputTokens :: Int
+    usageOutputTokens :: Int,
+    usageCacheCreationInputTokens :: Int,
+    usageCacheReadInputTokens :: Int
   }
-  deriving stock (Show, Generic)
+  deriving stock (Show, Eq, Generic)
 
 instance FromJSON Usage where
   parseJSON = withObject "Usage" $ \v ->
     Usage
       <$> v .: "input_tokens"
       <*> v .: "output_tokens"
+      <*> v .:? "cache_creation_input_tokens" .!= 0
+      <*> v .:? "cache_read_input_tokens" .!= 0
 
 -- | Response from the Claude Messages API
 data MessagesResponse = MessagesResponse

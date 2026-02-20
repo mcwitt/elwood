@@ -29,6 +29,7 @@ import Elwood.Logging
 import Elwood.MCP.Client (stopMCPServer)
 import Elwood.MCP.Registry (startMCPServers)
 import Elwood.Memory (newMemoryStore)
+import Elwood.Metrics (MetricsStore, newMetricsStore)
 import Elwood.Permissions (pcApprovalTimeoutSeconds)
 import Elwood.Telegram.Client
   ( TelegramClient,
@@ -119,6 +120,10 @@ runApp config = do
     "MCP initialized"
     [("servers", T.pack (show (length mcpServers)))]
 
+  -- Initialize metrics store
+  metrics <- newMetricsStore
+  logInfo logger "Metrics store initialized" []
+
   -- Get compaction config from main config
   let compactionConfig = cfgCompaction config
 
@@ -151,7 +156,8 @@ runApp config = do
   let callbackHandler = handleApprovalCallback logger telegram approvalCoordinator
 
   -- Create webhook app environment
-  let webhookAppEnv =
+  let mcpServerCount = length mcpServers
+      webhookAppEnv =
         AppEnv
           { eeLogger = logger,
             eeTelegram = telegram,
@@ -166,7 +172,9 @@ runApp config = do
             eeNotifyChatIds = cfgAllowedChatIds config,
             eeAttachmentQueue = attachmentQueue,
             eeWorkspaceDir = cfgWorkspaceDir config,
-            eeMaxIterations = cfgMaxIterations config
+            eeMaxIterations = cfgMaxIterations config,
+            eeMetrics = metrics,
+            eeMCPServerCount = mcpServerCount
           }
 
   -- Log webhook configuration
@@ -197,7 +205,7 @@ runApp config = do
           logger
           telegram
           (cfgAllowedChatIds config)
-          (claudeHandlerWithApproval logger claude telegram conversations registry mkAgentContextWithApproval compactionConfig systemPrompt (cfgModel config) (cfgThinking config) (cfgMaxIterations config) (cfgAllowedChatIds config) attachmentQueue (cfgWorkspaceDir config))
+          (claudeHandlerWithApproval logger claude telegram conversations registry mkAgentContextWithApproval compactionConfig systemPrompt (cfgModel config) (cfgThinking config) (cfgMaxIterations config) (cfgAllowedChatIds config) attachmentQueue (cfgWorkspaceDir config) metrics mcpServerCount)
           callbackHandler
 
         -- Wait for webhook thread (this won't happen in normal operation)
@@ -225,12 +233,14 @@ claudeHandlerWithApproval ::
   [Int64] ->
   IORef [Attachment] ->
   FilePath ->
+  MetricsStore ->
+  Int ->
   Message ->
   IO (Maybe Text)
-claudeHandlerWithApproval logger client telegram store registry mkCtx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir msg = do
+claudeHandlerWithApproval logger client telegram store registry mkCtx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount msg = do
   let cid = chatId (chat msg)
       ctxForChat = mkCtx cid
-  result <- claudeHandler logger client telegram store registry ctxForChat compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir msg
+  result <- claudeHandler logger client telegram store registry ctxForChat compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount msg
   -- Send queued attachments after the text reply
   attachments <- readIORef attachmentQueue
   mapM_ (sendAttachmentToChat logger telegram cid) attachments

@@ -20,6 +20,7 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Image support** — Send photos and Claude can see them
 - **Extended thinking** — Configurable reasoning budget for complex tasks
 - **Context compaction** — Automatic summarization for long conversations
+- **Prometheus metrics** — Token usage, API requests, tool calls, and conversation gauges
 - **NixOS module** — Multi-agent support with systemd hardening
 
 ## Architecture
@@ -218,6 +219,36 @@ Each agent runs as a separate systemd service (`assistant-<name>.service`) with 
 | `save_memory` | Persist knowledge across sessions |
 | `search_memory` | Search saved memories |
 | `queue_attachment` | Queue files to send as Telegram attachments |
+
+## Monitoring
+
+When the webhook server is enabled, a Prometheus-compatible metrics endpoint is available at `/metrics`. No authentication is required for this endpoint.
+
+**Available metrics:**
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `elwood_input_tokens_total` | counter | model, source | Input tokens consumed |
+| `elwood_output_tokens_total` | counter | model, source | Output tokens consumed |
+| `elwood_cache_read_tokens_total` | counter | model, source | Cache read tokens |
+| `elwood_cache_creation_tokens_total` | counter | model, source | Cache creation tokens |
+| `elwood_api_requests_total` | counter | model, source, stop_reason | API requests made |
+| `elwood_tool_calls_total` | counter | tool | Tool invocations |
+| `elwood_compactions_total` | counter | — | Conversation compactions |
+| `elwood_conversation_messages` | gauge | session | Messages per conversation |
+| `elwood_conversation_estimated_tokens` | gauge | session | Estimated tokens per conversation |
+| `elwood_tools_registered` | gauge | — | Number of registered tools |
+| `elwood_mcp_servers_active` | gauge | — | Number of active MCP servers |
+
+**Example Prometheus scrape config:**
+
+```yaml
+scrape_configs:
+  - job_name: elwood
+    static_configs:
+      - targets: ['localhost:8080']
+    metrics_path: /metrics
+```
 
 ## Future Ideas
 

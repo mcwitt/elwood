@@ -31,6 +31,7 @@ import Elwood.Event
     handleEvent,
   )
 import Elwood.Logging (Logger, logInfo, logWarn)
+import Elwood.Metrics (MetricsStore)
 import Elwood.Telegram.Client (TelegramClient, downloadFile, getFile)
 import Elwood.Telegram.Types (Chat (..), Message (..), PhotoSize (..), TelegramFile (..))
 import Elwood.Tools.Registry (ToolRegistry)
@@ -76,9 +77,13 @@ claudeHandler ::
   IORef [Attachment] ->
   -- | Workspace directory
   FilePath ->
+  -- | Metrics store
+  MetricsStore ->
+  -- | Number of active MCP servers
+  Int ->
   Message ->
   IO (Maybe Text)
-claudeHandler logger client telegram store registry ctx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir msg =
+claudeHandler logger client telegram store registry ctx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount msg =
   case (text msg, photo msg) of
     -- Handle /clear command
     (Just txt, _) | T.strip txt == "/clear" -> handleClear
@@ -135,7 +140,9 @@ claudeHandler logger client telegram store registry ctx compactionConfig systemP
                     eeNotifyChatIds = allowedChatIds,
                     eeAttachmentQueue = attachmentQueue,
                     eeWorkspaceDir = workspaceDir,
-                    eeMaxIterations = maxIterations
+                    eeMaxIterations = maxIterations,
+                    eeMetrics = metrics,
+                    eeMCPServerCount = mcpServerCount
                   }
 
           -- Create Telegram event
