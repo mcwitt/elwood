@@ -17,14 +17,15 @@ import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Types
-import Elwood.Config (ThinkingEffort (..), ThinkingLevel (..))
+import Elwood.Config (DynamicToolLoadingConfig (..), ThinkingEffort (..), ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, recordApiResponse, recordToolCall)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
-import Elwood.Tools.Meta (mkDiscoverToolsTool, mkLoadToolTool)
+import Elwood.Tools.Meta (mkFindToolsTool)
 import Elwood.Tools.Registry
   ( ActiveToolSet,
     ToolRegistry,
+    activateTool,
     activeToolSchemas,
     lookupTool,
     newActiveToolSet,
@@ -84,8 +85,8 @@ runAgentTurn ::
   ClaudeMessage ->
   -- | Optional callback for rate limit notifications
   Maybe RateLimitCallback ->
-  -- | Whether to use dynamic tool loading
-  Bool ->
+  -- | Dynamic tool loading config (Nothing = disabled, Just cfg = enabled)
+  Maybe DynamicToolLoadingConfig ->
   IO AgentResult
 runAgentTurn logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source history userMessage onRateLimit dynamicLoading = do
   -- Compact history if needed before adding new message
@@ -94,14 +95,14 @@ runAgentTurn logger client registry ctx compactionConfig systemPrompt model thin
 
   -- Set up dynamic tool loading state if enabled
   mActiveRef <- case dynamicLoading of
-    False -> pure Nothing
-    True -> do
-      activeRef <- newIORef newActiveToolSet
-      let discoverTool = mkDiscoverToolsTool registry
-          loadTool = mkLoadToolTool registry activeRef
-          registryWithMeta =
-            registerTool loadTool $
-              registerTool discoverTool registry
+    Nothing -> pure Nothing
+    Just dtlConfig -> do
+      let initialActive =
+            foldr activateTool newActiveToolSet $
+              "find_tools" : dtlAlwaysLoad dtlConfig
+      activeRef <- newIORef initialActive
+      let findTool = mkFindToolsTool registry activeRef
+          registryWithMeta = registerTool findTool registry
       pure $ Just (activeRef, registryWithMeta)
 
   let effectiveRegistry = case mActiveRef of

@@ -21,7 +21,7 @@ import Data.Time (getCurrentTime)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Compaction (CompactionConfig)
 import Elwood.Claude.Conversation (ConversationStore, clearConversation)
-import Elwood.Config (ThinkingLevel)
+import Elwood.Config (DynamicToolLoadingConfig, ThinkingLevel)
 import Elwood.Event
   ( AppEnv (..),
     DeliveryTarget (..),
@@ -81,8 +81,8 @@ claudeHandler ::
   MetricsStore ->
   -- | Number of active MCP servers
   Int ->
-  -- | Whether to use dynamic tool loading
-  Bool ->
+  -- | Dynamic tool loading config
+  Maybe DynamicToolLoadingConfig ->
   Message ->
   IO (Maybe Text)
 claudeHandler logger client telegram store registry ctx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount dynamicLoading msg =

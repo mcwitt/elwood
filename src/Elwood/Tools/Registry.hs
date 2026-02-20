@@ -1,18 +1,13 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Tools.Registry
-  ( -- * Tool Categories
-    ToolCategory (..),
-
-    -- * Tool Registry
+  ( -- * Tool Registry
     ToolRegistry,
     newToolRegistry,
     registerTool,
-    registerToolWith,
     lookupTool,
     allTools,
     toolSchemas,
-    hasDynamicTools,
 
     -- * Active Tool Set
     ActiveToolSet,
@@ -30,35 +25,25 @@ import Data.Text (Text)
 import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Tools.Types (Tool (..))
 
--- | Category controlling whether a tool is always sent or loaded on demand
-data ToolCategory = AlwaysLoaded | DynamicLoadable
-  deriving stock (Show, Eq)
-
 -- | Registry of available tools
-newtype ToolRegistry = ToolRegistry
-  { trTools :: Map Text (Tool, ToolCategory)
-  }
+newtype ToolRegistry = ToolRegistry (Map Text Tool)
 
 -- | Create an empty tool registry
 newToolRegistry :: ToolRegistry
 newToolRegistry = ToolRegistry Map.empty
 
--- | Register a tool in the registry (defaults to AlwaysLoaded)
+-- | Register a tool in the registry
 registerTool :: Tool -> ToolRegistry -> ToolRegistry
-registerTool = registerToolWith AlwaysLoaded
-
--- | Register a tool with an explicit category
-registerToolWith :: ToolCategory -> Tool -> ToolRegistry -> ToolRegistry
-registerToolWith cat tool (ToolRegistry reg) =
-  ToolRegistry $ Map.insert (toolName tool) (tool, cat) reg
+registerTool tool (ToolRegistry reg) =
+  ToolRegistry $ Map.insert (toolName tool) tool reg
 
 -- | Look up a tool by name
 lookupTool :: Text -> ToolRegistry -> Maybe Tool
-lookupTool name (ToolRegistry reg) = fst <$> Map.lookup name reg
+lookupTool name (ToolRegistry reg) = Map.lookup name reg
 
 -- | Get all registered tools
 allTools :: ToolRegistry -> [Tool]
-allTools (ToolRegistry reg) = map fst (Map.elems reg)
+allTools (ToolRegistry reg) = Map.elems reg
 
 -- | Generate tool schemas for the API request (all tools)
 toolSchemas :: ToolRegistry -> [ToolSchema]
@@ -71,16 +56,9 @@ toolSchemas registry =
   | tool <- allTools registry
   ]
 
--- | Whether the registry contains any DynamicLoadable tools
-hasDynamicTools :: ToolRegistry -> Bool
-hasDynamicTools (ToolRegistry reg) =
-  any (\(_, cat) -> cat == DynamicLoadable) reg
-
--- | Tracks which tools have been dynamically loaded in the current turn.
--- Always-loaded tools are determined by the registry's 'ToolCategory',
--- not duplicated here.
+-- | Tracks which tools are active for the current turn.
 newtype ActiveToolSet = ActiveToolSet
-  { atsLoaded :: Set Text
+  { atsActive :: Set Text
   }
   deriving stock (Show, Eq)
 
@@ -88,13 +66,12 @@ newtype ActiveToolSet = ActiveToolSet
 newActiveToolSet :: ActiveToolSet
 newActiveToolSet = ActiveToolSet Set.empty
 
--- | Add a tool to the dynamically loaded set
+-- | Add a tool to the active set
 activateTool :: Text -> ActiveToolSet -> ActiveToolSet
 activateTool name (ActiveToolSet loaded) = ActiveToolSet (Set.insert name loaded)
 
 -- | Generate tool schemas for only the active tools.
--- A tool is active if it is 'AlwaysLoaded' in the registry or has been
--- dynamically loaded into the 'ActiveToolSet'.
+-- A tool is active if its name is in the 'ActiveToolSet'.
 activeToolSchemas :: ToolRegistry -> ActiveToolSet -> [ToolSchema]
 activeToolSchemas (ToolRegistry reg) (ActiveToolSet loaded) =
   [ ToolSchema
@@ -102,6 +79,6 @@ activeToolSchemas (ToolRegistry reg) (ActiveToolSet loaded) =
         tsDescription = toolDescription tool,
         tsInputSchema = toolInputSchema tool
       }
-  | (name, (tool, cat)) <- Map.toList reg,
-    cat == AlwaysLoaded || Set.member name loaded
+  | (name, tool) <- Map.toList reg,
+    Set.member name loaded
   ]

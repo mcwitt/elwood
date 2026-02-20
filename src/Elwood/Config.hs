@@ -6,8 +6,10 @@ module Elwood.Config
     MCPServerConfig (..),
     ThinkingLevel (..),
     ThinkingEffort (..),
+    DynamicToolLoadingConfig (..),
     PermissionConfigFile (..),
     loadConfig,
+    parseDynamicToolLoading,
     parseThinkingLevel,
 
     -- * Re-exports for webhook config
@@ -26,6 +28,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Vector qualified as V
 import Data.Yaml qualified as Yaml
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
@@ -51,6 +54,12 @@ data ThinkingLevel
 -- | Effort level for adaptive thinking
 data ThinkingEffort = EffortLow | EffortMedium | EffortHigh
   deriving stock (Show, Eq, Generic)
+
+-- | Configuration for dynamic tool loading
+newtype DynamicToolLoadingConfig = DynamicToolLoadingConfig
+  { dtlAlwaysLoad :: [Text]
+  }
+  deriving stock (Show, Eq)
 
 -- | Parse a thinking level from a YAML value
 --
@@ -110,8 +119,8 @@ data Config = Config
     cfgThinking :: ThinkingLevel,
     -- | Maximum agent loop iterations per turn (prevents infinite tool-use loops)
     cfgMaxIterations :: Int,
-    -- | Dynamic tool loading (Nothing = auto, Just True = on, Just False = off)
-    cfgDynamicToolLoading :: Maybe Bool
+    -- | Dynamic tool loading (Nothing = disabled, Just cfg = enabled)
+    cfgDynamicToolLoading :: Maybe DynamicToolLoadingConfig
   }
   deriving stock (Show, Generic)
 
@@ -151,7 +160,7 @@ data ConfigFile = ConfigFile
     cfWebhook :: Maybe WebhookServerConfigFile,
     cfThinking :: Maybe Value,
     cfMaxIterations :: Maybe Int,
-    cfDynamicToolLoading :: Maybe Bool
+    cfDynamicToolLoading :: Maybe Value
   }
   deriving stock (Show, Generic)
 
@@ -351,8 +360,24 @@ loadConfig path = do
         cfgWebhook = webhook,
         cfgThinking = maybe ThinkingOff parseThinkingLevel (cfThinking configFile),
         cfgMaxIterations = fromMaybe 30 (cfMaxIterations configFile),
-        cfgDynamicToolLoading = cfDynamicToolLoading configFile
+        cfgDynamicToolLoading = parseDynamicToolLoading =<< cfDynamicToolLoading configFile
       }
+
+-- | Parse dynamic tool loading from a YAML value
+--
+-- Supported formats:
+--   false / absent     -> Nothing (disabled)
+--   true               -> Just (DynamicToolLoadingConfig [])
+--   {alwaysLoad: [...]} -> Just (DynamicToolLoadingConfig [...])
+parseDynamicToolLoading :: Value -> Maybe DynamicToolLoadingConfig
+parseDynamicToolLoading (Bool False) = Nothing
+parseDynamicToolLoading (Bool True) = Just (DynamicToolLoadingConfig [])
+parseDynamicToolLoading (Object obj) =
+  let names = case KM.lookup (Key.fromText "alwaysLoad") obj of
+        Just (Array arr) -> [t | String t <- V.toList arr]
+        _ -> []
+   in Just (DynamicToolLoadingConfig names)
+parseDynamicToolLoading _ = Nothing
 
 -- | Default webhook server configuration (disabled)
 defaultWebhookServerConfig :: WebhookServerConfig

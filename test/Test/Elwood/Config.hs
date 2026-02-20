@@ -1,14 +1,17 @@
 module Test.Elwood.Config (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
+import Data.Text (Text)
 import Elwood.Config
   ( CompactionConfig (..),
     Config (..),
+    DynamicToolLoadingConfig (..),
     ThinkingEffort (..),
     ThinkingLevel (..),
     WebhookConfig (..),
     WebhookServerConfig (..),
     loadConfig,
+    parseDynamicToolLoading,
     parseThinkingLevel,
   )
 import Elwood.Event.Types (DeliveryTarget (..))
@@ -23,6 +26,7 @@ tests =
     "Config"
     [ compactionConfigTests,
       thinkingLevelTests,
+      dynamicToolLoadingTests,
       exampleConfigTests
     ]
 
@@ -93,6 +97,25 @@ thinkingLevelTests =
         -- Zero budgetTokens
         parseThinkingLevel (object ["type" .= ("fixed" :: String), "budgetTokens" .= (0 :: Int)])
           @?= ThinkingOff
+    ]
+
+dynamicToolLoadingTests :: TestTree
+dynamicToolLoadingTests =
+  testGroup
+    "DynamicToolLoading"
+    [ testCase "false returns Nothing" $ do
+        parseDynamicToolLoading (Bool False) @?= Nothing,
+      testCase "true returns empty alwaysLoad" $ do
+        parseDynamicToolLoading (Bool True) @?= Just (DynamicToolLoadingConfig []),
+      testCase "object with alwaysLoad parses tool names" $ do
+        let val = object ["alwaysLoad" .= (["run_command", "save_memory"] :: [Text])]
+        parseDynamicToolLoading val @?= Just (DynamicToolLoadingConfig ["run_command", "save_memory"]),
+      testCase "object without alwaysLoad returns empty list" $ do
+        parseDynamicToolLoading (object []) @?= Just (DynamicToolLoadingConfig []),
+      testCase "null returns Nothing" $ do
+        parseDynamicToolLoading Null @?= Nothing,
+      testCase "string returns Nothing" $ do
+        parseDynamicToolLoading (String "true") @?= Nothing
     ]
 
 exampleConfigTests :: TestTree

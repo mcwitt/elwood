@@ -23,36 +23,35 @@ tests :: TestTree
 tests =
   testGroup
     "Tools.Registry"
-    [ toolCategoryTests,
+    [ registryBasicsTests,
       activeToolSetTests,
       activeToolSchemasTests
     ]
 
-toolCategoryTests :: TestTree
-toolCategoryTests =
+registryBasicsTests :: TestTree
+registryBasicsTests =
   testGroup
-    "ToolCategory"
-    [ testCase "registerTool defaults to AlwaysLoaded" $ do
-        let reg = registerTool (mkTestTool "t1") newToolRegistry
-        hasDynamicTools reg @?= False,
-      testCase "registerToolWith DynamicLoadable is dynamic" $ do
-        let reg = registerToolWith DynamicLoadable (mkTestTool "t1") newToolRegistry
-        hasDynamicTools reg @?= True,
-      testCase "lookupTool finds both categories" $ do
+    "Registry basics"
+    [ testCase "lookupTool finds registered tools" $ do
         let reg =
               registerTool (mkTestTool "a") $
-                registerToolWith DynamicLoadable (mkTestTool "b") newToolRegistry
+                registerTool (mkTestTool "b") newToolRegistry
         case lookupTool "a" reg of
-          Nothing -> assertFailure "Should find AlwaysLoaded tool"
+          Nothing -> assertFailure "Should find tool a"
           Just t -> toolName t @?= "a"
         case lookupTool "b" reg of
-          Nothing -> assertFailure "Should find DynamicLoadable tool"
+          Nothing -> assertFailure "Should find tool b"
           Just t -> toolName t @?= "b",
-      testCase "allTools returns both categories" $ do
+      testCase "allTools returns all registered tools" $ do
         let reg =
               registerTool (mkTestTool "a") $
-                registerToolWith DynamicLoadable (mkTestTool "b") newToolRegistry
-        length (allTools reg) @?= 2
+                registerTool (mkTestTool "b") newToolRegistry
+        length (allTools reg) @?= 2,
+      testCase "toolSchemas returns schemas for all tools" $ do
+        let reg =
+              registerTool (mkTestTool "a") $
+                registerTool (mkTestTool "b") newToolRegistry
+        length (toolSchemas reg) @?= 2
     ]
 
 activeToolSetTests :: TestTree
@@ -70,28 +69,26 @@ activeToolSchemasTests :: TestTree
 activeToolSchemasTests =
   testGroup
     "activeToolSchemas"
-    [ testCase "includes AlwaysLoaded and loaded dynamic tools" $ do
-        let reg =
-              registerTool (mkTestTool "builtin") $
-                registerToolWith DynamicLoadable (mkTestTool "mcp_a") $
-                  registerToolWith DynamicLoadable (mkTestTool "mcp_b") newToolRegistry
-            ats = activateTool "mcp_a" newActiveToolSet
-            schemas = activeToolSchemas reg ats
-            names = map tsName schemas
-        Set.fromList names @?= Set.fromList ["builtin", "mcp_a"],
-      testCase "returns all tools when all dynamic tools loaded" $ do
+    [ testCase "returns only tools in ActiveToolSet" $ do
         let reg =
               registerTool (mkTestTool "a") $
-                registerToolWith DynamicLoadable (mkTestTool "b") newToolRegistry
-            ats = activateTool "b" newActiveToolSet
+                registerTool (mkTestTool "b") $
+                  registerTool (mkTestTool "c") newToolRegistry
+            ats = activateTool "a" $ activateTool "c" newActiveToolSet
+            schemas = activeToolSchemas reg ats
+            names = Set.fromList (map tsName schemas)
+        names @?= Set.fromList ["a", "c"],
+      testCase "returns all tools when all activated" $ do
+        let reg =
+              registerTool (mkTestTool "a") $
+                registerTool (mkTestTool "b") newToolRegistry
+            ats = activateTool "a" $ activateTool "b" newActiveToolSet
             schemas = activeToolSchemas reg ats
         length schemas @?= 2,
-      testCase "returns only AlwaysLoaded when none loaded" $ do
+      testCase "returns empty when none activated" $ do
         let reg =
               registerTool (mkTestTool "a") $
-                registerToolWith DynamicLoadable (mkTestTool "b") $
-                  registerToolWith DynamicLoadable (mkTestTool "c") newToolRegistry
+                registerTool (mkTestTool "b") newToolRegistry
             schemas = activeToolSchemas reg newActiveToolSet
-            names = map tsName schemas
-        names @?= ["a"]
+        length schemas @?= 0
     ]

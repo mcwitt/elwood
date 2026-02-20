@@ -1,34 +1,33 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Tools.Meta
-  ( mkDiscoverToolsTool,
-    mkLoadToolTool,
+  ( mkFindToolsTool,
   )
 where
 
-import Data.Aeson (Value (..), encode, object, (.=))
+import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
-import Data.ByteString.Lazy qualified as LBS
 import Data.IORef (IORef, modifyIORef')
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Types (ToolSchema (..))
-import Elwood.Tools.Registry (ActiveToolSet, ToolRegistry, activateTool, lookupTool, toolSchemas)
+import Elwood.Tools.Registry (ActiveToolSet, ToolRegistry, activateTool, toolSchemas)
 import Elwood.Tools.Types (Tool (..), ToolResult (..))
 
--- | Create the discover_tools meta-tool
+-- | Create the find_tools meta-tool
 --
--- Lists available tools with name and description, optionally filtered
--- by a case-insensitive substring match on name or description.
-mkDiscoverToolsTool :: ToolRegistry -> Tool
-mkDiscoverToolsTool registry =
+-- Searches available tools by case-insensitive substring match on name
+-- and description, activates the top 5 matches, and returns their names
+-- and descriptions.
+mkFindToolsTool :: ToolRegistry -> IORef ActiveToolSet -> Tool
+mkFindToolsTool registry activeRef =
   Tool
-    { toolName = "discover_tools",
+    { toolName = "find_tools",
       toolDescription =
-        "List available tools. Returns tool names and descriptions. "
-          <> "Use the optional 'query' parameter to filter by substring match on name or description.",
+        "Search for available tools by keyword. "
+          <> "Returns matching tool names and descriptions, and makes them available for use. "
+          <> "Use when you need a tool that isn't already available.",
       toolInputSchema =
         object
           [ "type" .= ("object" :: Text),
@@ -37,79 +36,34 @@ mkDiscoverToolsTool registry =
                 [ "query"
                     .= object
                       [ "type" .= ("string" :: Text),
-                        "description" .= ("Optional substring to filter tools by name or description" :: Text)
+                        "description" .= ("Keyword to search for in tool names and descriptions" :: Text)
                       ]
                 ],
-            "required" .= ([] :: [Text])
+            "required" .= (["query"] :: [Text])
           ],
       toolExecute = \input -> do
-        let mQuery = case input of
-              Object obj -> case KM.lookup (Key.fromText "query") obj of
-                Just (String q) -> Just (T.toLower q)
-                _ -> Nothing
-              _ -> Nothing
+        case extractQuery input of
+          Nothing -> pure $ ToolError "Missing required parameter: query"
+          Just query -> do
+            let q = T.toLower query
+                schemas = toolSchemas registry
+                matches ts =
+                  q `T.isInfixOf` T.toLower (tsName ts)
+                    || q `T.isInfixOf` T.toLower (tsDescription ts)
+                filtered = take 5 (filter matches schemas)
 
-            schemas = toolSchemas registry
+            if null filtered
+              then pure $ ToolSuccess "No tools found matching your query. Try different keywords."
+              else do
+                -- Activate all matched tools
+                mapM_ (modifyIORef' activeRef . activateTool . tsName) filtered
 
-            matches ts = case mQuery of
-              Nothing -> True
-              Just q ->
-                q `T.isInfixOf` T.toLower (tsName ts)
-                  || q `T.isInfixOf` T.toLower (tsDescription ts)
-
-            filtered = filter matches schemas
-
-            formatTool ts = tsName ts <> " — " <> tsDescription ts
-
-        if null filtered
-          then pure $ ToolSuccess "No tools found matching your query."
-          else pure $ ToolSuccess $ T.unlines (map formatTool filtered)
+                let formatTool ts = tsName ts <> " — " <> tsDescription ts
+                pure $ ToolSuccess $ T.unlines (map formatTool filtered)
     }
 
--- | Create the load_tool meta-tool
---
--- Loads a tool by name into the active tool set for the current turn.
--- Returns the tool's description and full input schema as confirmation.
-mkLoadToolTool :: ToolRegistry -> IORef ActiveToolSet -> Tool
-mkLoadToolTool registry activeRef =
-  Tool
-    { toolName = "load_tool",
-      toolDescription =
-        "Load a tool by name so it becomes available for use in this conversation turn. "
-          <> "Use discover_tools first to find available tool names.",
-      toolInputSchema =
-        object
-          [ "type" .= ("object" :: Text),
-            "properties"
-              .= object
-                [ "name"
-                    .= object
-                      [ "type" .= ("string" :: Text),
-                        "description" .= ("The exact name of the tool to load" :: Text)
-                      ]
-                ],
-            "required" .= (["name"] :: [Text])
-          ],
-      toolExecute = \input -> do
-        case extractName input of
-          Nothing -> pure $ ToolError "Missing required parameter: name"
-          Just name -> case lookupTool name registry of
-            Nothing -> pure $ ToolError $ "Unknown tool: " <> name <> ". Use discover_tools to see available tools."
-            Just tool -> do
-              modifyIORef' activeRef (activateTool name)
-              let schema = decodeUtf8 (LBS.toStrict (encode (toolInputSchema tool)))
-              pure $
-                ToolSuccess $
-                  "Loaded tool: "
-                    <> name
-                    <> "\n\nDescription: "
-                    <> toolDescription tool
-                    <> "\n\nInput schema: "
-                    <> schema
-    }
-
-extractName :: Value -> Maybe Text
-extractName (Object obj) = case KM.lookup (Key.fromText "name") obj of
-  Just (String n) -> Just n
+extractQuery :: Value -> Maybe Text
+extractQuery (Object obj) = case KM.lookup (Key.fromText "query") obj of
+  Just (String q) -> Just q
   _ -> Nothing
-extractName _ = Nothing
+extractQuery _ = Nothing

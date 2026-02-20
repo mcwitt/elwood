@@ -40,7 +40,7 @@ import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Compaction (CompactionConfig)
 import Elwood.Claude.Conversation (ConversationStore, getConversation, updateConversation)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Conversation (..), Role (..))
-import Elwood.Config (ThinkingLevel)
+import Elwood.Config (DynamicToolLoadingConfig, ThinkingLevel)
 import Elwood.Event.Types
   ( DeliveryTarget (..),
     EventSource (..),
@@ -98,8 +98,8 @@ data AppEnv = AppEnv
     eeMetrics :: MetricsStore,
     -- | Number of active MCP servers
     eeMCPServerCount :: Int,
-    -- | Whether to use dynamic tool loading
-    eeDynamicToolLoading :: Bool
+    -- | Dynamic tool loading config (Nothing = disabled)
+    eeDynamicToolLoading :: Maybe DynamicToolLoadingConfig
   }
 
 -- | Handle any event through the agent pipeline

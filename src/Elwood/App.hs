@@ -8,7 +8,7 @@ import Control.Exception (SomeException, catch, finally)
 import Data.Foldable (for_)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
@@ -128,14 +128,13 @@ runApp config = do
   -- Get compaction config from main config
   let compactionConfig = cfgCompaction config
 
-  -- Resolve dynamic tool loading setting
-  -- Default: enable whenever there are MCP (DynamicLoadable) tools
-  let dynamicLoading = fromMaybe (hasDynamicTools registry) (cfgDynamicToolLoading config)
+  -- Dynamic tool loading config
+  let dynamicLoading = cfgDynamicToolLoading config
 
   logInfo
     logger
     "Dynamic tool loading"
-    [("enabled", T.pack (show dynamicLoading))]
+    [("enabled", T.pack (show (isJust dynamicLoading)))]
 
   logInfo
     logger
@@ -246,7 +245,7 @@ claudeHandlerWithApproval ::
   FilePath ->
   MetricsStore ->
   Int ->
-  Bool ->
+  Maybe DynamicToolLoadingConfig ->
   Message ->
   IO (Maybe Text)
 claudeHandlerWithApproval logger client telegram store registry mkCtx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount dynamicLoading msg = do
