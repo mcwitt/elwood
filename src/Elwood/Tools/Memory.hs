@@ -1,8 +1,8 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Tools.Memory
-  ( saveMemoryTool,
-    searchMemoryTool,
+  ( mkSaveMemoryTool,
+    mkSearchMemoryTool,
   )
 where
 
@@ -11,13 +11,13 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text (Text)
 import Data.Text qualified as T
-import Elwood.Logging (logInfo)
-import Elwood.Memory (MemoryResult (..), saveMemory, searchMemory)
+import Elwood.Logging (Logger, logInfo)
+import Elwood.Memory (MemoryResult (..), MemoryStore, saveMemory, searchMemory)
 import Elwood.Tools.Types
 
--- | Tool for saving memories
-saveMemoryTool :: Tool
-saveMemoryTool =
+-- | Construct a tool for saving memories
+mkSaveMemoryTool :: Logger -> MemoryStore -> Tool
+mkSaveMemoryTool logger memStore =
   Tool
     { toolName = "save_memory",
       toolDescription =
@@ -26,12 +26,19 @@ saveMemoryTool =
           <> "that should persist across conversations. "
           <> "The key should be a short, descriptive identifier.",
       toolInputSchema = saveMemorySchema,
-      toolExecute = executeSaveMemory
+      toolExecute = \input -> case parseSaveInput input of
+        Left err -> pure $ toolError err
+        Right (key, content) -> do
+          logInfo logger "Saving memory" [("key", key)]
+          result <- saveMemory memStore key content
+          case result of
+            Left err -> pure $ toolError err
+            Right () -> pure $ toolSuccess $ "Memory saved with key: " <> key
     }
 
--- | Tool for searching memories
-searchMemoryTool :: Tool
-searchMemoryTool =
+-- | Construct a tool for searching memories
+mkSearchMemoryTool :: Logger -> MemoryStore -> Tool
+mkSearchMemoryTool logger memStore =
   Tool
     { toolName = "search_memory",
       toolDescription =
@@ -39,7 +46,14 @@ searchMemoryTool =
           <> "Use this to recall facts, preferences, or context from past conversations. "
           <> "The query can contain multiple keywords.",
       toolInputSchema = searchMemorySchema,
-      toolExecute = executeSearchMemory
+      toolExecute = \input -> case parseSearchInput input of
+        Left err -> pure $ toolError err
+        Right query -> do
+          logInfo logger "Searching memory" [("query", query)]
+          results <- searchMemory memStore query
+          if null results
+            then pure $ toolSuccess "No memories found matching the query."
+            else pure $ toolSuccess $ formatResults results
     }
 
 -- | JSON Schema for save_memory input
@@ -78,30 +92,6 @@ searchMemorySchema =
           ],
       "required" .= (["query"] :: [Text])
     ]
-
--- | Execute save_memory
-executeSaveMemory :: ToolEnv -> Value -> IO ToolResult
-executeSaveMemory env input = do
-  case parseSaveInput input of
-    Left err -> pure $ toolError err
-    Right (key, content) -> do
-      logInfo (teLogger env) "Saving memory" [("key", key)]
-      result <- saveMemory (teMemoryStore env) key content
-      case result of
-        Left err -> pure $ toolError err
-        Right () -> pure $ toolSuccess $ "Memory saved with key: " <> key
-
--- | Execute search_memory
-executeSearchMemory :: ToolEnv -> Value -> IO ToolResult
-executeSearchMemory env input = do
-  case parseSearchInput input of
-    Left err -> pure $ toolError err
-    Right query -> do
-      logInfo (teLogger env) "Searching memory" [("query", query)]
-      results <- searchMemory (teMemoryStore env) query
-      if null results
-        then pure $ toolSuccess "No memories found matching the query."
-        else pure $ toolSuccess $ formatResults results
 
 -- | Parse save_memory input
 parseSaveInput :: Value -> Either Text (Text, Text)

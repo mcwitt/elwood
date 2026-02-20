@@ -4,7 +4,7 @@ module Elwood.Tools.Types
   ( -- * Tool Types
     Tool (..),
     ToolResult (..),
-    ToolEnv (..),
+    AgentContext (..),
     ApprovalOutcome (..),
 
     -- * Attachment Types
@@ -18,13 +18,8 @@ module Elwood.Tools.Types
 where
 
 import Data.Aeson (Value)
-import Data.IORef (IORef)
-import Data.Int (Int64)
 import Data.Text (Text)
-import Elwood.Logging (Logger)
-import Elwood.Memory (MemoryStore)
-import Elwood.Permissions (PermissionChecker)
-import Network.HTTP.Client (Manager)
+import Elwood.Permissions (PermissionConfig)
 
 -- | Result of executing a tool
 data ToolResult
@@ -34,31 +29,15 @@ data ToolResult
     ToolError Text
   deriving stock (Show, Eq)
 
--- | Environment available to tools during execution
-data ToolEnv = ToolEnv
-  { -- | Logger for tool operations
-    teLogger :: Logger,
-    -- | Workspace directory (user files)
-    teWorkspaceDir :: FilePath,
-    -- | State directory (bot state)
-    teStateDir :: FilePath,
-    -- | Permission checker
-    tePermissions :: PermissionChecker,
-    -- | Shared HTTP manager for web tools
-    teHttpManager :: Manager,
-    -- | Brave Search API key (optional)
-    teBraveApiKey :: Maybe Text,
-    -- | Persistent memory store
-    teMemoryStore :: MemoryStore,
-    -- | Chat ID for the current conversation (for approval requests)
-    teChatId :: Maybe Int64,
+-- | Agent-level context for policy checking and approval
+data AgentContext = AgentContext
+  { -- | Permission configuration for tool policy
+    acPermissionConfig :: PermissionConfig,
     -- | Approval request function (sends Telegram message, returns result)
-    teRequestApproval :: Maybe (Text -> Text -> IO ApprovalOutcome),
-    -- | Queue of attachments to send after the text response
-    teAttachmentQueue :: IORef [Attachment]
+    acRequestApproval :: Maybe (Text -> Text -> IO ApprovalOutcome)
   }
 
--- | Outcome of an approval request (simplified for ToolEnv)
+-- | Outcome of an approval request
 data ApprovalOutcome
   = ApprovalGranted
   | ApprovalDenied
@@ -95,7 +74,7 @@ data Tool = Tool
     -- | JSON Schema for input parameters
     toolInputSchema :: Value,
     -- | Execute the tool with given input
-    toolExecute :: ToolEnv -> Value -> IO ToolResult
+    toolExecute :: Value -> IO ToolResult
   }
 
 -- | Create a success result

@@ -1,15 +1,11 @@
 module Test.Elwood.Attachment (tests) where
 
 import Data.Aeson (object, (.=))
-import Data.IORef (IORef, newIORef, readIORef)
+import Data.IORef (newIORef, readIORef)
 import Data.Text (Text)
 import Elwood.Logging (LogLevel (..), newLogger)
-import Elwood.Memory (newMemoryStore)
-import Elwood.Permissions (defaultPermissionConfig, newPermissionChecker)
-import Elwood.Tools.Attachment (isPhotoExtension, queueAttachmentTool)
+import Elwood.Tools.Attachment (isPhotoExtension, mkQueueAttachmentTool)
 import Elwood.Tools.Types
-import Network.HTTP.Client (newManager)
-import Network.HTTP.Client.TLS (tlsManagerSettings)
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -38,27 +34,6 @@ isPhotoExtensionTests =
       testCase "no extension is not photo" $ isPhotoExtension "noext" @?= False
     ]
 
--- | Create a ToolEnv for testing
-mkTestToolEnv :: FilePath -> IORef [Attachment] -> IO ToolEnv
-mkTestToolEnv tmpDir queue = do
-  logger <- newLogger Error
-  manager <- newManager tlsManagerSettings
-  memStore <- newMemoryStore tmpDir
-  let perms = newPermissionChecker defaultPermissionConfig tmpDir
-  pure
-    ToolEnv
-      { teLogger = logger,
-        teWorkspaceDir = tmpDir,
-        teStateDir = tmpDir,
-        tePermissions = perms,
-        teHttpManager = manager,
-        teBraveApiKey = Nothing,
-        teMemoryStore = memStore,
-        teChatId = Nothing,
-        teRequestApproval = Nothing,
-        teAttachmentQueue = queue
-      }
-
 queueAttachmentTests :: TestTree
 queueAttachmentTests =
   testGroup
@@ -67,9 +42,10 @@ queueAttachmentTests =
         let filePath = tmpDir <> "/test.png"
         writeFile filePath "fake image data"
         queue <- newIORef []
-        env <- mkTestToolEnv tmpDir queue
-        let input = object ["path" .= (filePath :: String)]
-        result <- toolExecute queueAttachmentTool env input
+        logger <- newLogger Error
+        let tool = mkQueueAttachmentTool logger queue
+            input = object ["path" .= (filePath :: String)]
+        result <- toolExecute tool input
         assertSuccess result
         attachments <- readIORef queue
         length attachments @?= 1
@@ -78,9 +54,10 @@ queueAttachmentTests =
         attCaption (head attachments) @?= Nothing,
       testCase "rejects missing file" $ withSystemTempDirectory "att-test" $ \tmpDir -> do
         queue <- newIORef []
-        env <- mkTestToolEnv tmpDir queue
-        let input = object ["path" .= ("/nonexistent/file.png" :: String)]
-        result <- toolExecute queueAttachmentTool env input
+        logger <- newLogger Error
+        let tool = mkQueueAttachmentTool logger queue
+            input = object ["path" .= ("/nonexistent/file.png" :: String)]
+        result <- toolExecute tool input
         assertError result
         attachments <- readIORef queue
         length attachments @?= 0,
@@ -88,9 +65,10 @@ queueAttachmentTests =
         let filePath = tmpDir <> "/test.pdf"
         writeFile filePath "fake pdf"
         queue <- newIORef []
-        env <- mkTestToolEnv tmpDir queue
-        let input = object ["path" .= (filePath :: String), "type" .= ("photo" :: Text)]
-        result <- toolExecute queueAttachmentTool env input
+        logger <- newLogger Error
+        let tool = mkQueueAttachmentTool logger queue
+            input = object ["path" .= (filePath :: String), "type" .= ("photo" :: Text)]
+        result <- toolExecute tool input
         assertSuccess result
         attachments <- readIORef queue
         attType (head attachments) @?= AttachPhoto,
@@ -98,9 +76,10 @@ queueAttachmentTests =
         let filePath = tmpDir <> "/test.png"
         writeFile filePath "fake png"
         queue <- newIORef []
-        env <- mkTestToolEnv tmpDir queue
-        let input = object ["path" .= (filePath :: String), "type" .= ("document" :: Text)]
-        result <- toolExecute queueAttachmentTool env input
+        logger <- newLogger Error
+        let tool = mkQueueAttachmentTool logger queue
+            input = object ["path" .= (filePath :: String), "type" .= ("document" :: Text)]
+        result <- toolExecute tool input
         assertSuccess result
         attachments <- readIORef queue
         attType (head attachments) @?= AttachDocument,
@@ -108,9 +87,10 @@ queueAttachmentTests =
         let filePath = tmpDir <> "/test.png"
         writeFile filePath "fake png"
         queue <- newIORef []
-        env <- mkTestToolEnv tmpDir queue
-        let input = object ["path" .= (filePath :: String), "caption" .= ("My caption" :: Text)]
-        result <- toolExecute queueAttachmentTool env input
+        logger <- newLogger Error
+        let tool = mkQueueAttachmentTool logger queue
+            input = object ["path" .= (filePath :: String), "caption" .= ("My caption" :: Text)]
+        result <- toolExecute tool input
         assertSuccess result
         attachments <- readIORef queue
         attCaption (head attachments) @?= Just "My caption",
@@ -118,9 +98,10 @@ queueAttachmentTests =
         let filePath = tmpDir <> "/test.png"
         writeFile filePath "fake png"
         queue <- newIORef []
-        env <- mkTestToolEnv tmpDir queue
-        let input = object ["path" .= (filePath :: String)]
-        result <- toolExecute queueAttachmentTool env input
+        logger <- newLogger Error
+        let tool = mkQueueAttachmentTool logger queue
+            input = object ["path" .= (filePath :: String)]
+        result <- toolExecute tool input
         assertSuccess result
         attachments <- readIORef queue
         attCaption (head attachments) @?= Nothing

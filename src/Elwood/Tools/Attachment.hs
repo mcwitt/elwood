@@ -1,7 +1,7 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Tools.Attachment
-  ( queueAttachmentTool,
+  ( mkQueueAttachmentTool,
     isPhotoExtension,
   )
 where
@@ -10,17 +10,17 @@ import Data.Aeson (Value, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Char (toLower)
-import Data.IORef (modifyIORef')
+import Data.IORef (IORef, modifyIORef')
 import Data.Text (Text)
 import Data.Text qualified as T
-import Elwood.Logging (logInfo)
+import Elwood.Logging (Logger, logInfo)
 import Elwood.Tools.Types
 import System.Directory (doesFileExist)
 import System.FilePath (takeExtension)
 
--- | Tool for queuing file attachments to send after the text response
-queueAttachmentTool :: Tool
-queueAttachmentTool =
+-- | Construct a tool for queuing file attachments to send after the text response
+mkQueueAttachmentTool :: Logger -> IORef [Attachment] -> Tool
+mkQueueAttachmentTool logger queue =
   Tool
     { toolName = "queue_attachment",
       toolDescription =
@@ -28,7 +28,22 @@ queueAttachmentTool =
           <> "Supports photos (png, jpg, jpeg, gif, webp) and documents (any file type). "
           <> "The path must be an absolute path to an existing file.",
       toolInputSchema = queueAttachmentSchema,
-      toolExecute = executeQueueAttachment
+      toolExecute = \input -> case parseInput input of
+        Left err -> pure $ toolError err
+        Right (path, attTy, cap) -> do
+          exists <- doesFileExist path
+          if not exists
+            then pure $ toolError $ "File not found: " <> T.pack path
+            else do
+              let attachment =
+                    Attachment
+                      { attPath = path,
+                        attType = attTy,
+                        attCaption = cap
+                      }
+              modifyIORef' queue (<> [attachment])
+              logInfo logger "Attachment queued" [("path", T.pack path)]
+              pure $ toolSuccess $ "{\"status\":\"queued\",\"path\":" <> T.pack (show path) <> "}"
     }
 
 -- | JSON Schema for queue_attachment input
@@ -57,26 +72,6 @@ queueAttachmentSchema =
           ],
       "required" .= (["path"] :: [Text])
     ]
-
--- | Execute queue_attachment
-executeQueueAttachment :: ToolEnv -> Value -> IO ToolResult
-executeQueueAttachment env input = do
-  case parseInput input of
-    Left err -> pure $ toolError err
-    Right (path, attTy, cap) -> do
-      exists <- doesFileExist path
-      if not exists
-        then pure $ toolError $ "File not found: " <> T.pack path
-        else do
-          let attachment =
-                Attachment
-                  { attPath = path,
-                    attType = attTy,
-                    attCaption = cap
-                  }
-          modifyIORef' (teAttachmentQueue env) (<> [attachment])
-          logInfo (teLogger env) "Attachment queued" [("path", T.pack path)]
-          pure $ toolSuccess $ "{\"status\":\"queued\",\"path\":" <> T.pack (show path) <> "}"
 
 -- | Parse queue_attachment input
 parseInput :: Value -> Either Text (FilePath, AttachmentType, Maybe Text)

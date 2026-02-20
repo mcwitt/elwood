@@ -24,7 +24,7 @@ import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.MCP.Client (sendRequest, spawnMCPServer, stopMCPServer)
 import Elwood.MCP.Types
 import Elwood.Tools.Registry (ToolRegistry, registerTool)
-import Elwood.Tools.Types (Tool (..), ToolEnv, ToolResult (..))
+import Elwood.Tools.Types (Tool (..), ToolResult (..))
 
 -- | Response from tools/list
 newtype ToolsListResponse = ToolsListResponse
@@ -69,8 +69,8 @@ ensureTypeObject (Object obj) =
 ensureTypeObject v = v
 
 -- | Execute an MCP tool
-executeMCPTool :: MCPServer -> MCPTool -> ToolEnv -> Value -> IO ToolResult
-executeMCPTool server mcpTool _env input = do
+executeMCPTool :: MCPServer -> MCPTool -> Value -> IO ToolResult
+executeMCPTool server mcpTool input = do
   let params =
         object
           [ "name" .= mtName mcpTool,

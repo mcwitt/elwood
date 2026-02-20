@@ -12,7 +12,7 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 
 - **Telegram integration** — Chat with your assistant from anywhere
 - **Webhook endpoints** — Trigger agent actions from external systems (Home Assistant, n8n, etc.)
-- **Tool execution** — Run commands, read/write files, search the web
+- **Tool execution** — Run commands, read/write files
 - **MCP support** — Extend capabilities with Model Context Protocol servers
 - **Persistent memory** — Cross-session knowledge store
 - **Scheduled tasks** — Cron jobs via systemd timers that call webhooks
@@ -100,8 +100,6 @@ permissions:
   dangerousPatterns:
     - "rm -rf"
     - "sudo"
-  allowedPaths:
-    - /var/lib/assistant/workspace
 
 webhook:
   enabled: true
@@ -129,7 +127,6 @@ Set required environment variables:
 ```bash
 export TELEGRAM_BOT_TOKEN="your-bot-token"
 export ANTHROPIC_API_KEY="your-api-key"
-export BRAVE_SEARCH_API_KEY="your-brave-key"  # optional, for web search
 export WEBHOOK_SECRET="your-webhook-secret"   # optional, overrides config file
 ```
 
@@ -186,6 +183,11 @@ Add the flake to your NixOS configuration:
               # session = null (default); each run is isolated
             };
 
+            mcpServers.filesystem = {
+              command = "npx";
+              args = [ "-y" "@modelcontextprotocol/server-filesystem" "/var/lib/assistant/elwood/workspace" ];
+            };
+
             permissions = {
               safeCommands = [ "ls" "cat" "git status" ];
               dangerousPatterns = [ "\\brm\\b" "\\bsudo\\b" ];
@@ -214,12 +216,9 @@ Each agent runs as a separate systemd service (`assistant-<name>.service`) with 
 | Tool | Description |
 |------|-------------|
 | `run_command` | Execute shell commands (with permission checks) |
-| `read_file` | Read files from allowed paths |
-| `write_file` | Write files to allowed paths |
-| `web_search` | Search the web via Brave Search API |
-| `web_fetch` | Fetch and extract text from URLs |
 | `save_memory` | Persist knowledge across sessions |
 | `search_memory` | Search saved memories |
+| `queue_attachment` | Queue files to send as Telegram attachments |
 
 ## Future Ideas
 

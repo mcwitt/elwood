@@ -6,7 +6,7 @@ where
 import Control.Concurrent.Async (async, wait)
 import Control.Exception (SomeException, catch, finally)
 import Data.Foldable (for_)
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -29,7 +29,7 @@ import Elwood.Logging
 import Elwood.MCP.Client (stopMCPServer)
 import Elwood.MCP.Registry (startMCPServers)
 import Elwood.Memory (newMemoryStore)
-import Elwood.Permissions (newPermissionChecker, pcApprovalTimeoutSeconds)
+import Elwood.Permissions (pcApprovalTimeoutSeconds)
 import Elwood.Telegram.Client
   ( TelegramClient,
     answerCallbackQuery,
@@ -47,16 +47,12 @@ import Elwood.Telegram.Types
     InlineKeyboardMarkup (..),
     Message (..),
   )
-import Elwood.Tools.Attachment (isPhotoExtension, queueAttachmentTool)
-import Elwood.Tools.Command (runCommandTool)
-import Elwood.Tools.FileSystem (readFileTool, writeFileTool)
-import Elwood.Tools.Memory (saveMemoryTool, searchMemoryTool)
+import Elwood.Tools.Attachment (isPhotoExtension, mkQueueAttachmentTool)
+import Elwood.Tools.Command (mkRunCommandTool)
+import Elwood.Tools.Memory (mkSaveMemoryTool, mkSearchMemoryTool)
 import Elwood.Tools.Registry
-import Elwood.Tools.Types (ApprovalOutcome (..), Attachment (..), AttachmentType (..), ToolEnv (..))
-import Elwood.Tools.Web (webFetchTool, webSearchTool)
+import Elwood.Tools.Types (AgentContext (..), ApprovalOutcome (..), Attachment (..), AttachmentType (..))
 import Elwood.Webhook.Server (runWebhookServer)
-import Network.HTTP.Client (newManager)
-import Network.HTTP.Client.TLS (tlsManagerSettings)
 import System.Directory (createDirectoryIfMissing)
 
 -- | Initialize and run the application
@@ -92,13 +88,6 @@ runApp config = do
     Just _ -> logInfo logger "System prompt loaded from SOUL.md" []
     Nothing -> logWarn logger "No SOUL.md found, running without system prompt" []
 
-  -- Initialize permission checker
-  let permChecker = newPermissionChecker (cfgPermissions config) (cfgWorkspaceDir config)
-  logInfo logger "Permission checker initialized" []
-
-  -- Initialize HTTP manager for web tools
-  httpManager <- newManager tlsManagerSettings
-
   -- Initialize memory store
   memoryStore <- newMemoryStore (cfgStateDir config)
   logInfo logger "Memory store initialized" []
@@ -111,41 +100,14 @@ runApp config = do
   -- Initialize attachment queue
   attachmentQueue <- newIORef []
 
-  -- Create base tool environment (without per-chat approval function)
-  let baseToolEnv =
-        ToolEnv
-          { teLogger = logger,
-            teWorkspaceDir = cfgWorkspaceDir config,
-            teStateDir = cfgStateDir config,
-            tePermissions = permChecker,
-            teHttpManager = httpManager,
-            teBraveApiKey = cfgBraveApiKey config,
-            teMemoryStore = memoryStore,
-            teChatId = Nothing,
-            teRequestApproval = Nothing,
-            teAttachmentQueue = attachmentQueue
-          }
-
-  -- Helper to create tool environment with approval function for a specific chat
-  let mkToolEnvWithApproval :: Int64 -> ToolEnv
-      mkToolEnvWithApproval cid =
-        baseToolEnv
-          { teChatId = Just cid,
-            teRequestApproval = Just (requestToolApproval logger telegram approvalCoordinator cid)
-          }
-
-  -- Initialize tool registry with built-in tools
+  -- Construct tools with explicit dependencies
   let builtinRegistry =
-        registerTool queueAttachmentTool $
-          registerTool runCommandTool $
-            registerTool readFileTool $
-              registerTool writeFileTool $
-                registerTool webSearchTool $
-                  registerTool webFetchTool $
-                    registerTool saveMemoryTool $
-                      registerTool
-                        searchMemoryTool
-                        newToolRegistry
+        registerTool (mkQueueAttachmentTool logger attachmentQueue) $
+          registerTool (mkRunCommandTool logger (cfgWorkspaceDir config) (cfgPermissions config)) $
+            registerTool (mkSaveMemoryTool logger memoryStore) $
+              registerTool
+                (mkSearchMemoryTool logger memoryStore)
+                newToolRegistry
 
   logInfo
     logger
@@ -174,10 +136,19 @@ runApp config = do
     "Allowed chat IDs"
     [("chats", T.pack (show (cfgAllowedChatIds config)))]
 
-  -- Log Brave API key status
-  case cfgBraveApiKey config of
-    Just _ -> logInfo logger "Brave Search API key configured" []
-    Nothing -> logWarn logger "No Brave Search API key, web_search will be unavailable" []
+  -- Create base agent context (without per-chat approval function)
+  let baseAgentContext =
+        AgentContext
+          { acPermissionConfig = cfgPermissions config,
+            acRequestApproval = Nothing
+          }
+
+  -- Helper to create agent context with approval function for a specific chat
+  let mkAgentContextWithApproval :: Int64 -> AgentContext
+      mkAgentContextWithApproval cid =
+        baseAgentContext
+          { acRequestApproval = Just (requestToolApproval logger telegram approvalCoordinator cid)
+          }
 
   -- Create callback handler for approval responses
   let callbackHandler = handleApprovalCallback logger telegram approvalCoordinator
@@ -190,13 +161,14 @@ runApp config = do
             eeClaude = claude,
             eeConversations = conversations,
             eeRegistry = registry,
-            eeToolEnv = baseToolEnv,
+            eeAgentContext = baseAgentContext,
             eeCompaction = compactionConfig,
             eeSystemPrompt = systemPrompt,
             eeModel = cfgModel config,
             eeThinking = cfgThinking config,
             eeNotifyChatIds = cfgAllowedChatIds config,
-            eeAttachmentQueue = attachmentQueue
+            eeAttachmentQueue = attachmentQueue,
+            eeWorkspaceDir = cfgWorkspaceDir config
           }
 
   -- Log webhook configuration
@@ -227,7 +199,7 @@ runApp config = do
           logger
           telegram
           (cfgAllowedChatIds config)
-          (claudeHandlerWithApproval logger claude telegram conversations registry mkToolEnvWithApproval compactionConfig systemPrompt (cfgModel config) (cfgThinking config) (cfgAllowedChatIds config))
+          (claudeHandlerWithApproval logger claude telegram conversations registry mkAgentContextWithApproval compactionConfig systemPrompt (cfgModel config) (cfgThinking config) (cfgAllowedChatIds config) attachmentQueue (cfgWorkspaceDir config))
           callbackHandler
 
         -- Wait for webhook thread (this won't happen in normal operation)
@@ -238,7 +210,7 @@ runApp config = do
         mapM_ stopMCPServer mcpServers
     )
 
--- | Claude handler that injects per-chat approval function into ToolEnv
+-- | Claude handler that injects per-chat approval function into AgentContext
 --   and sends queued attachments after the text reply
 claudeHandlerWithApproval ::
   Logger ->
@@ -246,22 +218,24 @@ claudeHandlerWithApproval ::
   TelegramClient ->
   ConversationStore ->
   ToolRegistry ->
-  (Int64 -> ToolEnv) ->
+  (Int64 -> AgentContext) ->
   CompactionConfig ->
   Maybe Text ->
   Text ->
   ThinkingLevel ->
   [Int64] ->
+  IORef [Attachment] ->
+  FilePath ->
   Message ->
   IO (Maybe Text)
-claudeHandlerWithApproval logger client telegram store registry mkToolEnv compactionConfig systemPrompt model thinking allowedChatIds msg = do
+claudeHandlerWithApproval logger client telegram store registry mkCtx compactionConfig systemPrompt model thinking allowedChatIds attachmentQueue workspaceDir msg = do
   let cid = chatId (chat msg)
-      toolEnvForChat = mkToolEnv cid
-  result <- claudeHandler logger client telegram store registry toolEnvForChat compactionConfig systemPrompt model thinking allowedChatIds msg
+      ctxForChat = mkCtx cid
+  result <- claudeHandler logger client telegram store registry ctxForChat compactionConfig systemPrompt model thinking allowedChatIds attachmentQueue workspaceDir msg
   -- Send queued attachments after the text reply
-  attachments <- readIORef (teAttachmentQueue toolEnvForChat)
+  attachments <- readIORef attachmentQueue
   mapM_ (sendAttachmentToChat logger telegram cid) attachments
-  writeIORef (teAttachmentQueue toolEnvForChat) []
+  writeIORef attachmentQueue []
   pure result
 
 -- | Send a single attachment to a specific chat

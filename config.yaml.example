@@ -43,8 +43,6 @@ permissions:
   approvalTimeoutSeconds: 120   # seconds to wait for user approval (default: 120)
   toolPolicies:                 # per-tool overrides
     run_command: ask
-    write_file: ask
-    web_fetch: allow
   safeCommands:                 # shell commands that bypass approval
     - ls
     - cat
@@ -53,8 +51,6 @@ permissions:
   dangerousPatterns:            # shell patterns that are always denied
     - "rm -rf"
     - "sudo"
-  allowedPaths:                 # filesystem paths tools may access
-    - /var/lib/assistant/workspace
 
 # MCP (Model Context Protocol) server configurations
 # Each key becomes the server name used to namespace its tools.
@@ -90,5 +86,4 @@ webhook:
 # Environment variables (not set in this file):
 #   TELEGRAM_BOT_TOKEN   - Telegram bot token (required)
 #   ANTHROPIC_API_KEY    - Anthropic API key (required)
-#   BRAVE_SEARCH_API_KEY - Brave Search API key (optional, enables web_search tool)
 #   WEBHOOK_SECRET       - Webhook secret (optional, overrides globalSecret above)

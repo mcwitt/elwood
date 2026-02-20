@@ -97,7 +97,6 @@ let
         permissions = {
           safeCommands = agentCfg.permissions.safeCommands;
           dangerousPatterns = agentCfg.permissions.dangerousPatterns;
-          allowedPaths = agentCfg.permissions.allowedPaths;
           toolPolicies = agentCfg.permissions.toolPolicies;
           defaultPolicy = agentCfg.permissions.defaultPolicy;
           approvalTimeoutSeconds = agentCfg.permissions.approvalTimeoutSeconds;
@@ -334,12 +333,6 @@ let
             type = lib.types.listOf lib.types.str;
             default = [ ];
             description = "Regex patterns that are always blocked.";
-          };
-
-          allowedPaths = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Paths allowed for file operations.";
           };
 
           toolPolicies = lib.mkOption {

@@ -18,9 +18,9 @@ import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Types
 import Elwood.Config (ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
-import Elwood.Permissions (ToolPolicy (..), getToolPolicy, pcConfig)
+import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
 import Elwood.Tools.Registry (ToolRegistry, lookupTool, toolSchemas)
-import Elwood.Tools.Types (ApprovalOutcome (..), Tool (..), ToolEnv (..), ToolResult (..))
+import Elwood.Tools.Types (AgentContext (..), ApprovalOutcome (..), Tool (..), ToolResult (..))
 
 -- | Result of running an agent turn
 data AgentResult
@@ -36,7 +36,7 @@ type RateLimitCallback = Int -> Int -> IO ()
 
 -- | Maximum iterations to prevent infinite loops
 maxIterations :: Int
-maxIterations = 10
+maxIterations = 30
 
 -- | Convert a thinking level to the API thinking config
 thinkingToConfig :: ThinkingLevel -> Maybe ThinkingConfig
@@ -57,7 +57,7 @@ runAgentTurn ::
   Logger ->
   ClaudeClient ->
   ToolRegistry ->
-  ToolEnv ->
+  AgentContext ->
   CompactionConfig ->
   -- | System prompt
   Maybe Text ->
@@ -72,18 +72,18 @@ runAgentTurn ::
   -- | Optional callback for rate limit notifications
   Maybe RateLimitCallback ->
   IO AgentResult
-runAgentTurn logger client registry toolEnv compactionConfig systemPrompt model thinking history userMessage onRateLimit = do
+runAgentTurn logger client registry ctx compactionConfig systemPrompt model thinking history userMessage onRateLimit = do
   -- Compact history if needed before adding new message
   compactedHistory <- compactIfNeeded logger client compactionConfig history
   let messages = compactedHistory ++ [userMessage]
-  agentLoop logger client registry toolEnv compactionConfig systemPrompt model thinking messages 0 onRateLimit
+  agentLoop logger client registry ctx compactionConfig systemPrompt model thinking messages 0 onRateLimit
 
 -- | The main agent loop
 agentLoop ::
   Logger ->
   ClaudeClient ->
   ToolRegistry ->
-  ToolEnv ->
+  AgentContext ->
   CompactionConfig ->
   Maybe Text ->
   Text ->
@@ -92,10 +92,10 @@ agentLoop ::
   Int ->
   Maybe RateLimitCallback ->
   IO AgentResult
-agentLoop logger client registry toolEnv compactionConfig systemPrompt model thinking messages iteration onRateLimit
+agentLoop logger client registry ctx compactionConfig systemPrompt model thinking messages iteration onRateLimit
   | iteration >= maxIterations = do
       logError logger "Agent loop exceeded max iterations" []
-      pure $ AgentError "I've been thinking in circles. Let me try a different approach."
+      pure $ AgentError "(Agent loop exceeded max iterations)"
   | otherwise = do
       -- Build and send request
       let request =
@@ -146,14 +146,14 @@ agentLoop logger client registry toolEnv compactionConfig systemPrompt model thi
               ("content_blocks", T.pack (show (length (mresContent response))))
             ]
 
-          handleResponse logger client registry toolEnv compactionConfig systemPrompt model thinking messages response iteration onRateLimit
+          handleResponse logger client registry ctx compactionConfig systemPrompt model thinking messages response iteration onRateLimit
 
 -- | Handle Claude's response
 handleResponse ::
   Logger ->
   ClaudeClient ->
   ToolRegistry ->
-  ToolEnv ->
+  AgentContext ->
   CompactionConfig ->
   Maybe Text ->
   Text ->
@@ -163,7 +163,7 @@ handleResponse ::
   Int ->
   Maybe RateLimitCallback ->
   IO AgentResult
-handleResponse logger client registry toolEnv compactionConfig systemPrompt model thinking messages response iteration onRateLimit =
+handleResponse logger client registry ctx compactionConfig systemPrompt model thinking messages response iteration onRateLimit =
   case mresStopReason response of
     Just "end_turn" -> do
       -- Normal completion - extract text and return
@@ -181,7 +181,7 @@ handleResponse logger client registry toolEnv compactionConfig systemPrompt mode
         [("tool_count", T.pack (show (length toolUses)))]
 
       -- Execute all tool uses
-      toolResults <- mapM (executeToolUse logger registry toolEnv) toolUses
+      toolResults <- mapM (executeToolUse logger registry ctx) toolUses
 
       -- Build messages for next iteration
       let assistantMsg = ClaudeMessage Assistant (mresContent response)
@@ -190,7 +190,7 @@ handleResponse logger client registry toolEnv compactionConfig systemPrompt mode
           newMessages = messages ++ [assistantMsg, userMsg]
 
       -- Continue the loop
-      agentLoop logger client registry toolEnv compactionConfig systemPrompt model thinking newMessages (iteration + 1) onRateLimit
+      agentLoop logger client registry ctx compactionConfig systemPrompt model thinking newMessages (iteration + 1) onRateLimit
     Just "max_tokens" -> do
       -- Hit token limit - return what we have
       let responseText = extractTextContent (mresContent response)
@@ -219,8 +219,8 @@ extractToolUses = filter isToolUse
     isToolUse _ = False
 
 -- | Execute a single tool use with policy checking
-executeToolUse :: Logger -> ToolRegistry -> ToolEnv -> ContentBlock -> IO ToolResult
-executeToolUse logger registry toolEnv (ToolUseBlock tid name input) = do
+executeToolUse :: Logger -> ToolRegistry -> AgentContext -> ContentBlock -> IO ToolResult
+executeToolUse logger registry ctx (ToolUseBlock tid name input) = do
   logInfo logger "Executing tool" [("tool", name), ("id", tid)]
 
   case lookupTool name registry of
@@ -229,22 +229,21 @@ executeToolUse logger registry toolEnv (ToolUseBlock tid name input) = do
       pure $ ToolError $ "Unknown tool: " <> name
     Just tool -> do
       -- Check tool policy before execution
-      let permConfig = pcConfig (tePermissions toolEnv)
-          policy = getToolPolicy permConfig name
+      let policy = getToolPolicy (acPermissionConfig ctx) name
 
       case policy of
         PolicyDeny -> do
           logWarn logger "Tool denied by policy" [("tool", name)]
           pure $ ToolError $ "Tool '" <> name <> "' is not allowed by policy"
         PolicyAllow -> do
-          executeToolWithLogging logger tool toolEnv name input
+          executeToolWithLogging logger tool name input
         PolicyAsk -> do
           -- Request approval before execution
-          case teRequestApproval toolEnv of
+          case acRequestApproval ctx of
             Nothing -> do
               -- No approval mechanism configured, fall back to allow
               logWarn logger "No approval mechanism, allowing tool" [("tool", name)]
-              executeToolWithLogging logger tool toolEnv name input
+              executeToolWithLogging logger tool name input
             Just requestApproval -> do
               logInfo logger "Requesting approval for tool" [("tool", name)]
               let inputSummary = T.take 200 (decodeUtf8 (LBS.toStrict (encode input)))
@@ -252,7 +251,7 @@ executeToolUse logger registry toolEnv (ToolUseBlock tid name input) = do
               case result of
                 ApprovalGranted -> do
                   logInfo logger "Tool approved by user" [("tool", name)]
-                  executeToolWithLogging logger tool toolEnv name input
+                  executeToolWithLogging logger tool name input
                 ApprovalDenied -> do
                   logInfo logger "Tool denied by user" [("tool", name)]
                   pure $ ToolError "Action denied by user"
@@ -262,9 +261,9 @@ executeToolUse logger registry toolEnv (ToolUseBlock tid name input) = do
 executeToolUse _ _ _ _ = pure $ ToolError "Invalid tool use block"
 
 -- | Execute a tool and log the result
-executeToolWithLogging :: Logger -> Tool -> ToolEnv -> Text -> Value -> IO ToolResult
-executeToolWithLogging logger tool toolEnv name input = do
-  result <- toolExecute tool toolEnv input
+executeToolWithLogging :: Logger -> Tool -> Text -> Value -> IO ToolResult
+executeToolWithLogging logger tool name input = do
+  result <- toolExecute tool input
   case result of
     ToolSuccess output ->
       logInfo logger "Tool succeeded" [("tool", name), ("output_length", T.pack (show (T.length output)))]

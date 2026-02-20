@@ -25,7 +25,6 @@ import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
 import Elwood.Event (AppEnv (..), DeliveryTarget (..), Event (..), EventSource (..), deliverToTargets, handleEvent)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
-import Elwood.Tools.Types (ToolEnv (..))
 import Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..))
 import Network.HTTP.Types
   ( HeaderName,
@@ -121,8 +120,7 @@ handleWebhookRequest logger webhookConfig env request respond = do
       promptResult <- case (wcPromptTemplate webhookConfig, wcPromptFile webhookConfig) of
         (Just template, _) -> pure $ Right $ renderTemplate template payload
         (Nothing, Just filePath) -> do
-          let workspaceDir = teWorkspaceDir (eeToolEnv env)
-              fullPath = workspaceDir </> filePath
+          let fullPath = eeWorkspaceDir env </> filePath
           readPromptFile fullPath
         (Nothing, Nothing) -> pure $ Left "No prompt or promptFile configured"
 

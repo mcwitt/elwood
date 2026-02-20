@@ -50,7 +50,7 @@ import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Telegram.Client (TelegramClient, notify, sendDocument, sendPhoto)
 import Elwood.Tools.Attachment (isPhotoExtension)
 import Elwood.Tools.Registry (ToolRegistry)
-import Elwood.Tools.Types (Attachment (..), AttachmentType (..), ToolEnv (..))
+import Elwood.Tools.Types (AgentContext, Attachment (..), AttachmentType (..))
 import Text.Read (readMaybe)
 
 -- | Unified event type for all sources
@@ -79,7 +79,7 @@ data AppEnv = AppEnv
     eeClaude :: ClaudeClient,
     eeConversations :: ConversationStore,
     eeRegistry :: ToolRegistry,
-    eeToolEnv :: ToolEnv,
+    eeAgentContext :: AgentContext,
     eeCompaction :: CompactionConfig,
     eeSystemPrompt :: Maybe Text,
     eeModel :: Text,
@@ -87,8 +87,10 @@ data AppEnv = AppEnv
     eeThinking :: ThinkingLevel,
     -- | All allowed chat IDs (for broadcast)
     eeNotifyChatIds :: [Int64],
-    -- | Attachment queue (shared with ToolEnv)
-    eeAttachmentQueue :: IORef [Attachment]
+    -- | Attachment queue
+    eeAttachmentQueue :: IORef [Attachment],
+    -- | Workspace directory (for webhook prompt files)
+    eeWorkspaceDir :: FilePath
   }
 
 -- | Handle any event through the agent pipeline
@@ -132,7 +134,7 @@ handleEvent env event = do
       logger
       (eeClaude env)
       (eeRegistry env)
-      (eeToolEnv env)
+      (eeAgentContext env)
       (eeCompaction env)
       (eeSystemPrompt env)
       (eeModel env)
@@ -244,7 +246,7 @@ sessionToConversationId (Named name) = Just name
 -- | Create rate limit notification callback based on event delivery targets
 mkRateLimitCallback :: AppEnv -> Event -> RateLimitCallback
 mkRateLimitCallback env event attemptNum waitSecs = do
-  let msg = "(rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s)"
+  let msg = "rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s)"
   -- Notify based on delivery targets
   mapM_ (notifyRateLimit msg) (evDelivery event)
   where

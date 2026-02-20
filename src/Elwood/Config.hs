@@ -65,8 +65,6 @@ data Config = Config
     cfgTelegramToken :: Text,
     -- | Anthropic API key (loaded from environment)
     cfgAnthropicApiKey :: Text,
-    -- | Brave Search API key (optional, from environment)
-    cfgBraveApiKey :: Maybe Text,
     -- | List of chat IDs allowed to interact with the bot
     cfgAllowedChatIds :: [Int64],
     -- | Claude model to use (e.g., "claude-sonnet-4-20250514")
@@ -129,7 +127,6 @@ data ConfigFile = ConfigFile
 data PermissionConfigFile = PermissionConfigFile
   { pcfSafeCommands :: Maybe [Text],
     pcfDangerousPatterns :: Maybe [Text],
-    pcfAllowedPaths :: Maybe [FilePath],
     pcfToolPolicies :: Maybe (Map Text Text),
     pcfDefaultPolicy :: Maybe Text,
     pcfApprovalTimeoutSeconds :: Maybe Int
@@ -169,11 +166,10 @@ instance FromJSON ConfigFile where
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v -> do
-    rejectUnknownKeys "PermissionConfigFile" ["safeCommands", "dangerousPatterns", "allowedPaths", "toolPolicies", "defaultPolicy", "approvalTimeoutSeconds"] v
+    rejectUnknownKeys "PermissionConfigFile" ["safeCommands", "dangerousPatterns", "toolPolicies", "defaultPolicy", "approvalTimeoutSeconds"] v
     PermissionConfigFile
       <$> v .:? "safeCommands"
       <*> v .:? "dangerousPatterns"
-      <*> v .:? "allowedPaths"
       <*> v .:? "toolPolicies"
       <*> v .:? "defaultPolicy"
       <*> v .:? "approvalTimeoutSeconds"
@@ -220,9 +216,6 @@ loadConfig path = do
       Nothing -> fail "ANTHROPIC_API_KEY environment variable is required"
       Just k -> pure (T.pack k)
 
-  -- Load Brave Search API key from environment (optional)
-  braveApiKey <- fmap T.pack <$> lookupEnv "BRAVE_SEARCH_API_KEY"
-
   -- Load webhook secret from environment (optional, overrides config file)
   webhookSecretEnv <- fmap T.pack <$> lookupEnv "WEBHOOK_SECRET"
 
@@ -244,7 +237,6 @@ loadConfig path = do
           PermissionConfig
             { pcSafeCommands = fromMaybe (pcSafeCommands defaultPermissionConfig) (pcfSafeCommands pcf),
               pcDangerousPatterns = fromMaybe (pcDangerousPatterns defaultPermissionConfig) (pcfDangerousPatterns pcf),
-              pcAllowedPaths = fromMaybe (pcAllowedPaths defaultPermissionConfig) (pcfAllowedPaths pcf),
               pcToolPolicies = maybe Map.empty (Map.mapMaybe parseToolPolicy) (pcfToolPolicies pcf),
               pcDefaultPolicy = maybe (pcDefaultPolicy defaultPermissionConfig) parseToolPolicyOrDefault (pcfDefaultPolicy pcf),
               pcApprovalTimeoutSeconds = fromMaybe (pcApprovalTimeoutSeconds defaultPermissionConfig) (pcfApprovalTimeoutSeconds pcf)
@@ -316,7 +308,6 @@ loadConfig path = do
         cfgWorkspaceDir = fromMaybe "/var/lib/assistant/workspace" (cfWorkspaceDir configFile),
         cfgTelegramToken = telegramToken,
         cfgAnthropicApiKey = anthropicApiKey,
-        cfgBraveApiKey = braveApiKey,
         cfgAllowedChatIds = fromMaybe [] (cfAllowedChatIds configFile),
         cfgModel = fromMaybe "claude-sonnet-4-20250514" (cfModel configFile),
         cfgMaxHistory = fromMaybe 50 (cfMaxHistory configFile),

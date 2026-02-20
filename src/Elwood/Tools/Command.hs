@@ -1,7 +1,7 @@
 {-# LANGUAGE StrictData #-}
 
 module Elwood.Tools.Command
-  ( runCommandTool,
+  ( mkRunCommandTool,
   )
 where
 
@@ -11,8 +11,8 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text (Text)
 import Data.Text qualified as T
-import Elwood.Logging (logInfo, logWarn)
-import Elwood.Permissions (PermissionResult (..), checkCommandPermission)
+import Elwood.Logging (Logger, logInfo, logWarn)
+import Elwood.Permissions (PermissionConfig, PermissionResult (..), checkCommandPermission)
 import Elwood.Tools.Types
 import System.Exit (ExitCode (..))
 import System.IO (hGetContents)
@@ -25,9 +25,9 @@ import System.Process
   )
 import System.Timeout (timeout)
 
--- | Tool for running shell commands
-runCommandTool :: Tool
-runCommandTool =
+-- | Construct a tool for running shell commands
+mkRunCommandTool :: Logger -> FilePath -> PermissionConfig -> Tool
+mkRunCommandTool logger workspaceDir perms =
   Tool
     { toolName = "run_command",
       toolDescription =
@@ -35,7 +35,16 @@ runCommandTool =
           <> "Use this for listing files, checking git status, running builds, etc. "
           <> "The command runs with a 30 second timeout.",
       toolInputSchema = commandSchema,
-      toolExecute = executeCommand
+      toolExecute = \input -> case parseInput input of
+        Left err -> pure $ toolError err
+        Right (cmd, timeoutSecs) ->
+          case checkCommandPermission perms cmd of
+            Denied reason -> do
+              logWarn logger "Command blocked" [("command", cmd), ("reason", reason)]
+              pure $ toolError $ "Permission denied: " <> reason
+            Allowed -> do
+              logInfo logger "Executing command" [("command", cmd)]
+              runWithTimeout cmd timeoutSecs workspaceDir
     }
 
 -- | JSON Schema for command input
@@ -58,21 +67,6 @@ commandSchema =
           ],
       "required" .= (["command"] :: [Text])
     ]
-
--- | Execute a command
-executeCommand :: ToolEnv -> Value -> IO ToolResult
-executeCommand env input = do
-  case parseInput input of
-    Left err -> pure $ toolError err
-    Right (cmd, timeoutSecs) -> do
-      -- Check permissions
-      case checkCommandPermission (tePermissions env) cmd of
-        Denied reason -> do
-          logWarn (teLogger env) "Command blocked" [("command", cmd), ("reason", reason)]
-          pure $ toolError $ "Permission denied: " <> reason
-        Allowed -> do
-          logInfo (teLogger env) "Executing command" [("command", cmd)]
-          runWithTimeout cmd timeoutSecs (teWorkspaceDir env)
 
 -- | Parse input JSON
 parseInput :: Value -> Either Text (Text, Int)

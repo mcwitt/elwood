@@ -8,6 +8,7 @@ import Control.Exception (SomeException, catch)
 import Data.Aeson (Value (..))
 import Data.ByteString.Base64.Lazy qualified as B64
 import Data.ByteString.Lazy qualified as LBS
+import Data.IORef (IORef)
 import Data.Int (Int64)
 import Data.List (sortOn)
 import Data.Maybe (fromMaybe, isNothing, listToMaybe)
@@ -33,7 +34,7 @@ import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.Telegram.Client (TelegramClient, downloadFile, getFile)
 import Elwood.Telegram.Types (Chat (..), Message (..), PhotoSize (..), TelegramFile (..))
 import Elwood.Tools.Registry (ToolRegistry)
-import Elwood.Tools.Types (ToolEnv (..))
+import Elwood.Tools.Types (AgentContext, Attachment)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 
@@ -59,7 +60,7 @@ claudeHandler ::
   TelegramClient ->
   ConversationStore ->
   ToolRegistry ->
-  ToolEnv ->
+  AgentContext ->
   CompactionConfig ->
   -- | System prompt
   Maybe Text ->
@@ -69,9 +70,13 @@ claudeHandler ::
   ThinkingLevel ->
   -- | Allowed chat IDs (for event env)
   [Int64] ->
+  -- | Attachment queue
+  IORef [Attachment] ->
+  -- | Workspace directory
+  FilePath ->
   Message ->
   IO (Maybe Text)
-claudeHandler logger client telegram store registry toolEnv compactionConfig systemPrompt model thinking allowedChatIds msg =
+claudeHandler logger client telegram store registry ctx compactionConfig systemPrompt model thinking allowedChatIds attachmentQueue workspaceDir msg =
   case (text msg, photo msg) of
     -- Handle /clear command
     (Just txt, _) | T.strip txt == "/clear" -> handleClear
@@ -120,13 +125,14 @@ claudeHandler logger client telegram store registry toolEnv compactionConfig sys
                     eeClaude = client,
                     eeConversations = store,
                     eeRegistry = registry,
-                    eeToolEnv = toolEnv,
+                    eeAgentContext = ctx,
                     eeCompaction = compactionConfig,
                     eeSystemPrompt = systemPrompt,
                     eeModel = model,
                     eeThinking = thinking,
                     eeNotifyChatIds = allowedChatIds,
-                    eeAttachmentQueue = teAttachmentQueue toolEnv
+                    eeAttachmentQueue = attachmentQueue,
+                    eeWorkspaceDir = workspaceDir
                   }
 
           -- Create Telegram event
