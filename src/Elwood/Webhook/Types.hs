@@ -37,7 +37,7 @@ data WebhookConfig = WebhookConfig
     -- | Model override for this endpoint (Nothing = use global)
     wcModel :: Maybe Text,
     -- | Thinking level override for this endpoint (Nothing = use global)
-    wcThinking :: Maybe Text
+    wcThinking :: Maybe Value
   }
   deriving stock (Show, Eq, Generic)
 
@@ -73,7 +73,7 @@ data WebhookConfigFile = WebhookConfigFile
     wcfDeliver :: Maybe [DeliveryTargetFile],
     wcfSuppressIfContains :: Maybe Text,
     wcfModel :: Maybe Text,
-    wcfThinking :: Maybe Text
+    wcfThinking :: Maybe Value
   }
   deriving stock (Show, Generic)
 

@@ -44,7 +44,7 @@ let
               model = epCfg.model;
             }
             // lib.optionalAttrs (epCfg.thinking != null) {
-              thinking = epCfg.thinking;
+              thinking = mkThinkingConfig epCfg.thinking;
             }
           ) agentCfg.webhook.endpoints;
 
@@ -72,7 +72,7 @@ let
               model = cronCfg.model;
             }
             // lib.optionalAttrs (cronCfg.thinking != null) {
-              thinking = cronCfg.thinking;
+              thinking = mkThinkingConfig cronCfg.thinking;
             }
           ) agentCfg.cronJobs;
         in
@@ -100,7 +100,7 @@ let
         workspaceDir = agentCfg.workspaceDir;
         allowedChatIds = agentCfg.allowedChatIds;
         model = agentCfg.model;
-        thinking = agentCfg.thinking;
+        thinking = mkThinkingConfig agentCfg.thinking;
         maxIterations = agentCfg.maxIterations;
 
         # Heartbeat and cronJobs are now handled externally via systemd timers
@@ -139,6 +139,56 @@ let
       };
     in
     pkgs.writeText "assistant-${name}-config.yaml" (lib.generators.toYAML { } configContent);
+
+  # Submodule for thinking configuration
+  thinkingModule = lib.types.submodule {
+    options = {
+      type = lib.mkOption {
+        type = lib.types.enum [
+          "off"
+          "adaptive"
+          "fixed"
+        ];
+        default = "off";
+        description = "Thinking type: off, adaptive, or fixed.";
+      };
+
+      effort = lib.mkOption {
+        type = lib.types.nullOr (
+          lib.types.enum [
+            "low"
+            "medium"
+            "high"
+          ]
+        );
+        default = null;
+        description = "Effort level for adaptive thinking.";
+      };
+
+      budgetTokens = lib.mkOption {
+        type = lib.types.nullOr lib.types.int;
+        default = null;
+        description = "Fixed budget_tokens value for older models.";
+      };
+    };
+  };
+
+  # Helper to serialize a thinking config submodule to a YAML-ready value
+  # "off" emits false (YAML: `thinking: false`, parsed as ThinkingOff)
+  mkThinkingConfig =
+    tc:
+    if tc.type == "off" then
+      false
+    else
+      {
+        inherit (tc) type;
+      }
+      // lib.optionalAttrs (tc.effort != null) {
+        inherit (tc) effort;
+      }
+      // lib.optionalAttrs (tc.budgetTokens != null) {
+        inherit (tc) budgetTokens;
+      };
 
   # Submodule for delivery targets
   deliverTargetModule = lib.types.submodule {
@@ -201,10 +251,9 @@ let
       };
 
       thinking = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+        type = lib.types.nullOr thinkingModule;
         default = null;
-        description = "Thinking level override for this endpoint. Null means use the agent's global thinking level.";
-        example = "off";
+        description = "Thinking override for this endpoint. Null means use the agent's global thinking.";
       };
     };
   };
@@ -266,10 +315,9 @@ let
       };
 
       thinking = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+        type = lib.types.nullOr thinkingModule;
         default = null;
-        description = "Thinking level override for this cron job. Null means use the agent's global thinking level.";
-        example = "off";
+        description = "Thinking override for this cron job. Null means use the agent's global thinking.";
       };
     };
   };
@@ -349,14 +397,12 @@ let
         };
 
         thinking = lib.mkOption {
-          type = lib.types.enum [
-            "off"
-            "low"
-            "medium"
-            "high"
-          ];
-          default = "off";
-          description = "Extended thinking level. Controls Claude's internal reasoning budget before responding.";
+          type = thinkingModule;
+          default = { };
+          description = ''
+            Extended thinking configuration. Default is off.
+            Set type to "adaptive" with an effort level, or "fixed" with budgetTokens.
+          '';
         };
 
         maxIterations = lib.mkOption {

@@ -17,7 +17,7 @@ import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Types
-import Elwood.Config (ThinkingLevel (..))
+import Elwood.Config (ThinkingEffort (..), ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, recordApiResponse, recordToolCall)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
@@ -49,16 +49,16 @@ type RateLimitCallback = Int -> Int -> IO ()
 -- | Convert a thinking level to the API thinking config
 thinkingToConfig :: ThinkingLevel -> Maybe ThinkingConfig
 thinkingToConfig ThinkingOff = Nothing
-thinkingToConfig ThinkingLow = Just (ThinkingConfig 1024)
-thinkingToConfig ThinkingMedium = Just (ThinkingConfig 4096)
-thinkingToConfig ThinkingHigh = Just (ThinkingConfig 16384)
+thinkingToConfig (ThinkingAdaptive effort) = Just (ThinkingConfigAdaptive effort)
+thinkingToConfig (ThinkingBudget n) = Just (ThinkingConfigBudget n)
 
 -- | Get the max_tokens value for a thinking level
 thinkingMaxTokens :: ThinkingLevel -> Int
 thinkingMaxTokens ThinkingOff = 4096
-thinkingMaxTokens ThinkingLow = 4096
-thinkingMaxTokens ThinkingMedium = 8192
-thinkingMaxTokens ThinkingHigh = 32768
+thinkingMaxTokens (ThinkingAdaptive EffortLow) = 4096
+thinkingMaxTokens (ThinkingAdaptive EffortMedium) = 16000
+thinkingMaxTokens (ThinkingAdaptive EffortHigh) = 32768
+thinkingMaxTokens (ThinkingBudget n) = max 4096 (n * 2)
 
 -- | Run a complete agent turn, handling tool use loops
 runAgentTurn ::

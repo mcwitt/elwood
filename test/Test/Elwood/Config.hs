@@ -1,6 +1,16 @@
 module Test.Elwood.Config (tests) where
 
+import Data.Aeson (Value (..), object, (.=))
 import Elwood.Config
+  ( CompactionConfig (..),
+    Config (..),
+    ThinkingEffort (..),
+    ThinkingLevel (..),
+    WebhookConfig (..),
+    WebhookServerConfig (..),
+    loadConfig,
+    parseThinkingLevel,
+  )
 import Elwood.Event.Types (DeliveryTarget (..))
 import Paths_elwood (getDataFileName)
 import System.Environment (setEnv, unsetEnv)
@@ -40,12 +50,49 @@ thinkingLevelTests =
   testGroup
     "ThinkingLevel"
     [ testCase "all constructors exist" $ do
-        -- Verify the type has the expected constructors
-        let levels = [ThinkingOff, ThinkingLow, ThinkingMedium, ThinkingHigh]
-        length levels @?= 4,
+        let levels =
+              [ ThinkingOff,
+                ThinkingAdaptive EffortLow,
+                ThinkingAdaptive EffortMedium,
+                ThinkingAdaptive EffortHigh,
+                ThinkingBudget 4096
+              ]
+        length levels @?= 5,
       testCase "equality works" $ do
         ThinkingOff == ThinkingOff @?= True
-        ThinkingOff == ThinkingHigh @?= False
+        ThinkingOff == ThinkingAdaptive EffortHigh @?= False
+        ThinkingAdaptive EffortLow == ThinkingAdaptive EffortLow @?= True
+        ThinkingBudget 1024 == ThinkingBudget 1024 @?= True
+        ThinkingBudget 1024 == ThinkingBudget 2048 @?= False,
+      testCase "parseThinkingLevel parses Bool False as off" $ do
+        parseThinkingLevel (Bool False) @?= ThinkingOff,
+      testCase "parseThinkingLevel parses string off" $ do
+        parseThinkingLevel (String "off") @?= ThinkingOff,
+      testCase "parseThinkingLevel parses adaptive object" $ do
+        parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("low" :: String)])
+          @?= ThinkingAdaptive EffortLow
+        parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("medium" :: String)])
+          @?= ThinkingAdaptive EffortMedium
+        parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("high" :: String)])
+          @?= ThinkingAdaptive EffortHigh,
+      testCase "parseThinkingLevel defaults effort to medium" $ do
+        parseThinkingLevel (object ["type" .= ("adaptive" :: String)])
+          @?= ThinkingAdaptive EffortMedium,
+      testCase "parseThinkingLevel parses fixed object" $ do
+        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budgetTokens" .= (4096 :: Int)])
+          @?= ThinkingBudget 4096
+        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budgetTokens" .= (1024 :: Int)])
+          @?= ThinkingBudget 1024,
+      testCase "parseThinkingLevel parses off object" $ do
+        parseThinkingLevel (object ["type" .= ("off" :: String)])
+          @?= ThinkingOff,
+      testCase "parseThinkingLevel handles invalid fixed config" $ do
+        -- Missing budgetTokens
+        parseThinkingLevel (object ["type" .= ("fixed" :: String)])
+          @?= ThinkingOff
+        -- Zero budgetTokens
+        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budgetTokens" .= (0 :: Int)])
+          @?= ThinkingOff
     ]
 
 exampleConfigTests :: TestTree

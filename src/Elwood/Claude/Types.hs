@@ -26,8 +26,10 @@ where
 
 import Control.Exception (Exception)
 import Data.Aeson
+import Data.Aeson.Types (Pair)
 import Data.Text (Text)
 import Data.Time (UTCTime)
+import Elwood.Config (ThinkingEffort (..))
 import GHC.Generics (Generic)
 
 -- | Role in a conversation
@@ -45,9 +47,11 @@ instance FromJSON Role where
     other -> fail $ "Unknown role: " <> show other
 
 -- | Configuration for extended thinking
-newtype ThinkingConfig = ThinkingConfig
-  { tcBudgetTokens :: Int
-  }
+data ThinkingConfig
+  = -- | Adaptive thinking with effort level
+    ThinkingConfigAdaptive ThinkingEffort
+  | -- | Fixed budget_tokens for older models
+    ThinkingConfigBudget Int
   deriving stock (Show, Eq, Generic)
 
 -- | Content block in a message - can be text, image, tool use, or tool result
@@ -251,18 +255,26 @@ instance ToJSON MessagesRequest where
       ]
         ++ maybe [] (\s -> ["system" .= s]) (mrSystem req)
         ++ ["tools" .= mrTools req | not (null (mrTools req))]
-        ++ maybe
-          []
-          ( \tc ->
-              [ "thinking"
-                  .= object
-                    [ "type" .= ("enabled" :: Text),
-                      "budget_tokens" .= tcBudgetTokens tc
-                    ]
-              ]
-          )
-          (mrThinking req)
+        ++ maybe [] thinkingFields (mrThinking req)
         ++ ["cache_control" .= object ["type" .= ("ephemeral" :: Text)] | mrCacheControl req]
+    where
+      effortToText :: ThinkingEffort -> Text
+      effortToText EffortLow = "low"
+      effortToText EffortMedium = "medium"
+      effortToText EffortHigh = "high"
+
+      thinkingFields :: ThinkingConfig -> [Pair]
+      thinkingFields (ThinkingConfigAdaptive effort) =
+        [ "thinking" .= object ["type" .= ("adaptive" :: Text)],
+          "output_config" .= object ["effort" .= effortToText effort]
+        ]
+      thinkingFields (ThinkingConfigBudget n) =
+        [ "thinking"
+            .= object
+              [ "type" .= ("enabled" :: Text),
+                "budget_tokens" .= n
+              ]
+        ]
 
 -- | Token usage information
 data Usage = Usage

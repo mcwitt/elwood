@@ -18,12 +18,20 @@ allowedChatIds:
 # Default: claude-sonnet-4-20250514
 model: claude-sonnet-4-20250514
 
-# Extended thinking level: off | low | medium | high
+# Extended thinking configuration
 # Controls Claude's internal reasoning before responding.
-#   off    - disabled (default)
-#   low    - budget_tokens: 1024,  max_tokens: 4096
-#   medium - budget_tokens: 4096,  max_tokens: 8192
-#   high   - budget_tokens: 16384, max_tokens: 32768
+# Default: off (omit or set to "off" to disable)
+#
+# Adaptive thinking (recommended for newer models):
+#   thinking:
+#     type: adaptive
+#     effort: medium          # low | medium | high
+#     # max_tokens by effort: low=4096, medium=16000, high=32768
+#
+# Fixed budget (for older models):
+#   thinking:
+#     type: fixed
+#     budgetTokens: 4096      # explicit budget_tokens value
 thinking: off
 
 # Maximum agent loop iterations per turn (prevents infinite tool-use loops)
@@ -89,7 +97,9 @@ webhook:
       # promptFile: prompts/deploy.md  # alternative: read prompt from file in workspace
       # session: "123456789"    # session name for persistent conversation (default: null = isolated)
       # model: claude-haiku-4-20250414    # per-endpoint model override (default: use global model)
-      # thinking: off                     # per-endpoint thinking override (default: use global thinking)
+      # thinking:                         # per-endpoint thinking override (default: use global thinking)
+      #   type: adaptive
+      #   effort: low
       deliver:                  # where to send responses (default: [{type: telegram}])
         - type: telegram        # broadcast to all allowedChatIds
         # - type: telegram

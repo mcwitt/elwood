@@ -23,7 +23,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
-import Elwood.Config (parseThinkingLevelText)
+import Elwood.Config (parseThinkingLevel)
 import Elwood.Event (AppEnv (..), DeliveryTarget (..), Event (..), EventSource (..), deliverToTargets, handleEvent)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (renderMetrics)
@@ -126,7 +126,7 @@ handleWebhookRequest logger webhookConfig env request respond = do
       let envWithOverrides =
             env
               { eeModel = fromMaybe (eeModel env) (wcModel webhookConfig),
-                eeThinking = maybe (eeThinking env) parseThinkingLevelText (wcThinking webhookConfig)
+                eeThinking = maybe (eeThinking env) parseThinkingLevel (wcThinking webhookConfig)
               }
 
       -- Get prompt: either from template or from file

@@ -5,10 +5,10 @@ module Elwood.Config
     CompactionConfig (..),
     MCPServerConfig (..),
     ThinkingLevel (..),
+    ThinkingEffort (..),
     PermissionConfigFile (..),
     loadConfig,
     parseThinkingLevel,
-    parseThinkingLevelText,
 
     -- * Re-exports for webhook config
     WebhookServerConfig (..),
@@ -18,6 +18,8 @@ where
 
 import Control.Applicative ((<|>))
 import Data.Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -41,25 +43,46 @@ import System.Environment (lookupEnv)
 -- | Extended thinking level for Claude
 data ThinkingLevel
   = ThinkingOff
-  | ThinkingLow
-  | ThinkingMedium
-  | ThinkingHigh
+  | ThinkingAdaptive ThinkingEffort
+  | -- | Explicit budget_tokens (for older models)
+    ThinkingBudget Int
+  deriving stock (Show, Eq, Generic)
+
+-- | Effort level for adaptive thinking
+data ThinkingEffort = EffortLow | EffortMedium | EffortHigh
   deriving stock (Show, Eq, Generic)
 
 -- | Parse a thinking level from a YAML value
--- YAML parses "off" as boolean False, so we handle both Text and Bool
+--
+-- Supported formats:
+--   off / false          -> ThinkingOff (YAML parses bare "off" as boolean False)
+--   {type: off}          -> ThinkingOff
+--   {type: adaptive, effort: low}    -> ThinkingAdaptive EffortLow
+--   {type: adaptive, effort: medium} -> ThinkingAdaptive EffortMedium
+--   {type: adaptive, effort: high}   -> ThinkingAdaptive EffortHigh
+--   {type: fixed, budgetTokens: N}   -> ThinkingBudget N
 parseThinkingLevel :: Value -> ThinkingLevel
-parseThinkingLevel (String t) = parseThinkingLevelText t
 parseThinkingLevel (Bool False) = ThinkingOff
+parseThinkingLevel (String t)
+  | T.toLower t == "off" = ThinkingOff
+parseThinkingLevel (Object obj) = case lookupText "type" obj of
+  Just "adaptive" -> case lookupText "effort" obj of
+    Just "low" -> ThinkingAdaptive EffortLow
+    Just "medium" -> ThinkingAdaptive EffortMedium
+    Just "high" -> ThinkingAdaptive EffortHigh
+    _ -> ThinkingAdaptive EffortMedium -- default effort
+  Just "fixed" -> case KM.lookup (Key.fromText "budgetTokens") obj of
+    Just (Number n) | n > 0 -> ThinkingBudget (round n)
+    _ -> ThinkingOff
+  Just "off" -> ThinkingOff
+  _ -> ThinkingOff
 parseThinkingLevel _ = ThinkingOff
 
--- | Parse a thinking level from a text string
-parseThinkingLevelText :: Text -> ThinkingLevel
-parseThinkingLevelText t = case T.toLower t of
-  "low" -> ThinkingLow
-  "medium" -> ThinkingMedium
-  "high" -> ThinkingHigh
-  _ -> ThinkingOff
+-- | Look up a text value in a KeyMap
+lookupText :: Text -> KM.KeyMap Value -> Maybe Text
+lookupText key obj = case KM.lookup (Key.fromText key) obj of
+  Just (String t) -> Just (T.toLower t)
+  _ -> Nothing
 
 -- | Main configuration for Elwood
 data Config = Config

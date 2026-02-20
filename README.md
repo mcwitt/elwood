@@ -82,7 +82,7 @@ allowedChatIds:
   - 123456789
 
 model: claude-sonnet-4-20250514
-thinking: off  # off | low | medium | high
+thinking: off  # off | {type: adaptive, effort: medium} | {type: fixed, budgetTokens: 4096}
 
 compaction:
   tokenThreshold: 50000
