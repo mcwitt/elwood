@@ -194,7 +194,7 @@ instance FromJSON MCPServerConfigFile where
 defaultCompaction :: CompactionConfig
 defaultCompaction =
   CompactionConfig
-    { ccTokenThreshold = 80000,
+    { ccTokenThreshold = 50000,
       ccCompactionModel = "claude-3-5-haiku-20241022"
     }
 

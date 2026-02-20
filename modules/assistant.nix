@@ -361,7 +361,7 @@ let
         compaction = {
           tokenThreshold = lib.mkOption {
             type = lib.types.int;
-            default = 80000;
+            default = 50000;
             description = "Compact conversation when tokens exceed this.";
           };
 

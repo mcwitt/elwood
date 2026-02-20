@@ -84,7 +84,7 @@ model: claude-sonnet-4-20250514
 thinking: off  # off | low | medium | high
 
 compaction:
-  tokenThreshold: 80000
+  tokenThreshold: 50000
   compactionModel: claude-3-5-haiku-20241022
 
 permissions:

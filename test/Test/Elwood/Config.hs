@@ -23,13 +23,13 @@ compactionConfigTests =
     [ testCase "has sensible defaults" $ do
         let cc =
               CompactionConfig
-                { ccTokenThreshold = 80000,
+                { ccTokenThreshold = 50000,
                   ccCompactionModel = "claude-3-5-haiku-20241022"
                 }
-        ccTokenThreshold cc @?= 80000
+        ccTokenThreshold cc @?= 50000
         ccCompactionModel cc @?= "claude-3-5-haiku-20241022",
       testCase "threshold is reasonable" $ do
-        let cc = CompactionConfig 80000 "model"
+        let cc = CompactionConfig 30000 "model"
         -- Threshold should be positive and reasonable
         ccTokenThreshold cc > 0 @?= True
         ccTokenThreshold cc < 1000000 @?= True
@@ -65,7 +65,7 @@ exampleConfigTests =
         cfgModel config @?= "claude-sonnet-4-20250514"
         cfgThinking config @?= ThinkingOff
         cfgAllowedChatIds config @?= [123456789]
-        ccTokenThreshold (cfgCompaction config) @?= 80000
+        ccTokenThreshold (cfgCompaction config) @?= 50000
         -- Verify delivery targets from example config
         let webhooks = wscWebhooks (cfgWebhook config)
         length webhooks @?= 1
