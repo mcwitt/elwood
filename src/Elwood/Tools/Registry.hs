@@ -12,14 +12,12 @@ module Elwood.Tools.Registry
     lookupTool,
     allTools,
     toolSchemas,
-    alwaysLoadedNames,
     hasDynamicTools,
 
     -- * Active Tool Set
     ActiveToolSet,
     newActiveToolSet,
     activateTool,
-    isToolActive,
     activeToolSchemas,
   )
 where
@@ -73,50 +71,37 @@ toolSchemas registry =
   | tool <- allTools registry
   ]
 
--- | Get names of all AlwaysLoaded tools
-alwaysLoadedNames :: ToolRegistry -> Set Text
-alwaysLoadedNames (ToolRegistry reg) =
-  Map.keysSet $ Map.filter (\(_, cat) -> cat == AlwaysLoaded) reg
-
 -- | Whether the registry contains any DynamicLoadable tools
 hasDynamicTools :: ToolRegistry -> Bool
 hasDynamicTools (ToolRegistry reg) =
   any (\(_, cat) -> cat == DynamicLoadable) reg
 
--- | Tracks which tools are active (schemas sent) in the current turn
-data ActiveToolSet = ActiveToolSet
-  { -- | Tools that are always included
-    atsAlwaysLoaded :: Set Text,
-    -- | Tools dynamically loaded this turn
-    atsLoaded :: Set Text
+-- | Tracks which tools have been dynamically loaded in the current turn.
+-- Always-loaded tools are determined by the registry's 'ToolCategory',
+-- not duplicated here.
+newtype ActiveToolSet = ActiveToolSet
+  { atsLoaded :: Set Text
   }
   deriving stock (Show, Eq)
 
--- | Create a new active tool set from the always-loaded names
-newActiveToolSet :: Set Text -> ActiveToolSet
-newActiveToolSet always =
-  ActiveToolSet
-    { atsAlwaysLoaded = always,
-      atsLoaded = Set.empty
-    }
+-- | Create an empty active tool set
+newActiveToolSet :: ActiveToolSet
+newActiveToolSet = ActiveToolSet Set.empty
 
 -- | Add a tool to the dynamically loaded set
 activateTool :: Text -> ActiveToolSet -> ActiveToolSet
-activateTool name ats = ats {atsLoaded = Set.insert name (atsLoaded ats)}
+activateTool name (ActiveToolSet loaded) = ActiveToolSet (Set.insert name loaded)
 
--- | Check whether a tool is active (either always-loaded or dynamically loaded)
-isToolActive :: Text -> ActiveToolSet -> Bool
-isToolActive name ats =
-  Set.member name (atsAlwaysLoaded ats) || Set.member name (atsLoaded ats)
-
--- | Generate tool schemas for only the active tools
+-- | Generate tool schemas for only the active tools.
+-- A tool is active if it is 'AlwaysLoaded' in the registry or has been
+-- dynamically loaded into the 'ActiveToolSet'.
 activeToolSchemas :: ToolRegistry -> ActiveToolSet -> [ToolSchema]
-activeToolSchemas registry ats =
+activeToolSchemas (ToolRegistry reg) (ActiveToolSet loaded) =
   [ ToolSchema
       { tsName = toolName tool,
         tsDescription = toolDescription tool,
         tsInputSchema = toolInputSchema tool
       }
-  | (name, (tool, _)) <- Map.toList (trTools registry),
-    isToolActive name ats
+  | (name, (tool, cat)) <- Map.toList reg,
+    cat == AlwaysLoaded || Set.member name loaded
   ]

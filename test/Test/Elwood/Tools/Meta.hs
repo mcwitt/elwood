@@ -5,6 +5,7 @@ import Data.IORef (newIORef, readIORef)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
+import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Tools.Meta (mkDiscoverToolsTool, mkLoadToolTool)
 import Elwood.Tools.Registry
 import Elwood.Tools.Types (Tool (..), ToolResult (..))
@@ -86,7 +87,7 @@ loadToolTests =
   testGroup
     "load_tool"
     [ testCase "loads existing tool" $ do
-        activeRef <- newIORef (newActiveToolSet (alwaysLoadedNames testRegistry))
+        activeRef <- newIORef newActiveToolSet
         let tool = mkLoadToolTool testRegistry activeRef
         result <- toolExecute tool (object ["name" .= ("mcp_weather_forecast" :: Text)])
         case result of
@@ -95,15 +96,17 @@ loadToolTests =
             assertBool "Should confirm load" ("Loaded tool: mcp_weather_forecast" `T.isInfixOf` output)
             assertBool "Should include description" ("Get weather forecast" `T.isInfixOf` output),
       testCase "updates active tool set" $ do
-        activeRef <- newIORef (newActiveToolSet (alwaysLoadedNames testRegistry))
+        activeRef <- newIORef newActiveToolSet
         let tool = mkLoadToolTool testRegistry activeRef
         _ <- toolExecute tool (object ["name" .= ("mcp_calendar_list" :: Text)])
         ats <- readIORef activeRef
-        isToolActive "mcp_calendar_list" ats @?= True
-        isToolActive "run_command" ats @?= True -- always loaded
-        isToolActive "mcp_weather_forecast" ats @?= False, -- not loaded yet
+        let schemas = activeToolSchemas testRegistry ats
+            names = Set.fromList (map tsName schemas)
+        assertBool "Should contain loaded tool" (Set.member "mcp_calendar_list" names)
+        assertBool "Should contain always-loaded tool" (Set.member "run_command" names)
+        assertBool "Should not contain unloaded tool" (not $ Set.member "mcp_weather_forecast" names),
       testCase "rejects unknown tool" $ do
-        activeRef <- newIORef (newActiveToolSet Set.empty)
+        activeRef <- newIORef newActiveToolSet
         let tool = mkLoadToolTool testRegistry activeRef
         result <- toolExecute tool (object ["name" .= ("nonexistent" :: Text)])
         case result of
@@ -112,7 +115,7 @@ loadToolTests =
             assertBool "Should mention unknown" ("Unknown tool" `T.isInfixOf` err)
             assertBool "Should suggest discover_tools" ("discover_tools" `T.isInfixOf` err),
       testCase "rejects missing name" $ do
-        activeRef <- newIORef (newActiveToolSet Set.empty)
+        activeRef <- newIORef newActiveToolSet
         let tool = mkLoadToolTool testRegistry activeRef
         result <- toolExecute tool (object [])
         case result of

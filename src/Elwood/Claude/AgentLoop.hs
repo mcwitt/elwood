@@ -26,7 +26,6 @@ import Elwood.Tools.Registry
   ( ActiveToolSet,
     ToolRegistry,
     activeToolSchemas,
-    alwaysLoadedNames,
     lookupTool,
     newActiveToolSet,
     registerTool,
@@ -97,10 +96,7 @@ runAgentTurn logger client registry ctx compactionConfig systemPrompt model thin
   mActiveRef <- case dynamicLoading of
     False -> pure Nothing
     True -> do
-      -- Create IORef for active tool set, seeded with always-loaded tools
-      let always = alwaysLoadedNames registry
-      activeRef <- newIORef (newActiveToolSet always)
-      -- Build a local registry copy with meta-tools registered as AlwaysLoaded
+      activeRef <- newIORef newActiveToolSet
       let discoverTool = mkDiscoverToolsTool registry
           loadTool = mkLoadToolTool registry activeRef
           registryWithMeta =

@@ -34,15 +34,10 @@ toolCategoryTests =
     "ToolCategory"
     [ testCase "registerTool defaults to AlwaysLoaded" $ do
         let reg = registerTool (mkTestTool "t1") newToolRegistry
-        alwaysLoadedNames reg @?= Set.singleton "t1",
-      testCase "registerToolWith DynamicLoadable is not always-loaded" $ do
+        hasDynamicTools reg @?= False,
+      testCase "registerToolWith DynamicLoadable is dynamic" $ do
         let reg = registerToolWith DynamicLoadable (mkTestTool "t1") newToolRegistry
-        alwaysLoadedNames reg @?= Set.empty,
-      testCase "mixed categories tracked correctly" $ do
-        let reg =
-              registerTool (mkTestTool "builtin") $
-                registerToolWith DynamicLoadable (mkTestTool "mcp_foo") newToolRegistry
-        alwaysLoadedNames reg @?= Set.singleton "builtin",
+        hasDynamicTools reg @?= True,
       testCase "lookupTool finds both categories" $ do
         let reg =
               registerTool (mkTestTool "a") $
@@ -64,18 +59,8 @@ activeToolSetTests :: TestTree
 activeToolSetTests =
   testGroup
     "ActiveToolSet"
-    [ testCase "newActiveToolSet includes always-loaded" $ do
-        let ats = newActiveToolSet (Set.fromList ["a", "b"])
-        isToolActive "a" ats @?= True
-        isToolActive "b" ats @?= True
-        isToolActive "c" ats @?= False,
-      testCase "activateTool adds to loaded set" $ do
-        let ats = activateTool "c" (newActiveToolSet (Set.singleton "a"))
-        isToolActive "a" ats @?= True
-        isToolActive "c" ats @?= True
-        isToolActive "d" ats @?= False,
-      testCase "activateTool is idempotent" $ do
-        let ats0 = newActiveToolSet Set.empty
+    [ testCase "activateTool is idempotent" $ do
+        let ats0 = newActiveToolSet
             ats1 = activateTool "x" ats0
             ats2 = activateTool "x" ats1
         ats1 @?= ats2
@@ -85,29 +70,28 @@ activeToolSchemasTests :: TestTree
 activeToolSchemasTests =
   testGroup
     "activeToolSchemas"
-    [ testCase "returns only active tools" $ do
+    [ testCase "includes AlwaysLoaded and loaded dynamic tools" $ do
         let reg =
               registerTool (mkTestTool "builtin") $
                 registerToolWith DynamicLoadable (mkTestTool "mcp_a") $
                   registerToolWith DynamicLoadable (mkTestTool "mcp_b") newToolRegistry
-            ats = activateTool "mcp_a" (newActiveToolSet (alwaysLoadedNames reg))
+            ats = activateTool "mcp_a" newActiveToolSet
             schemas = activeToolSchemas reg ats
             names = map tsName schemas
         Set.fromList names @?= Set.fromList ["builtin", "mcp_a"],
-      testCase "returns all tools when all active" $ do
+      testCase "returns all tools when all dynamic tools loaded" $ do
         let reg =
               registerTool (mkTestTool "a") $
                 registerToolWith DynamicLoadable (mkTestTool "b") newToolRegistry
-            ats = activateTool "b" (newActiveToolSet (alwaysLoadedNames reg))
+            ats = activateTool "b" newActiveToolSet
             schemas = activeToolSchemas reg ats
         length schemas @?= 2,
-      testCase "returns no dynamic tools when none loaded" $ do
+      testCase "returns only AlwaysLoaded when none loaded" $ do
         let reg =
               registerTool (mkTestTool "a") $
                 registerToolWith DynamicLoadable (mkTestTool "b") $
                   registerToolWith DynamicLoadable (mkTestTool "c") newToolRegistry
-            ats = newActiveToolSet (alwaysLoadedNames reg)
-            schemas = activeToolSchemas reg ats
+            schemas = activeToolSchemas reg newActiveToolSet
             names = map tsName schemas
         names @?= ["a"]
     ]
