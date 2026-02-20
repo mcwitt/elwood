@@ -8,6 +8,7 @@ import Control.Exception (SomeException, catch, finally)
 import Data.Foldable (for_)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
@@ -127,6 +128,15 @@ runApp config = do
   -- Get compaction config from main config
   let compactionConfig = cfgCompaction config
 
+  -- Resolve dynamic tool loading setting
+  -- Default: enable whenever there are MCP (DynamicLoadable) tools
+  let dynamicLoading = fromMaybe (hasDynamicTools registry) (cfgDynamicToolLoading config)
+
+  logInfo
+    logger
+    "Dynamic tool loading"
+    [("enabled", T.pack (show dynamicLoading))]
+
   logInfo
     logger
     "Tool registry initialized"
@@ -174,7 +184,8 @@ runApp config = do
             eeWorkspaceDir = cfgWorkspaceDir config,
             eeMaxIterations = cfgMaxIterations config,
             eeMetrics = metrics,
-            eeMCPServerCount = mcpServerCount
+            eeMCPServerCount = mcpServerCount,
+            eeDynamicToolLoading = dynamicLoading
           }
 
   -- Log webhook configuration
@@ -205,7 +216,7 @@ runApp config = do
           logger
           telegram
           (cfgAllowedChatIds config)
-          (claudeHandlerWithApproval logger claude telegram conversations registry mkAgentContextWithApproval compactionConfig systemPrompt (cfgModel config) (cfgThinking config) (cfgMaxIterations config) (cfgAllowedChatIds config) attachmentQueue (cfgWorkspaceDir config) metrics mcpServerCount)
+          (claudeHandlerWithApproval logger claude telegram conversations registry mkAgentContextWithApproval compactionConfig systemPrompt (cfgModel config) (cfgThinking config) (cfgMaxIterations config) (cfgAllowedChatIds config) attachmentQueue (cfgWorkspaceDir config) metrics mcpServerCount dynamicLoading)
           callbackHandler
 
         -- Wait for webhook thread (this won't happen in normal operation)
@@ -235,12 +246,13 @@ claudeHandlerWithApproval ::
   FilePath ->
   MetricsStore ->
   Int ->
+  Bool ->
   Message ->
   IO (Maybe Text)
-claudeHandlerWithApproval logger client telegram store registry mkCtx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount msg = do
+claudeHandlerWithApproval logger client telegram store registry mkCtx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount dynamicLoading msg = do
   let cid = chatId (chat msg)
       ctxForChat = mkCtx cid
-  result <- claudeHandler logger client telegram store registry ctxForChat compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount msg
+  result <- claudeHandler logger client telegram store registry ctxForChat compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount dynamicLoading msg
   -- Send queued attachments after the text reply
   attachments <- readIORef attachmentQueue
   mapM_ (sendAttachmentToChat logger telegram cid) attachments

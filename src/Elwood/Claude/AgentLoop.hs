@@ -9,6 +9,7 @@ where
 
 import Data.Aeson (Value, encode)
 import Data.ByteString.Lazy qualified as LBS
+import Data.IORef (IORef, newIORef, readIORef)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -20,7 +21,17 @@ import Elwood.Config (ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, recordApiResponse, recordToolCall)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
-import Elwood.Tools.Registry (ToolRegistry, lookupTool, toolSchemas)
+import Elwood.Tools.Meta (mkDiscoverToolsTool, mkLoadToolTool)
+import Elwood.Tools.Registry
+  ( ActiveToolSet,
+    ToolRegistry,
+    activeToolSchemas,
+    alwaysLoadedNames,
+    lookupTool,
+    newActiveToolSet,
+    registerTool,
+    toolSchemas,
+  )
 import Elwood.Tools.Types (AgentContext (..), ApprovalOutcome (..), Tool (..), ToolResult (..))
 
 -- | Result of running an agent turn
@@ -74,12 +85,35 @@ runAgentTurn ::
   ClaudeMessage ->
   -- | Optional callback for rate limit notifications
   Maybe RateLimitCallback ->
+  -- | Whether to use dynamic tool loading
+  Bool ->
   IO AgentResult
-runAgentTurn logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source history userMessage onRateLimit = do
+runAgentTurn logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source history userMessage onRateLimit dynamicLoading = do
   -- Compact history if needed before adding new message
   compactedHistory <- compactIfNeeded logger client compactionConfig metrics source history
   let messages = compactedHistory ++ [userMessage]
-  agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages 0 onRateLimit
+
+  -- Set up dynamic tool loading state if enabled
+  mActiveRef <- case dynamicLoading of
+    False -> pure Nothing
+    True -> do
+      -- Create IORef for active tool set, seeded with always-loaded tools
+      let always = alwaysLoadedNames registry
+      activeRef <- newIORef (newActiveToolSet always)
+      -- Build a local registry copy with meta-tools registered as AlwaysLoaded
+      let discoverTool = mkDiscoverToolsTool registry
+          loadTool = mkLoadToolTool registry activeRef
+          registryWithMeta =
+            registerTool loadTool $
+              registerTool discoverTool registry
+      pure $ Just (activeRef, registryWithMeta)
+
+  let effectiveRegistry = case mActiveRef of
+        Nothing -> registry
+        Just (_, regWithMeta) -> regWithMeta
+      mActive = fmap fst mActiveRef
+
+  agentLoop logger client effectiveRegistry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages 0 onRateLimit mActive
 
 -- | The main agent loop
 agentLoop ::
@@ -97,12 +131,21 @@ agentLoop ::
   [ClaudeMessage] ->
   Int ->
   Maybe RateLimitCallback ->
+  -- | Active tool set IORef (Nothing = send all tools)
+  Maybe (IORef ActiveToolSet) ->
   IO AgentResult
-agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages iteration onRateLimit
+agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages iteration onRateLimit mActiveRef
   | iteration >= maxIter = do
       logError logger "Agent loop exceeded max iterations" []
       pure $ AgentError "(Agent loop exceeded max iterations)"
   | otherwise = do
+      -- Determine which tool schemas to send
+      schemas <- case mActiveRef of
+        Nothing -> pure $ toolSchemas registry
+        Just activeRef -> do
+          ats <- readIORef activeRef
+          pure $ activeToolSchemas registry ats
+
       -- Build and send request
       let request =
             MessagesRequest
@@ -110,7 +153,7 @@ agentLoop logger client registry ctx compactionConfig systemPrompt model thinkin
                 mrMaxTokens = thinkingMaxTokens thinking,
                 mrSystem = systemPrompt,
                 mrMessages = messages,
-                mrTools = toolSchemas registry,
+                mrTools = schemas,
                 mrThinking = thinkingToConfig thinking,
                 mrCacheControl = True
               }
@@ -119,7 +162,8 @@ agentLoop logger client registry ctx compactionConfig systemPrompt model thinkin
         logger
         "Sending request to Claude"
         [ ("iteration", T.pack (show iteration)),
-          ("message_count", T.pack (show (length messages)))
+          ("message_count", T.pack (show (length messages))),
+          ("tool_count", T.pack (show (length schemas)))
         ]
 
       -- Configure retry with logging callback and optional user notification
@@ -161,7 +205,7 @@ agentLoop logger client registry ctx compactionConfig systemPrompt model thinkin
           -- Record API metrics
           recordApiResponse metrics model source (fromMaybe "unknown" (mresStopReason response)) (mresUsage response)
 
-          handleResponse logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages response iteration onRateLimit
+          handleResponse logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages response iteration onRateLimit mActiveRef
 
 -- | Handle Claude's response
 handleResponse ::
@@ -180,8 +224,9 @@ handleResponse ::
   MessagesResponse ->
   Int ->
   Maybe RateLimitCallback ->
+  Maybe (IORef ActiveToolSet) ->
   IO AgentResult
-handleResponse logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages response iteration onRateLimit =
+handleResponse logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages response iteration onRateLimit mActiveRef =
   case mresStopReason response of
     Just "end_turn" -> do
       -- Normal completion - extract text and return
@@ -211,7 +256,7 @@ handleResponse logger client registry ctx compactionConfig systemPrompt model th
           newMessages = messages ++ [assistantMsg, userMsg]
 
       -- Continue the loop
-      agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source newMessages (iteration + 1) onRateLimit
+      agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source newMessages (iteration + 1) onRateLimit mActiveRef
     Just "max_tokens" -> do
       -- Hit token limit - return what we have
       let responseText = extractTextContent (mresContent response)

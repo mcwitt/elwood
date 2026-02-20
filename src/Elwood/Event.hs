@@ -97,7 +97,9 @@ data AppEnv = AppEnv
     -- | Metrics store for Prometheus counters
     eeMetrics :: MetricsStore,
     -- | Number of active MCP servers
-    eeMCPServerCount :: Int
+    eeMCPServerCount :: Int,
+    -- | Whether to use dynamic tool loading
+    eeDynamicToolLoading :: Bool
   }
 
 -- | Handle any event through the agent pipeline
@@ -155,6 +157,7 @@ handleEvent env event = do
       history
       userMsg
       (Just rateLimitCallback)
+      (eeDynamicToolLoading env)
       `catch` \(e :: SomeException) -> do
         logError logger "Event handler agent error" [("error", T.pack (show e))]
         pure $ AgentError $ "Agent error: " <> T.pack (show e)

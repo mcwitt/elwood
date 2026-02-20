@@ -23,7 +23,7 @@ import Elwood.Config (MCPServerConfig (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.MCP.Client (sendRequest, spawnMCPServer, stopMCPServer)
 import Elwood.MCP.Types
-import Elwood.Tools.Registry (ToolRegistry, registerTool)
+import Elwood.Tools.Registry (ToolCategory (..), ToolRegistry, registerToolWith)
 import Elwood.Tools.Types (Tool (..), ToolResult (..))
 
 -- | Response from tools/list
@@ -130,7 +130,7 @@ startMCPServers logger configs registry = do
   mapM_ (logServerFailure logger) failures
 
   -- Register all MCP tools
-  let finalRegistry = foldr registerTool registry allTools
+  let finalRegistry = foldr (registerToolWith DynamicLoadable) registry allTools
 
   logInfo
     logger

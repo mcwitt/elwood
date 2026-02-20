@@ -48,6 +48,7 @@ library
     Elwood.Tools.Attachment
     Elwood.Tools.Command
     Elwood.Tools.Memory
+    Elwood.Tools.Meta
     Elwood.Tools.Registry
     Elwood.Tools.Types
     Elwood.Webhook.Server
@@ -118,12 +119,15 @@ test-suite elwood-test
     Test.Elwood.Memory
     Test.Elwood.Metrics
     Test.Elwood.Permissions
+    Test.Elwood.Tools.Meta
+    Test.Elwood.Tools.Registry
     Test.Elwood.Webhook
 
   build-depends:
     , aeson             >=2.1  && <2.3
     , base              >=4.17 && <5
     , bytestring        >=0.11 && <0.13
+    , containers        >=0.6  && <0.8
     , directory         >=1.3  && <1.4
     , elwood
     , filepath          >=1.4  && <1.6

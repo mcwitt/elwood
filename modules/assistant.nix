@@ -107,6 +107,9 @@ let
           compactionModel = agentCfg.compaction.model;
         };
       }
+      // lib.optionalAttrs (agentCfg.dynamicToolLoading != null) {
+        dynamicToolLoading = agentCfg.dynamicToolLoading;
+      }
       // lib.optionalAttrs (mcpServersList != { }) {
         mcpServers = mcpServersList;
       }
@@ -320,6 +323,16 @@ let
           type = lib.types.int;
           default = 30;
           description = "Maximum agent loop iterations per turn (prevents infinite tool-use loops).";
+        };
+
+        dynamicToolLoading = lib.mkOption {
+          type = lib.types.nullOr lib.types.bool;
+          default = null;
+          description = ''
+            Dynamic tool loading. When enabled, only built-in tools are sent in API requests
+            and the model discovers/loads MCP tools on demand via meta-tools.
+            null = auto (enabled when MCP servers are configured), true = always on, false = always off.
+          '';
         };
 
         permissions = {

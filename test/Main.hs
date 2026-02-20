@@ -10,6 +10,8 @@ import Test.Elwood.MCP qualified
 import Test.Elwood.Memory qualified
 import Test.Elwood.Metrics qualified
 import Test.Elwood.Permissions qualified
+import Test.Elwood.Tools.Meta qualified
+import Test.Elwood.Tools.Registry qualified
 import Test.Elwood.Webhook qualified
 import Test.Tasty
 
@@ -30,5 +32,7 @@ tests =
       Test.Elwood.Event.tests,
       Test.Elwood.Webhook.tests,
       Test.Elwood.Attachment.tests,
-      Test.Elwood.Metrics.tests
+      Test.Elwood.Metrics.tests,
+      Test.Elwood.Tools.Registry.tests,
+      Test.Elwood.Tools.Meta.tests
     ]

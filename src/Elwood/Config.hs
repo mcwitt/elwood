@@ -80,7 +80,9 @@ data Config = Config
     -- | Extended thinking level
     cfgThinking :: ThinkingLevel,
     -- | Maximum agent loop iterations per turn (prevents infinite tool-use loops)
-    cfgMaxIterations :: Int
+    cfgMaxIterations :: Int,
+    -- | Dynamic tool loading (Nothing = auto, Just True = on, Just False = off)
+    cfgDynamicToolLoading :: Maybe Bool
   }
   deriving stock (Show, Generic)
 
@@ -119,7 +121,8 @@ data ConfigFile = ConfigFile
     cfMCPServers :: Maybe (Map Text MCPServerConfigFile),
     cfWebhook :: Maybe WebhookServerConfigFile,
     cfThinking :: Maybe Value,
-    cfMaxIterations :: Maybe Int
+    cfMaxIterations :: Maybe Int,
+    cfDynamicToolLoading :: Maybe Bool
   }
   deriving stock (Show, Generic)
 
@@ -151,7 +154,7 @@ data MCPServerConfigFile = MCPServerConfigFile
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "permissions", "compaction", "mcpServers", "webhook", "thinking", "maxIterations"] v
+    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "permissions", "compaction", "mcpServers", "webhook", "thinking", "maxIterations", "dynamicToolLoading"] v
     ConfigFile
       <$> v .:? "stateDir"
       <*> v .:? "workspaceDir"
@@ -163,6 +166,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "webhook"
       <*> v .:? "thinking"
       <*> v .:? "maxIterations"
+      <*> v .:? "dynamicToolLoading"
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v -> do
@@ -315,7 +319,8 @@ loadConfig path = do
         cfgMCPServers = mcpServers,
         cfgWebhook = webhook,
         cfgThinking = maybe ThinkingOff parseThinkingLevel (cfThinking configFile),
-        cfgMaxIterations = fromMaybe 30 (cfMaxIterations configFile)
+        cfgMaxIterations = fromMaybe 30 (cfMaxIterations configFile),
+        cfgDynamicToolLoading = cfDynamicToolLoading configFile
       }
 
 -- | Default webhook server configuration (disabled)

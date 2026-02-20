@@ -81,9 +81,11 @@ claudeHandler ::
   MetricsStore ->
   -- | Number of active MCP servers
   Int ->
+  -- | Whether to use dynamic tool loading
+  Bool ->
   Message ->
   IO (Maybe Text)
-claudeHandler logger client telegram store registry ctx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount msg =
+claudeHandler logger client telegram store registry ctx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount dynamicLoading msg =
   case (text msg, photo msg) of
     -- Handle /clear command
     (Just txt, _) | T.strip txt == "/clear" -> handleClear
@@ -142,7 +144,8 @@ claudeHandler logger client telegram store registry ctx compactionConfig systemP
                     eeWorkspaceDir = workspaceDir,
                     eeMaxIterations = maxIterations,
                     eeMetrics = metrics,
-                    eeMCPServerCount = mcpServerCount
+                    eeMCPServerCount = mcpServerCount,
+                    eeDynamicToolLoading = dynamicLoading
                   }
 
           -- Create Telegram event

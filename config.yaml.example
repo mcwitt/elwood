@@ -30,6 +30,15 @@ thinking: off
 # Default: 30
 maxIterations: 30
 
+# Dynamic tool loading: true | false | null (auto)
+# When enabled, only built-in tools are sent in each API request. The model
+# uses discover_tools and load_tool meta-tools to find and load MCP tools
+# on demand, reducing per-request token usage.
+#   null/omitted - auto: enabled when MCP servers are configured
+#   true         - always enabled
+#   false        - always disabled (all tool schemas sent in every request)
+# dynamicToolLoading: null
+
 # Context compaction settings
 # When conversation history exceeds the token threshold, older messages
 # are summarized using a fast model to stay within context limits.
