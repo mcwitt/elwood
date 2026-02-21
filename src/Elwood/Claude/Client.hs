@@ -66,7 +66,8 @@ defaultRetryConfig =
 -- | Create a new Claude client
 newClaudeClient :: Text -> IO ClaudeClient
 newClaudeClient apiKey = do
-  manager <- newManager tlsManagerSettings
+  let settings = tlsManagerSettings {managerResponseTimeout = responseTimeoutMicro (10 * 60 * 1000000)}
+  manager <- newManager settings
   pure
     ClaudeClient
       { ccManager = manager,
