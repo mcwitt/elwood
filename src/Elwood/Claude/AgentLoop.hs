@@ -247,13 +247,21 @@ handleResponse logger client registry ctx compactionConfig systemPrompt model th
       toolResults <- mapM (executeToolUse logger registry ctx) toolUses
 
       -- Build messages for next iteration
-      let assistantMsg = ClaudeMessage Assistant (mresContent response)
+      let nextIteration = iteration + 1
+          assistantMsg = ClaudeMessage Assistant (mresContent response)
           resultBlocks = zipWith makeResultBlock toolUses toolResults
-          userMsg = ClaudeMessage User resultBlocks
+          turnInfo =
+            TextBlock $
+              "[Turn "
+                <> T.pack (show nextIteration)
+                <> " of "
+                <> T.pack (show maxIter)
+                <> "]"
+          userMsg = ClaudeMessage User (resultBlocks ++ [turnInfo])
           newMessages = messages ++ [assistantMsg, userMsg]
 
       -- Continue the loop
-      agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source newMessages (iteration + 1) onRateLimit mActiveRef
+      agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source newMessages nextIteration onRateLimit mActiveRef
     Just "max_tokens" -> do
       -- Hit token limit - return what we have
       let responseText = extractTextContent (mresContent response)
