@@ -250,13 +250,7 @@ handleResponse logger client registry ctx compactionConfig systemPrompt model th
       let nextIteration = iteration + 1
           assistantMsg = ClaudeMessage Assistant (mresContent response)
           resultBlocks = zipWith makeResultBlock toolUses toolResults
-          turnInfo =
-            TextBlock $
-              "[Turn "
-                <> T.pack (show nextIteration)
-                <> " of "
-                <> T.pack (show maxIter)
-                <> "]"
+          turnInfo = TextBlock $ formatTurnInfo nextIteration maxIter
           userMsg = ClaudeMessage User (resultBlocks ++ [turnInfo])
           newMessages = messages ++ [assistantMsg, userMsg]
 
@@ -352,6 +346,20 @@ makeResultBlock (ToolUseBlock tid _ _) result =
       ToolResultBlock tid err True
 makeResultBlock _ _ =
   ToolResultBlock "" "Invalid tool use" True
+
+-- | Format turn info with adaptive messaging based on proximity to limit.
+--
+-- Uses a @\<harness\>@ XML tag to distinguish from user content.
+-- Escalates urgency as the turn limit approaches.
+formatTurnInfo :: Int -> Int -> Text
+formatTurnInfo turn maxTurn =
+  let remaining = maxTurn - turn
+      prefix = "Turn " <> T.pack (show turn) <> " of " <> T.pack (show maxTurn) <> "."
+      body
+        | remaining <= 2 = prefix <> " Final turns — respond now, do not make further tool calls."
+        | remaining <= 5 = prefix <> " Approaching limit — wrap up soon."
+        | otherwise = prefix
+   in "<harness>" <> body <> "</harness>"
 
 -- | Format an error for user display
 formatError :: ClaudeError -> Text
