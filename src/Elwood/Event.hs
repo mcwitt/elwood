@@ -35,7 +35,7 @@ import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime)
-import Elwood.Claude.AgentLoop (AgentResult (..), RateLimitCallback, runAgentTurn)
+import Elwood.Claude.AgentLoop (AgentResult (..), RateLimitCallback, TextCallback, runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Compaction (CompactionConfig)
 import Elwood.Claude.Conversation (ConversationStore, getConversation, updateConversation)
@@ -137,6 +137,9 @@ handleEvent env event = do
   -- Create rate limit notification callback based on delivery targets
   let rateLimitCallback = mkRateLimitCallback env event
 
+  -- Create text callback to deliver intermediate text immediately
+  let textCallback = mkTextCallback env event
+
   -- Compute metrics source label
   let sourceLabel = metricsSource source
 
@@ -158,6 +161,7 @@ handleEvent env event = do
       userMsg
       (Just rateLimitCallback)
       (eeDynamicToolLoading env)
+      (Just textCallback)
       `catch` \(e :: SomeException) -> do
         logError logger "Event handler agent error" [("error", T.pack (show e))]
         pure $ AgentError $ "Agent error: " <> T.pack (show e)
@@ -258,6 +262,10 @@ notifySafe env chatId msg = do
 sessionToConversationId :: SessionConfig -> Maybe Text
 sessionToConversationId Isolated = Nothing
 sessionToConversationId (Named name) = Just name
+
+-- | Create text callback to deliver intermediate text during tool-use turns
+mkTextCallback :: AppEnv -> Event -> TextCallback
+mkTextCallback env event = deliverToTargets env (evDelivery event)
 
 -- | Create rate limit notification callback based on event delivery targets
 mkRateLimitCallback :: AppEnv -> Event -> RateLimitCallback
