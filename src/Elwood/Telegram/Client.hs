@@ -4,7 +4,6 @@ module Elwood.Telegram.Client
   ( TelegramClient (..),
     TelegramError (..),
     newTelegramClient,
-    getUpdates,
     getUpdatesAllowed,
     sendMessage,
     sendMessageWithKeyboard,
@@ -85,16 +84,6 @@ buildRequest client method = do
           [ ("Content-Type", "application/json")
           ]
       }
-
--- | Get updates from Telegram using long polling
---
--- Parameters:
---   - client: The Telegram client
---   - offset: Update offset (use last update_id + 1)
---
--- Returns a list of updates
-getUpdates :: TelegramClient -> Int -> IO [Update]
-getUpdates client offset = getUpdatesAllowed client offset ["message"]
 
 -- | Get updates with custom allowed update types
 --

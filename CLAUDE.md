@@ -18,6 +18,7 @@ Before completing a task:
 - [ ] Tests pass: `nix develop -c cabal test`
 - [ ] Relevant documentation and examples updated (e.g. README.md, config.yaml.example)
 - [ ] Formatted and linted: `nix fmt`
+- [ ] Flake checks pass: `nix flake check` (runs build, formatting, weeder, and NixOS module tests)
 
 ## Config Maintenance
 

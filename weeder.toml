@@ -4,16 +4,10 @@
 # Root symbols that are considered "alive" (entry points)
 roots = [
   "^Main.main$",
-  # Exported module functions (public API)
-  "^Elwood\\.App\\..*",
-  "^Elwood\\.Claude\\.Conversation\\..*",
-  "^Elwood\\.Claude\\.Types\\..*",
-  "^Elwood\\.Config\\..*",
-  "^Elwood\\.Memory\\..*",
-  "^Elwood\\.Telegram\\.Client\\..*",
-  "^Elwood\\.Tools\\.Types\\..*",
   # Test exports
   "^Test\\..*\\.tests$",
+  # Auto-generated cabal paths module
+  "^Paths_elwood\\..*",
 ]
 
 # Type class instances are often not directly referenced

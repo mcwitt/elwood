@@ -9,7 +9,6 @@ module Elwood.Memory
     saveMemory,
     searchMemory,
     listMemories,
-    readMemory,
 
     -- * Types
     MemoryResult (..),
@@ -28,7 +27,6 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import System.Directory
   ( createDirectoryIfMissing,
-    doesFileExist,
     listDirectory,
   )
 import System.FilePath (takeBaseName, (</>))
@@ -69,21 +67,6 @@ saveMemory store key content = do
       catch
         (Right <$> TIO.writeFile path content)
         (\(e :: SomeException) -> pure $ Left $ "Failed to save memory: " <> T.pack (show e))
-
--- | Read a specific memory by key
-readMemory :: MemoryStore -> Text -> IO (Maybe Text)
-readMemory store key = do
-  case sanitizeKey key of
-    Nothing -> pure Nothing
-    Just safeKey -> do
-      let path = msDirectory store </> T.unpack safeKey <> ".md"
-      exists <- doesFileExist path
-      if exists
-        then
-          catch
-            (Just <$> TIO.readFile path)
-            (\(_ :: SomeException) -> pure Nothing)
-        else pure Nothing
 
 -- | Search memories by keyword
 -- Returns memories containing any of the search terms, sorted by relevance

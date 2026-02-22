@@ -147,7 +147,6 @@ in
           cronJobs.daily-job = {
             prompt = "Run daily job";
             schedule = "*:0/5"; # Every 5 minutes for testing
-            isolated = true;
           };
         };
       };

@@ -5,7 +5,6 @@ module Elwood.Claude.Conversation
     newConversationStore,
     getConversation,
     allConversations,
-    appendMessage,
     updateConversation,
     clearConversation,
   )
@@ -101,26 +100,6 @@ createEmptyConversation sessionId = do
         convMessages = [],
         convLastUpdated = now
       }
-
--- | Append a message to a conversation and persist to disk
--- Note: Context limits are managed by compaction, not message trimming
-appendMessage :: ConversationStore -> Text -> ClaudeMessage -> IO Conversation
-appendMessage store sessionId msg = do
-  conv <- getConversation store sessionId
-  now <- getCurrentTime
-
-  let conv' =
-        conv
-          { convMessages = convMessages conv ++ [msg],
-            convLastUpdated = now
-          }
-
-  -- Update cache and persist
-  modifyMVar_ (csCache store) $ \c ->
-    pure $ Map.insert sessionId conv' c
-
-  saveConversation store conv'
-  pure conv'
 
 -- | Save a conversation to disk
 saveConversation :: ConversationStore -> Conversation -> IO ()

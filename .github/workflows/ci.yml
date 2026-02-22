@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+
+      - uses: cachix/cachix-action@v15
+        with:
+          name: elwood
+          skipPush: true
+        continue-on-error: true
+
+      - name: Build
+        run: nix build
+
+      - name: Unit tests
+        run: nix develop -c cabal test
+
+      - name: Formatting and linting
+        run: nix build .#checks.x86_64-linux.pre-commit-check
+
+      - name: Weeder (dead code)
+        run: nix build .#checks.x86_64-linux.weeder
