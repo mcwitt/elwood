@@ -17,7 +17,7 @@ jobs:
           extra_nix_config: |
             accept-flake-config = true
 
-      - uses: cachix/cachix-action@v15
+      - uses: cachix/cachix-action@v16
         with:
           name: elwood
           skipPush: true
