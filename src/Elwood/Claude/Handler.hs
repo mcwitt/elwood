@@ -158,10 +158,10 @@ claudeHandler logger client telegram store registry ctx compactionConfig systemP
                     evPrompt = userText,
                     evImage = imageData,
                     evSession = Named (T.pack (show chatIdVal)),
-                    evDelivery = [LogOnly]
+                    evDelivery = [TelegramDelivery (T.pack (show chatIdVal))]
                   }
 
-          -- Handle the event
+          -- Handle the event - delivery to Telegram is done by the event system
           result <- handleEvent eventEnv event
 
           case result of
@@ -172,7 +172,8 @@ claudeHandler logger client telegram store registry ctx compactionConfig systemP
                 [ ("chat_id", T.pack (show chatIdVal)),
                   ("response_length", T.pack (show (T.length responseText)))
                 ]
-              pure (Just responseText)
+              -- Return Nothing: the event system already delivered to Telegram
+              pure Nothing
             Left errorMsg -> do
               logInfo
                 logger
@@ -180,6 +181,8 @@ claudeHandler logger client telegram store registry ctx compactionConfig systemP
                 [ ("chat_id", T.pack (show chatIdVal)),
                   ("error", errorMsg)
                 ]
+              -- Errors are still returned for the polling loop to send,
+              -- since the event system only delivers on success
               pure (Just errorMsg)
 
     -- Fetch the largest photo and return (mediaType, base64Data)
