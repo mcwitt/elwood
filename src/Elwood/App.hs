@@ -4,9 +4,9 @@ module Elwood.App
 where
 
 import Control.Concurrent.Async (async, wait)
-import Control.Exception (SomeException, catch, finally)
+import Control.Exception (finally)
 import Data.Foldable (for_)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, newIORef)
 import Data.Int (Int64)
 import Data.Maybe (isJust)
 import Data.Text (Text)
@@ -37,9 +37,7 @@ import Elwood.Telegram.Client
     answerCallbackQuery,
     editMessageReplyMarkup,
     newTelegramClient,
-    sendDocument,
     sendMessageWithKeyboard,
-    sendPhoto,
   )
 import Elwood.Telegram.Polling
 import Elwood.Telegram.Types
@@ -49,11 +47,11 @@ import Elwood.Telegram.Types
     InlineKeyboardMarkup (..),
     Message (..),
   )
-import Elwood.Tools.Attachment (isPhotoExtension, mkQueueAttachmentTool)
+import Elwood.Tools.Attachment (mkQueueAttachmentTool)
 import Elwood.Tools.Command (mkRunCommandTool)
 import Elwood.Tools.Memory (mkSaveMemoryTool, mkSearchMemoryTool)
 import Elwood.Tools.Registry
-import Elwood.Tools.Types (AgentContext (..), ApprovalOutcome (..), Attachment (..), AttachmentType (..))
+import Elwood.Tools.Types (AgentContext (..), ApprovalOutcome (..), Attachment)
 import Elwood.Webhook.Server (runWebhookServer)
 import System.Directory (createDirectoryIfMissing)
 
@@ -251,31 +249,7 @@ claudeHandlerWithApproval ::
 claudeHandlerWithApproval logger client telegram store registry mkCtx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount dynamicLoading msg = do
   let cid = chatId (chat msg)
       ctxForChat = mkCtx cid
-  result <- claudeHandler logger client telegram store registry ctxForChat compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount dynamicLoading msg
-  -- Send queued attachments after the text reply
-  attachments <- readIORef attachmentQueue
-  mapM_ (sendAttachmentToChat logger telegram cid) attachments
-  writeIORef attachmentQueue []
-  pure result
-
--- | Send a single attachment to a specific chat
-sendAttachmentToChat :: Logger -> TelegramClient -> Int64 -> Attachment -> IO ()
-sendAttachmentToChat logger telegram cid att = do
-  let send = case attType att of
-        AttachPhoto -> sendPhoto
-        AttachDocument -> sendDocument
-        AttachAuto
-          | isPhotoExtension (attPath att) -> sendPhoto
-          | otherwise -> sendDocument
-  send telegram cid (attPath att) (attCaption att)
-    `catch` \(e :: SomeException) ->
-      logError
-        logger
-        "Failed to send attachment"
-        [ ("chat_id", T.pack (show cid)),
-          ("path", T.pack (attPath att)),
-          ("error", T.pack (show e))
-        ]
+  claudeHandler logger client telegram store registry ctxForChat compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount dynamicLoading msg
 
 -- | Request tool approval via Telegram inline keyboard
 requestToolApproval ::
