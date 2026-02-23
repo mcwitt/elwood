@@ -57,35 +57,35 @@ runPolling logger client allowedChats handler callbackHandler = do
       -- Process each update
       for_ updates $ \update -> do
         -- Always update offset to avoid reprocessing
-        let newOffset = updateId update + 1
+        let newOffset = update.id_ + 1
         writeIORef offsetRef newOffset
 
         -- Process message if present (forked to avoid blocking callback processing)
-        for_ (message update) $ \msg -> do
+        for_ update.message $ \msg -> do
           _ <- forkIO $ processMessage msg
           pure ()
 
         -- Process callback query if present
-        for_ (callbackQuery update) processCallback
+        for_ update.callbackQuery processCallback
 
       -- Continue polling
       loop offsetRef
 
     processCallback :: CallbackQuery -> IO ()
     processCallback cq = do
-      let userName = firstName (cqFrom cq)
+      let userName = cq.from_.firstName
       logInfo
         logger
         "Received callback query"
-        [ ("callback_id", cqId cq),
+        [ ("callback_id", cq.id_),
           ("user", userName),
-          ("data", fromMaybe "<no data>" (cqData cq))
+          ("data", fromMaybe "<no data>" cq.data_)
         ]
 
       -- Check if user is from an allowed chat
-      case cqMessage cq of
+      case cq.message of
         Just msg ->
-          let cid = chatId (chat msg)
+          let cid = msg.chat.id_
            in if cid `notElem` allowedChats
                 then
                   logWarn
@@ -104,8 +104,8 @@ runPolling logger client allowedChats handler callbackHandler = do
 
     processMessage :: Message -> IO ()
     processMessage msg = do
-      let cid = chatId (chat msg)
-          userName = maybe "unknown" firstName (from msg)
+      let cid = msg.chat.id_
+          userName = maybe "unknown" (.firstName) msg.from_
 
       -- Check if chat is allowed
       if cid `notElem` allowedChats
@@ -122,7 +122,7 @@ runPolling logger client allowedChats handler callbackHandler = do
             "Received message"
             [ ("chat_id", T.pack (show cid)),
               ("user", userName),
-              ("text", maybe "<no text>" (T.take 50) (text msg))
+              ("text", maybe "<no text>" (T.take 50) msg.text)
             ]
 
           -- Call handler and send reply if any

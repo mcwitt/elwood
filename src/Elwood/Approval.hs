@@ -40,19 +40,19 @@ data ApprovalResult
 -- | Coordinator for managing pending approval requests
 data ApprovalCoordinator = ApprovalCoordinator
   { -- | Map of pending requests awaiting response
-    acPendingRequests :: TVar (Map UUID (TMVar ApprovalResult)),
+    pendingRequests :: TVar (Map UUID (TMVar ApprovalResult)),
     -- | Timeout in seconds for approval requests
-    acTimeoutSeconds :: Int
+    timeoutSeconds :: Int
   }
 
 -- | Create a new approval coordinator
 newApprovalCoordinator :: Int -> IO ApprovalCoordinator
-newApprovalCoordinator timeoutSeconds = do
+newApprovalCoordinator ts = do
   pendingVar <- newTVarIO Map.empty
   pure
     ApprovalCoordinator
-      { acPendingRequests = pendingVar,
-        acTimeoutSeconds = timeoutSeconds
+      { pendingRequests = pendingVar,
+        timeoutSeconds = ts
       }
 
 -- | Request approval and block until response or timeout
@@ -62,52 +62,52 @@ newApprovalCoordinator timeoutSeconds = do
 requestApproval :: ApprovalCoordinator -> IO (UUID, IO ApprovalResult)
 requestApproval coordinator = do
   -- Generate unique ID for this request
-  requestId <- UUID.nextRandom
+  requestId_ <- UUID.nextRandom
 
   -- Create TMVar for the response
   responseVar <- newEmptyTMVarIO
 
   -- Register the pending request
-  atomically $ modifyTVar' (acPendingRequests coordinator) (Map.insert requestId responseVar)
+  atomically $ modifyTVar' coordinator.pendingRequests (Map.insert requestId_ responseVar)
 
   -- Start timeout thread
   void $
     forkIO $ do
-      threadDelay (acTimeoutSeconds coordinator * 1000000)
+      threadDelay (coordinator.timeoutSeconds * 1000000)
       -- Try to mark as timed out (only succeeds if not already responded)
       atomically $ do
-        pending <- readTVar (acPendingRequests coordinator)
-        case Map.lookup requestId pending of
+        pending <- readTVar coordinator.pendingRequests
+        case Map.lookup requestId_ pending of
           Just var -> do
             success <- tryPutTMVar var TimedOut
-            when success $ modifyTVar' (acPendingRequests coordinator) (Map.delete requestId)
+            when success $ modifyTVar' coordinator.pendingRequests (Map.delete requestId_)
           Nothing -> pure ()
 
   -- Return the request ID and an action to wait for the result
   let waitForResult = atomically $ readTMVar responseVar
-  pure (requestId, waitForResult)
+  pure (requestId_, waitForResult)
 
 -- | Respond to a pending approval request
 --
 -- Returns True if the request was found and responded to,
 -- False if the request was not found (already responded or timed out)
 respondToApproval :: ApprovalCoordinator -> UUID -> ApprovalResult -> IO Bool
-respondToApproval coordinator requestId result = atomically $ do
-  pending <- readTVar (acPendingRequests coordinator)
-  case Map.lookup requestId pending of
+respondToApproval coordinator requestId_ result = atomically $ do
+  pending <- readTVar coordinator.pendingRequests
+  case Map.lookup requestId_ pending of
     Just var -> do
       success <- tryPutTMVar var result
-      when success $ modifyTVar' (acPendingRequests coordinator) (Map.delete requestId)
+      when success $ modifyTVar' coordinator.pendingRequests (Map.delete requestId_)
       pure success
     Nothing -> pure False
 
 -- | Format a tool use request for display in Telegram
 formatApprovalRequest :: Text -> Text -> Text
-formatApprovalRequest toolName inputSummary =
+formatApprovalRequest toolName_ inputSummary =
   T.unlines
     [ "🔐 *Tool Approval Required*",
       "",
-      "*Tool:* `" <> toolName <> "`",
+      "*Tool:* `" <> toolName_ <> "`",
       "*Input:*",
       "```",
       escapeCodeBlock inputSummary,

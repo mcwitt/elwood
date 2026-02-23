@@ -102,12 +102,12 @@ usageTests =
                   "cache_creation_input_tokens" Aeson..= (10 :: Int),
                   "cache_read_input_tokens" Aeson..= (20 :: Int)
                 ]
-        case Aeson.fromJSON json of
+        case Aeson.fromJSON json :: Aeson.Result Usage of
           Aeson.Success usage -> do
-            usageInputTokens usage @?= 100
-            usageOutputTokens usage @?= 50
-            usageCacheCreationInputTokens usage @?= 10
-            usageCacheReadInputTokens usage @?= 20
+            usage.inputTokens @?= 100
+            usage.outputTokens @?= 50
+            usage.cacheCreationInputTokens @?= 10
+            usage.cacheReadInputTokens @?= 20
           Aeson.Error err -> assertFailure $ "Failed to parse Usage: " <> err,
       testCase "parses with cache fields absent (defaults to 0)" $ do
         let json =
@@ -115,12 +115,12 @@ usageTests =
                 [ "input_tokens" Aeson..= (100 :: Int),
                   "output_tokens" Aeson..= (50 :: Int)
                 ]
-        case Aeson.fromJSON json of
+        case Aeson.fromJSON json :: Aeson.Result Usage of
           Aeson.Success usage -> do
-            usageInputTokens usage @?= 100
-            usageOutputTokens usage @?= 50
-            usageCacheCreationInputTokens usage @?= 0
-            usageCacheReadInputTokens usage @?= 0
+            usage.inputTokens @?= 100
+            usage.outputTokens @?= 50
+            usage.cacheCreationInputTokens @?= 0
+            usage.cacheReadInputTokens @?= 0
           Aeson.Error err -> assertFailure $ "Failed to parse Usage: " <> err
     ]
 
@@ -131,24 +131,24 @@ roundTripTests =
     [ testCase "Conversation round-trips" $ do
         let conv =
               Conversation
-                { convSessionId = "12345",
-                  convMessages =
+                { sessionId = "12345",
+                  messages =
                     [ ClaudeMessage User [TextBlock "Hi"],
                       ClaudeMessage Assistant [TextBlock "Hello!"]
                     ],
-                  convLastUpdated = read "2024-01-01 00:00:00 UTC"
+                  lastUpdated = read "2024-01-01 00:00:00 UTC"
                 }
-        case decode (encode conv) of
+        case decode (encode conv) :: Maybe Conversation of
           Just decoded -> do
-            convSessionId decoded @?= convSessionId conv
-            length (convMessages decoded) @?= length (convMessages conv)
+            decoded.sessionId @?= conv.sessionId
+            length decoded.messages @?= length conv.messages
           Nothing -> assertFailure "Failed to decode Conversation",
       testCase "ToolSchema encodes name and description" $ do
         let schema =
               ToolSchema
-                { tsName = "my_tool",
-                  tsDescription = "Does something useful",
-                  tsInputSchema =
+                { name = "my_tool",
+                  description = "Does something useful",
+                  inputSchema =
                     Aeson.object
                       [ "type" Aeson..= ("object" :: String),
                         "properties" Aeson..= Aeson.object []

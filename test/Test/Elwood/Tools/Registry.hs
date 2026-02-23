@@ -11,12 +11,12 @@ import Test.Tasty.HUnit
 
 -- | A simple no-op tool for testing
 mkTestTool :: Text -> Tool
-mkTestTool name =
+mkTestTool n =
   Tool
-    { toolName = name,
-      toolDescription = "Test tool: " <> name,
-      toolInputSchema = object ["type" .= ("object" :: Text)],
-      toolExecute = \_ -> pure (ToolSuccess "ok")
+    { name = n,
+      description = "Test tool: " <> n,
+      inputSchema = object ["type" .= ("object" :: Text)],
+      execute = \_ -> pure (ToolSuccess "ok")
     }
 
 tests :: TestTree
@@ -37,10 +37,10 @@ registryBasicsTests =
                 registerTool (mkTestTool "b") newToolRegistry
         case lookupTool "a" reg of
           Nothing -> assertFailure "Should find tool a"
-          Just t -> toolName t @?= "a"
+          Just t -> t.name @?= "a"
         case lookupTool "b" reg of
           Nothing -> assertFailure "Should find tool b"
-          Just t -> toolName t @?= "b",
+          Just t -> t.name @?= "b",
       testCase "allTools returns all registered tools" $ do
         let reg =
               registerTool (mkTestTool "a") $
@@ -64,7 +64,7 @@ activeToolSchemasTests =
                   registerTool (mkTestTool "c") newToolRegistry
             active = Set.fromList ["a", "c"]
             schemas = activeToolSchemas reg active
-            names = Set.fromList (map tsName schemas)
+            names = Set.fromList (map (.name) schemas)
         names @?= Set.fromList ["a", "c"],
       testCase "returns all tools when all activated" $ do
         let reg =

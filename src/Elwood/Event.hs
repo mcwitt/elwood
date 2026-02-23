@@ -42,12 +42,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime, getCurrentTime)
-import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), RateLimitCallback, TextCallback, runAgentTurn)
-import Elwood.Claude.Client (ClaudeClient)
-import Elwood.Claude.Compaction (CompactionConfig)
-import Elwood.Claude.Conversation (ConversationStore, clearConversation, getConversation, updateConversation)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Conversation (..), Role (..))
-import Elwood.Config (ThinkingLevel)
+import Elwood.Claude qualified as Claude
+import Elwood.Config (CompactionConfig, ThinkingLevel)
 import Elwood.Event.Types
   ( DeliveryTarget (..),
     EventSource (..),
@@ -55,57 +51,55 @@ import Elwood.Event.Types
   )
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, metricsSource)
-import Elwood.Telegram.Client (TelegramClient, downloadFile, getFile, notify, sendDocument, sendPhoto)
-import Elwood.Telegram.Types (Chat (..), Message (..), PhotoSize (..), TelegramFile (..))
+import Elwood.Telegram qualified as Telegram
+import Elwood.Tools qualified as Tools
 import Elwood.Tools.Attachment (isPhotoExtension)
-import Elwood.Tools.Registry (ToolRegistry)
-import Elwood.Tools.Types (AgentContext, Attachment (..), AttachmentType (..))
 import Text.Read (readMaybe)
 
 -- | Unified event type for all sources
 data Event = Event
   { -- | Where this event came from
-    evSource :: EventSource,
+    source :: EventSource,
     -- | When the event occurred
-    evTimestamp :: UTCTime,
+    timestamp :: UTCTime,
     -- | Source-specific JSON data (e.g., webhook payload)
-    evPayload :: Value,
+    payload :: Value,
     -- | Rendered prompt for the agent
-    evPrompt :: Text,
+    prompt :: Text,
     -- | Optional image data (media type, base64 data)
-    evImage :: Maybe (Text, Text),
+    image :: Maybe (Text, Text),
     -- | Session configuration
-    evSession :: SessionConfig,
+    session :: SessionConfig,
     -- | Where to deliver responses
-    evDelivery :: [DeliveryTarget]
+    delivery :: [DeliveryTarget]
   }
   deriving stock (Show)
 
 -- | Environment for event handling
 data AppEnv = AppEnv
-  { eeLogger :: Logger,
-    eeTelegram :: TelegramClient,
-    eeClaude :: ClaudeClient,
-    eeConversations :: ConversationStore,
-    eeRegistry :: ToolRegistry,
-    eeAgentContext :: AgentContext,
-    eeCompaction :: CompactionConfig,
-    eeSystemPrompt :: Maybe Text,
-    eeModel :: Text,
+  { logger :: Logger,
+    telegram :: Telegram.TelegramClient,
+    claude :: Claude.ClaudeClient,
+    conversations :: Claude.ConversationStore,
+    registry :: Tools.ToolRegistry,
+    agentContext :: Tools.AgentContext,
+    compaction :: CompactionConfig,
+    systemPrompt :: Maybe Text,
+    model :: Text,
     -- | Extended thinking level
-    eeThinking :: ThinkingLevel,
+    thinking :: ThinkingLevel,
     -- | All allowed chat IDs (for broadcast)
-    eeNotifyChatIds :: [Int64],
+    notifyChatIds :: [Int64],
     -- | Attachment queue
-    eeAttachmentQueue :: TVar [Attachment],
+    attachmentQueue :: TVar [Tools.Attachment],
     -- | Maximum agent loop iterations per turn
-    eeMaxIterations :: Int,
+    maxIterations :: Int,
     -- | Metrics store for Prometheus counters
-    eeMetrics :: MetricsStore,
+    metrics :: MetricsStore,
     -- | Number of active MCP servers
-    eeMCPServerCount :: Int,
+    mcpServerCount :: Int,
     -- | Always-loaded tools for dynamic loading (Nothing = disabled, Just = enabled)
-    eeAlwaysLoadTools :: Maybe [Text]
+    alwaysLoadTools :: Maybe [Text]
   }
 
 -- | Handle any event through the agent pipeline
@@ -113,84 +107,84 @@ data AppEnv = AppEnv
 -- Returns Either error message or success response text
 handleEvent :: AppEnv -> Event -> IO (Either Text Text)
 handleEvent env event = do
-  let logger = eeLogger env
-      source = evSource event
+  let lgr = env.logger
+      src = event.source
 
   logInfo
-    logger
+    lgr
     "Handling event"
-    [ ("source", formatSource source),
-      ("session", T.pack (show (evSession event))),
-      ("delivery_targets", T.pack (show (length (evDelivery event))))
+    [ ("source", formatSource src),
+      ("session", T.pack (show event.session)),
+      ("delivery_targets", T.pack (show (length event.delivery)))
     ]
 
   -- Determine conversation ID from session config
-  let mConversationId = sessionToConversationId (evSession event)
+  let mConversationId = sessionToConversationId event.session
 
   -- Get existing conversation history (empty for Isolated)
   history <- case mConversationId of
     Nothing -> pure []
-    Just cid -> convMessages <$> getConversation (eeConversations env) cid
+    Just cid -> (.messages) <$> Claude.getConversation env.conversations cid
 
   -- Build user message with optional image
-  let contentBlocks = case evImage event of
-        Just (mediaType, imageData) ->
-          [ImageBlock mediaType imageData, TextBlock (evPrompt event)]
+  let contentBlocks = case event.image of
+        Just (mt, imageData) ->
+          [Claude.ImageBlock mt imageData, Claude.TextBlock event.prompt]
         Nothing ->
-          [TextBlock (evPrompt event)]
-      userMsg = ClaudeMessage User contentBlocks
+          [Claude.TextBlock event.prompt]
+      userMsg = Claude.ClaudeMessage Claude.User contentBlocks
 
   -- Build agent config from environment
   let agentConfig =
-        AgentConfig
-          { acLogger = logger,
-            acClient = eeClaude env,
-            acRegistry = eeRegistry env,
-            acContext = eeAgentContext env,
-            acCompaction = eeCompaction env,
-            acSystemPrompt = eeSystemPrompt env,
-            acModel = eeModel env,
-            acThinking = eeThinking env,
-            acMaxIterations = eeMaxIterations env,
-            acMetrics = eeMetrics env,
-            acSource = metricsSource source,
-            acOnRateLimit = Just (mkRateLimitCallback env event),
-            acOnText = Just (mkTextCallback env event),
-            acAlwaysLoadTools = eeAlwaysLoadTools env
+        Claude.AgentConfig
+          { logger = lgr,
+            client = env.claude,
+            registry = env.registry,
+            context = env.agentContext,
+            compaction = env.compaction,
+            systemPrompt = env.systemPrompt,
+            model = env.model,
+            thinking = env.thinking,
+            maxIterations = env.maxIterations,
+            metrics = env.metrics,
+            source = metricsSource src,
+            onRateLimit = Just (mkRateLimitCallback env event),
+            onText = Just (mkTextCallback env event),
+            alwaysLoadTools = env.alwaysLoadTools
           }
 
   -- Run the agent turn
   result <-
-    runAgentTurn agentConfig history userMsg
+    Claude.runAgentTurn agentConfig history userMsg
       `catch` \(e :: SomeException) -> do
-        logError logger "Event handler agent error" [("error", T.pack (show e))]
-        pure $ AgentError $ "Agent error: " <> T.pack (show e)
+        logError lgr "Event handler agent error" [("error", T.pack (show e))]
+        pure $ Claude.AgentError $ "Agent error: " <> T.pack (show e)
 
   case result of
-    AgentSuccess responseText allMessages -> do
+    Claude.AgentSuccess responseText allMessages -> do
       -- Update conversation (skip for isolated sessions)
       case mConversationId of
         Nothing -> pure ()
-        Just cid -> updateConversation (eeConversations env) cid allMessages
+        Just cid -> Claude.updateConversation env.conversations cid allMessages
 
       -- Deliver response
       deliverResponse env event responseText
 
       logInfo
-        logger
+        lgr
         "Event handled successfully"
-        [ ("source", formatSource source),
+        [ ("source", formatSource src),
           ("response_length", T.pack (show (T.length responseText)))
         ]
 
       pure (Right responseText)
-    AgentError err -> do
-      logError logger "Event handling failed" [("source", formatSource source), ("error", err)]
+    Claude.AgentError err -> do
+      logError lgr "Event handling failed" [("source", formatSource src), ("error", err)]
       pure (Left err)
 
 -- | Deliver response to configured targets, then send queued attachments
 deliverResponse :: AppEnv -> Event -> Text -> IO ()
-deliverResponse env event = deliverToTargets env (evDelivery event)
+deliverResponse env event = deliverToTargets env event.delivery
 
 -- | Deliver a message to the specified targets, then send queued attachments
 deliverToTargets :: AppEnv -> [DeliveryTarget] -> Text -> IO ()
@@ -202,29 +196,29 @@ deliverToTargets env targets msg = do
   let chatIds = concatMap (targetChatIds env) targets
   unless (null chatIds) $ do
     attachments <- atomically $ do
-      atts <- readTVar (eeAttachmentQueue env)
-      writeTVar (eeAttachmentQueue env) []
+      atts <- readTVar env.attachmentQueue
+      writeTVar env.attachmentQueue []
       pure atts
     mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) attachments
   where
     deliver :: DeliveryTarget -> IO ()
     deliver target = case target of
-      TelegramDelivery session ->
-        case parseChatId session of
-          Just chatId -> notifySafe env chatId msg
-          Nothing -> logError (eeLogger env) "Invalid chat ID in TelegramDelivery" [("session", session)]
+      TelegramDelivery s ->
+        case parseChatId s of
+          Just chatId_ -> notifySafe env chatId_ msg
+          Nothing -> logError env.logger "Invalid chat ID in TelegramDelivery" [("session", s)]
       TelegramBroadcast ->
-        mapM_ (\cid -> notifySafe env cid msg) (eeNotifyChatIds env)
+        mapM_ (\cid -> notifySafe env cid msg) env.notifyChatIds
       LogOnly ->
-        logInfo (eeLogger env) "Event response (log only)" [("response", T.take 100 msg)]
+        logInfo env.logger "Event response (log only)" [("response", T.take 100 msg)]
 
 -- | Resolve a delivery target to its Telegram chat IDs
 targetChatIds :: AppEnv -> DeliveryTarget -> [Int64]
-targetChatIds _ (TelegramDelivery session) =
-  case parseChatId session of
+targetChatIds _ (TelegramDelivery s) =
+  case parseChatId s of
     Just cid -> [cid]
     Nothing -> []
-targetChatIds env TelegramBroadcast = eeNotifyChatIds env
+targetChatIds env TelegramBroadcast = env.notifyChatIds
 targetChatIds _ LogOnly = []
 
 -- | Parse a chat ID from text
@@ -232,30 +226,30 @@ parseChatId :: Text -> Maybe Int64
 parseChatId = readMaybe . T.unpack
 
 -- | Send a single attachment to a chat, choosing photo vs document
-sendAttachmentSafe :: AppEnv -> Int64 -> Attachment -> IO ()
-sendAttachmentSafe env chatId att = do
-  let send = case attType att of
-        AttachPhoto -> sendPhoto
-        AttachDocument -> sendDocument
-        AttachAuto
-          | isPhotoExtension (attPath att) -> sendPhoto
-          | otherwise -> sendDocument
-  send (eeTelegram env) chatId (attPath att) (attCaption att)
+sendAttachmentSafe :: AppEnv -> Int64 -> Tools.Attachment -> IO ()
+sendAttachmentSafe env chatId_ att = do
+  let send = case att.type_ of
+        Tools.AttachPhoto -> Telegram.sendPhoto
+        Tools.AttachDocument -> Telegram.sendDocument
+        Tools.AttachAuto
+          | isPhotoExtension att.path -> Telegram.sendPhoto
+          | otherwise -> Telegram.sendDocument
+  send env.telegram chatId_ att.path att.caption
     `catch` \(e :: SomeException) ->
       logError
-        (eeLogger env)
+        env.logger
         "Failed to send attachment"
-        [ ("chat_id", T.pack (show chatId)),
-          ("path", T.pack (attPath att)),
+        [ ("chat_id", T.pack (show chatId_)),
+          ("path", T.pack att.path),
           ("error", T.pack (show e))
         ]
 
 -- | Safely send notification, catching any errors
 notifySafe :: AppEnv -> Int64 -> Text -> IO ()
-notifySafe env chatId msg = do
-  notify (eeLogger env) (eeTelegram env) chatId msg
+notifySafe env chatId_ msg = do
+  Telegram.notify env.logger env.telegram chatId_ msg
     `catch` \(e :: SomeException) ->
-      logError (eeLogger env) "Failed to send notification" [("chat_id", T.pack (show chatId)), ("error", T.pack (show e))]
+      logError env.logger "Failed to send notification" [("chat_id", T.pack (show chatId_)), ("error", T.pack (show e))]
 
 -- | Convert session config to conversation ID
 --
@@ -263,37 +257,37 @@ notifySafe env chatId msg = do
 -- For Named sessions, returns the session name as the conversation key.
 sessionToConversationId :: SessionConfig -> Maybe Text
 sessionToConversationId Isolated = Nothing
-sessionToConversationId (Named name) = Just name
+sessionToConversationId (Named n) = Just n
 
 -- | Create text callback to deliver intermediate text during tool-use turns
-mkTextCallback :: AppEnv -> Event -> TextCallback
-mkTextCallback env event = deliverToTargets env (evDelivery event)
+mkTextCallback :: AppEnv -> Event -> Claude.TextCallback
+mkTextCallback env event = deliverToTargets env event.delivery
 
 -- | Create rate limit notification callback based on event delivery targets
-mkRateLimitCallback :: AppEnv -> Event -> RateLimitCallback
+mkRateLimitCallback :: AppEnv -> Event -> Claude.RateLimitCallback
 mkRateLimitCallback env event attemptNum waitSecs = do
   let msg = "rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s)"
   -- Notify based on delivery targets
-  mapM_ (notifyRateLimit msg) (evDelivery event)
+  mapM_ (notifyRateLimit msg) event.delivery
   where
     notifyRateLimit :: Text -> DeliveryTarget -> IO ()
-    notifyRateLimit msg target = case target of
-      TelegramDelivery session ->
-        case parseChatId session of
-          Just chatId -> notifySafe env chatId msg
+    notifyRateLimit m target = case target of
+      TelegramDelivery s ->
+        case parseChatId s of
+          Just chatId_ -> notifySafe env chatId_ m
           Nothing -> pure ()
       TelegramBroadcast ->
-        mapM_ (\cid -> notifySafe env cid msg) (eeNotifyChatIds env)
+        mapM_ (\cid -> notifySafe env cid m) env.notifyChatIds
       LogOnly ->
-        logInfo (eeLogger env) "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
+        logInfo env.logger "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
 
 -- | Handle a Telegram message: commands, image fetching, and event dispatch.
 --
 -- Returns 'Nothing' on success (the event system delivers via Telegram),
 -- or 'Just errorMsg' on failure (for the polling loop to send).
-handleTelegramMessage :: AppEnv -> Message -> IO (Maybe Text)
+handleTelegramMessage :: AppEnv -> Telegram.Message -> IO (Maybe Text)
 handleTelegramMessage env msg =
-  case (text msg, photo msg) of
+  case (msg.text, msg.photo) of
     -- Handle /clear command
     (Just txt, _) | T.strip txt == "/clear" -> handleClear
     -- Ignore other slash commands
@@ -301,26 +295,26 @@ handleTelegramMessage env msg =
     -- Handle text with optional photo
     (Just txt, photos) -> handleMessageWithPhoto txt photos
     -- Handle photo with caption only
-    (Nothing, Just photos@(_ : _)) -> handleMessageWithPhoto (fromMaybe "" (caption msg)) (Just photos)
+    (Nothing, Just photos@(_ : _)) -> handleMessageWithPhoto (fromMaybe "" msg.caption) (Just photos)
     -- No text and no photos (or empty photo list)
     (Nothing, _) -> pure Nothing
   where
-    logger :: Logger
-    logger = eeLogger env
+    lgr :: Logger
+    lgr = env.logger
 
     chatIdVal :: Int64
-    chatIdVal = chatId (chat msg)
+    chatIdVal = msg.chat.id_
 
     handleClear :: IO (Maybe Text)
     handleClear = do
-      clearConversation (eeConversations env) (T.pack (show chatIdVal))
-      logInfo logger "Conversation cleared" [("chat_id", T.pack (show chatIdVal))]
+      Claude.clearConversation env.conversations (T.pack (show chatIdVal))
+      logInfo lgr "Conversation cleared" [("chat_id", T.pack (show chatIdVal))]
       pure (Just "Conversation cleared. Starting fresh!")
 
-    handleMessageWithPhoto :: Text -> Maybe [PhotoSize] -> IO (Maybe Text)
+    handleMessageWithPhoto :: Text -> Maybe [Telegram.PhotoSize] -> IO (Maybe Text)
     handleMessageWithPhoto userText maybePhotos = do
       logInfo
-        logger
+        lgr
         "Processing message"
         [ ("chat_id", T.pack (show chatIdVal)),
           ("text_length", T.pack (show (T.length userText))),
@@ -338,24 +332,24 @@ handleTelegramMessage env msg =
         else do
           -- Create Telegram event
           now <- getCurrentTime
-          let event =
+          let evt =
                 Event
-                  { evSource = TelegramSource chatIdVal,
-                    evTimestamp = now,
-                    evPayload = Null,
-                    evPrompt = userText,
-                    evImage = imageData,
-                    evSession = Named (T.pack (show chatIdVal)),
-                    evDelivery = [TelegramDelivery (T.pack (show chatIdVal))]
+                  { source = TelegramSource chatIdVal,
+                    timestamp = now,
+                    payload = Null,
+                    prompt = userText,
+                    image = imageData,
+                    session = Named (T.pack (show chatIdVal)),
+                    delivery = [TelegramDelivery (T.pack (show chatIdVal))]
                   }
 
           -- Handle the event - delivery to Telegram is done by the event system
-          result <- handleEvent env event
+          result <- handleEvent env evt
 
           case result of
             Right responseText -> do
               logInfo
-                logger
+                lgr
                 "Agent turn completed"
                 [ ("chat_id", T.pack (show chatIdVal)),
                   ("response_length", T.pack (show (T.length responseText)))
@@ -364,7 +358,7 @@ handleTelegramMessage env msg =
               pure Nothing
             Left errorMsg -> do
               logInfo
-                logger
+                lgr
                 "Agent turn failed"
                 [ ("chat_id", T.pack (show chatIdVal)),
                   ("error", errorMsg)
@@ -374,53 +368,53 @@ handleTelegramMessage env msg =
               pure (Just errorMsg)
 
     -- Fetch the largest photo and return (mediaType, base64Data)
-    fetchImageData :: [PhotoSize] -> IO (Maybe (Text, Text))
+    fetchImageData :: [Telegram.PhotoSize] -> IO (Maybe (Text, Text))
     fetchImageData photos = do
-      let telegram = eeTelegram env
+      let tg = env.telegram
       -- Get the largest photo (sort by file size descending, take first)
-      let largestPhoto = listToMaybe $ sortOn (Down . psFileSize) photos
+      let largestPhoto = listToMaybe $ sortOn (Down . (.fileSize)) photos
       case largestPhoto of
         Nothing -> pure Nothing
         Just ps -> do
           logInfo
-            logger
+            lgr
             "Fetching photo"
-            [ ("file_id", psFileId ps),
-              ("width", T.pack (show (psWidth ps))),
-              ("height", T.pack (show (psHeight ps)))
+            [ ("file_id", ps.fileId),
+              ("width", T.pack (show ps.width)),
+              ("height", T.pack (show ps.height))
             ]
 
           -- Get file info from Telegram
-          maybeFile <- getFile telegram (psFileId ps)
+          maybeFile <- Telegram.getFile tg ps.fileId
           case maybeFile of
             Nothing -> do
-              logWarn logger "Failed to get file info" [("file_id", psFileId ps)]
+              logWarn lgr "Failed to get file info" [("file_id", ps.fileId)]
               pure Nothing
-            Just file -> case tfFilePath file of
+            Just file -> case file.filePath of
               Nothing -> do
-                logWarn logger "No file path in response" [("file_id", psFileId ps)]
+                logWarn lgr "No file path in response" [("file_id", ps.fileId)]
                 pure Nothing
-              Just filePath -> do
+              Just fp -> do
                 -- Download the file
                 rawImageData <-
-                  downloadFile telegram filePath
+                  Telegram.downloadFile tg fp
                     `catch` \(e :: SomeException) -> do
-                      logWarn logger "Failed to download file" [("error", T.pack (show e))]
+                      logWarn lgr "Failed to download file" [("error", T.pack (show e))]
                       pure LBS.empty
 
                 if LBS.null rawImageData
                   then pure Nothing
                   else do
                     -- Determine media type from file extension
-                    let mediaType = guessMediaType filePath
+                    let mt = guessMediaType fp
                         base64Data = TE.decodeUtf8 $ LBS.toStrict $ B64.encode rawImageData
                     logInfo
-                      logger
+                      lgr
                       "Photo downloaded and encoded"
-                      [ ("media_type", mediaType),
+                      [ ("media_type", mt),
                         ("size_bytes", T.pack (show (LBS.length rawImageData)))
                       ]
-                    pure $ Just (mediaType, base64Data)
+                    pure $ Just (mt, base64Data)
 
     -- Guess media type from file path
     guessMediaType :: Text -> Text
@@ -433,6 +427,6 @@ handleTelegramMessage env msg =
 
 -- | Format event source for logging
 formatSource :: EventSource -> Text
-formatSource (WebhookSource name) = "webhook:" <> name
-formatSource (CronSource name) = "cron:" <> name
-formatSource (TelegramSource chatId) = "telegram:" <> T.pack (show chatId)
+formatSource (WebhookSource n) = "webhook:" <> n
+formatSource (CronSource n) = "cron:" <> n
+formatSource (TelegramSource chatId_) = "telegram:" <> T.pack (show chatId_)

@@ -32,9 +32,9 @@ data ToolResult
 -- | Agent-level context for policy checking and approval
 data AgentContext = AgentContext
   { -- | Permission configuration for tool policy
-    acPermissionConfig :: PermissionConfig,
+    permissionConfig :: PermissionConfig,
     -- | Approval request function (sends Telegram message, returns result)
-    acRequestApproval :: Maybe (Text -> Text -> IO ApprovalOutcome)
+    requestApproval :: Maybe (Text -> Text -> IO ApprovalOutcome)
   }
 
 -- | Outcome of an approval request
@@ -57,24 +57,24 @@ data AttachmentType
 -- | An attachment queued for sending after the text response
 data Attachment = Attachment
   { -- | Absolute path to the file
-    attPath :: FilePath,
+    path :: FilePath,
     -- | How to send the file
-    attType :: AttachmentType,
+    type_ :: AttachmentType,
     -- | Optional caption
-    attCaption :: Maybe Text
+    caption :: Maybe Text
   }
   deriving stock (Show, Eq)
 
 -- | A tool that can be used by Claude
 data Tool = Tool
   { -- | Unique tool name
-    toolName :: Text,
+    name :: Text,
     -- | Description of what the tool does
-    toolDescription :: Text,
+    description :: Text,
     -- | JSON Schema for input parameters
-    toolInputSchema :: Value,
+    inputSchema :: Value,
     -- | Execute the tool with given input
-    toolExecute :: Value -> IO ToolResult
+    execute :: Value -> IO ToolResult
   }
 
 -- | Create a success result

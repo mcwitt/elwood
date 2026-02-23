@@ -36,15 +36,15 @@ data ToolPolicy
 -- | Configuration for permissions
 data PermissionConfig = PermissionConfig
   { -- | Commands that are always allowed (prefix match)
-    pcSafeCommands :: [Text],
+    safeCommands :: [Text],
     -- | Regex patterns that are always blocked
-    pcDangerousPatterns :: [Text],
+    dangerousPatterns :: [Text],
     -- | Per-tool policies (tool name -> policy)
-    pcToolPolicies :: Map Text ToolPolicy,
-    -- | Default policy for tools not in pcToolPolicies
-    pcDefaultPolicy :: ToolPolicy,
+    toolPolicies :: Map Text ToolPolicy,
+    -- | Default policy for tools not in toolPolicies
+    defaultPolicy :: ToolPolicy,
     -- | Timeout in seconds for approval requests
-    pcApprovalTimeoutSeconds :: Int
+    approvalTimeoutSeconds :: Int
   }
   deriving stock (Show, Eq)
 
@@ -52,7 +52,7 @@ data PermissionConfig = PermissionConfig
 defaultPermissionConfig :: PermissionConfig
 defaultPermissionConfig =
   PermissionConfig
-    { pcSafeCommands =
+    { safeCommands =
         [ "ls",
           "cat",
           "head",
@@ -68,7 +68,7 @@ defaultPermissionConfig =
           "find",
           "grep"
         ],
-      pcDangerousPatterns =
+      dangerousPatterns =
         [ "\\brm\\b",
           "\\bsudo\\b",
           "\\bchmod\\b",
@@ -80,9 +80,9 @@ defaultPermissionConfig =
           "\\b>\\s*/dev/",
           "\\bformat\\b"
         ],
-      pcToolPolicies = Map.empty,
-      pcDefaultPolicy = PolicyAllow,
-      pcApprovalTimeoutSeconds = 300
+      toolPolicies = Map.empty,
+      defaultPolicy = PolicyAllow,
+      approvalTimeoutSeconds = 300
     }
 
 -- | Result of a permission check
@@ -103,11 +103,11 @@ checkCommandPermission config cmd
     cmdText = T.strip cmd
 
     -- Check if command starts with a safe command
-    isSafeCommand = any (`T.isPrefixOf` cmdText) (pcSafeCommands config)
+    isSafeCommand = any (`T.isPrefixOf` cmdText) config.safeCommands
 
     -- Check if command matches any dangerous pattern
     matchesDangerous =
-      let patterns = pcDangerousPatterns config
+      let patterns = config.dangerousPatterns
           cmdStr = T.unpack cmdText
        in case filter (\p -> cmdStr =~ T.unpack p) patterns of
             (p : _) -> Just p
@@ -115,7 +115,7 @@ checkCommandPermission config cmd
 
 -- | Get the policy for a specific tool
 --
--- Looks up the tool in pcToolPolicies, falls back to pcDefaultPolicy
+-- Looks up the tool in toolPolicies, falls back to defaultPolicy
 getToolPolicy :: PermissionConfig -> Text -> ToolPolicy
-getToolPolicy config toolName =
-  Map.findWithDefault (pcDefaultPolicy config) toolName (pcToolPolicies config)
+getToolPolicy config toolName_ =
+  Map.findWithDefault config.defaultPolicy toolName_ config.toolPolicies

@@ -63,35 +63,35 @@ data ContentBlock
   = TextBlock Text
   | ImageBlock
       { -- | Media type (e.g., "image/jpeg", "image/png")
-        ibMediaType :: Text,
+        mediaType :: Text,
         -- | Base64-encoded image data
-        ibData :: Text
+        data_ :: Text
       }
   | ToolUseBlock
       { -- | Tool use ID (e.g., "toolu_...")
-        tubId :: Text,
+        id_ :: Text,
         -- | Tool name
-        tubName :: Text,
+        name :: Text,
         -- | JSON arguments
-        tubInput :: Value
+        input :: Value
       }
   | ToolResultBlock
       { -- | ID of the tool use this is a result for
-        trbToolUseId :: Text,
+        toolUseId :: Text,
         -- | Result content
-        trbContent :: Text,
+        content :: Text,
         -- | Whether this is an error result
-        trbIsError :: Bool
+        isError :: Bool
       }
   | ThinkingBlock
       { -- | The thinking text
-        tbThinking :: Text,
+        thinking :: Text,
         -- | Signature for verification
-        tbSignature :: Text
+        signature :: Text
       }
   | RedactedThinkingBlock
       { -- | Opaque data for redacted thinking
-        rtbData :: Text
+        data_ :: Text
       }
   deriving stock (Show, Eq, Generic)
 
@@ -101,34 +101,34 @@ instance ToJSON ContentBlock where
       [ "type" .= ("text" :: Text),
         "text" .= t
       ]
-  toJSON (ImageBlock mediaType imageData) =
+  toJSON (ImageBlock mt imageData) =
     object
       [ "type" .= ("image" :: Text),
         "source"
           .= object
             [ "type" .= ("base64" :: Text),
-              "media_type" .= mediaType,
+              "media_type" .= mt,
               "data" .= imageData
             ]
       ]
-  toJSON (ToolUseBlock tid name input) =
+  toJSON (ToolUseBlock tid n inp) =
     object
       [ "type" .= ("tool_use" :: Text),
         "id" .= tid,
-        "name" .= name,
-        "input" .= input
+        "name" .= n,
+        "input" .= inp
       ]
-  toJSON (ToolResultBlock tid content isErr) =
+  toJSON (ToolResultBlock tid c isErr) =
     object $
       [ "type" .= ("tool_result" :: Text),
         "tool_use_id" .= tid,
-        "content" .= content
+        "content" .= c
       ]
         ++ ["is_error" .= True | isErr]
-  toJSON (ThinkingBlock thinking sig) =
+  toJSON (ThinkingBlock t sig) =
     object
       [ "type" .= ("thinking" :: Text),
-        "thinking" .= thinking,
+        "thinking" .= t,
         "signature" .= sig
       ]
   toJSON (RedactedThinkingBlock d) =
@@ -168,16 +168,16 @@ instance FromJSON ContentBlock where
 
 -- | A message in a Claude conversation
 data ClaudeMessage = ClaudeMessage
-  { cmRole :: Role,
-    cmContent :: [ContentBlock]
+  { role :: Role,
+    content :: [ContentBlock]
   }
   deriving stock (Show, Eq, Generic)
 
 instance ToJSON ClaudeMessage where
   toJSON msg =
     object
-      [ "role" .= cmRole msg,
-        "content" .= cmContent msg
+      [ "role" .= msg.role,
+        "content" .= msg.content
       ]
 
 instance FromJSON ClaudeMessage where
@@ -189,20 +189,20 @@ instance FromJSON ClaudeMessage where
 -- | A conversation with history
 data Conversation = Conversation
   { -- | Session identifier (e.g. chat ID or named session)
-    convSessionId :: Text,
+    sessionId :: Text,
     -- | Message history (oldest first)
-    convMessages :: [ClaudeMessage],
+    messages :: [ClaudeMessage],
     -- | When conversation was last updated
-    convLastUpdated :: UTCTime
+    lastUpdated :: UTCTime
   }
   deriving stock (Show, Generic)
 
 instance ToJSON Conversation where
   toJSON conv =
     object
-      [ "sessionId" .= convSessionId conv,
-        "messages" .= convMessages conv,
-        "lastUpdated" .= convLastUpdated conv
+      [ "sessionId" .= conv.sessionId,
+        "messages" .= conv.messages,
+        "lastUpdated" .= conv.lastUpdated
       ]
 
 instance FromJSON Conversation where
@@ -241,52 +241,52 @@ parseStopReason other = StopReasonOther other
 -- | Tool schema for API requests
 data ToolSchema = ToolSchema
   { -- | Tool name
-    tsName :: Text,
+    name :: Text,
     -- | Tool description
-    tsDescription :: Text,
+    description :: Text,
     -- | JSON Schema for input parameters
-    tsInputSchema :: Value
+    inputSchema :: Value
   }
   deriving stock (Show, Eq, Generic)
 
 instance ToJSON ToolSchema where
   toJSON ts =
     object
-      [ "name" .= tsName ts,
-        "description" .= tsDescription ts,
-        "input_schema" .= tsInputSchema ts
+      [ "name" .= ts.name,
+        "description" .= ts.description,
+        "input_schema" .= ts.inputSchema
       ]
 
 -- | Request to the Claude Messages API
 data MessagesRequest = MessagesRequest
   { -- | Model to use (e.g., "claude-sonnet-4-20250514")
-    mrModel :: Text,
+    model :: Text,
     -- | Maximum tokens in response
-    mrMaxTokens :: Int,
+    maxTokens :: Int,
     -- | System prompt (optional)
-    mrSystem :: Maybe Text,
+    system :: Maybe Text,
     -- | Conversation messages
-    mrMessages :: [ClaudeMessage],
+    messages :: [ClaudeMessage],
     -- | Available tools
-    mrTools :: [ToolSchema],
+    tools :: [ToolSchema],
     -- | Extended thinking configuration (optional)
-    mrThinking :: Maybe ThinkingConfig,
+    thinking :: Maybe ThinkingConfig,
     -- | Enable automatic prompt caching
-    mrCacheControl :: Bool
+    cacheControl :: Bool
   }
   deriving stock (Show, Generic)
 
 instance ToJSON MessagesRequest where
   toJSON req =
     object $
-      [ "model" .= mrModel req,
-        "max_tokens" .= mrMaxTokens req,
-        "messages" .= mrMessages req
+      [ "model" .= req.model,
+        "max_tokens" .= req.maxTokens,
+        "messages" .= req.messages
       ]
-        ++ maybe [] (\s -> ["system" .= s]) (mrSystem req)
-        ++ ["tools" .= mrTools req | not (null (mrTools req))]
-        ++ maybe [] thinkingFields (mrThinking req)
-        ++ ["cache_control" .= object ["type" .= ("ephemeral" :: Text)] | mrCacheControl req]
+        ++ maybe [] (\s -> ["system" .= s]) req.system
+        ++ ["tools" .= req.tools | not (null req.tools)]
+        ++ maybe [] thinkingFields req.thinking
+        ++ ["cache_control" .= object ["type" .= ("ephemeral" :: Text)] | req.cacheControl]
     where
       effortToText :: ThinkingEffort -> Text
       effortToText EffortLow = "low"
@@ -308,10 +308,10 @@ instance ToJSON MessagesRequest where
 
 -- | Token usage information
 data Usage = Usage
-  { usageInputTokens :: Int,
-    usageOutputTokens :: Int,
-    usageCacheCreationInputTokens :: Int,
-    usageCacheReadInputTokens :: Int
+  { inputTokens :: Int,
+    outputTokens :: Int,
+    cacheCreationInputTokens :: Int,
+    cacheReadInputTokens :: Int
   }
   deriving stock (Show, Eq, Generic)
 
@@ -326,13 +326,13 @@ instance FromJSON Usage where
 -- | Response from the Claude Messages API
 data MessagesResponse = MessagesResponse
   { -- | Unique message ID
-    mresId :: Text,
+    id_ :: Text,
     -- | Response content blocks
-    mresContent :: [ContentBlock],
+    content :: [ContentBlock],
     -- | Why the model stopped
-    mresStopReason :: StopReason,
+    stopReason :: StopReason,
     -- | Token usage
-    mresUsage :: Usage
+    usage :: Usage
   }
   deriving stock (Show, Generic)
 

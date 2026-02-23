@@ -2,8 +2,8 @@
 
 module Elwood.MCP.Client
   ( -- * Server Lifecycle
-    spawnMCPServer,
-    stopMCPServer,
+    spawnServer,
+    stopServer,
 
     -- * JSON-RPC Communication
     sendRequest,
@@ -42,16 +42,16 @@ responseTimeoutMicros :: Int
 responseTimeoutMicros = 30 * 1000000
 
 -- | Spawn and initialize an MCP server
-spawnMCPServer :: Logger -> MCPServerConfig -> IO (Either MCPError MCPServer)
-spawnMCPServer logger config = do
-  logInfo logger "Spawning MCP server" [("name", mscName config)]
+spawnServer :: Logger -> MCPServerConfig -> IO (Either MCPError MCPServer)
+spawnServer logger cfg = do
+  logInfo logger "Spawning MCP server" [("name", cfg.name)]
 
   -- Merge current environment with MCP server's custom vars
-  envPairs <- mergeEnv (mscEnv config)
+  envPairs <- mergeEnv cfg.env
 
   -- Create the process
   let processConfig =
-        (proc (T.unpack (mscCommand config)) (map T.unpack (mscArgs config)))
+        (proc (T.unpack cfg.command) (map T.unpack cfg.args))
           { std_in = CreatePipe,
             std_out = CreatePipe,
             std_err = CreatePipe,
@@ -63,37 +63,37 @@ spawnMCPServer logger config = do
     Left (e :: SomeException) -> do
       logError logger "Failed to spawn MCP server" [("error", T.pack (show e))]
       pure $ Left $ MCPSpawnError $ T.pack $ show e
-    Right (Just stdin, Just stdout, Just stderr, procHandle) -> do
+    Right (Just stdinH, Just stdoutH, Just stderrH, procHandle) -> do
       -- Set buffering for communication
-      hSetBuffering stdin NoBuffering
-      hSetBuffering stdout LineBuffering
-      hSetBuffering stderr LineBuffering
+      hSetBuffering stdinH NoBuffering
+      hSetBuffering stdoutH LineBuffering
+      hSetBuffering stderrH LineBuffering
 
       -- Create request ID counter
       requestIdRef <- newIORef 0
 
       let server =
             MCPServer
-              { msConfig = config,
-                msProcess = procHandle,
-                msStdin = stdin,
-                msStdout = stdout,
-                msRequestId = requestIdRef
+              { config = cfg,
+                process = procHandle,
+                stdin = stdinH,
+                stdout = stdoutH,
+                requestId = requestIdRef
               }
 
       -- Optional startup delay for slow-starting servers (e.g., npx)
-      when (mscStartupDelay config > 0) $
-        threadDelay (mscStartupDelay config * 1000) -- Convert ms to μs
+      when (cfg.startupDelay > 0) $
+        threadDelay (cfg.startupDelay * 1000) -- Convert ms to μs
 
       -- Check if process exited during startup
       exitCode <- getProcessExitCode procHandle
       case exitCode of
         Just code -> do
-          stderrContent <- hGetContents stderr `catch` \(_ :: SomeException) -> pure ""
+          stderrContent <- hGetContents stderrH `catch` \(_ :: SomeException) -> pure ""
           logError
             logger
             "MCP server exited during startup"
-            [ ("name", mscName config),
+            [ ("name", cfg.name),
               ("exit_code", T.pack (show code)),
               ("stderr", T.pack (take 500 stderrContent))
             ]
@@ -103,18 +103,18 @@ spawnMCPServer logger config = do
           case initResult of
             Left err -> do
               -- Capture stderr to help diagnose initialization failures
-              stderrContent <- hGetContents stderr `catch` \(_ :: SomeException) -> pure ""
+              stderrContent <- hGetContents stderrH `catch` \(_ :: SomeException) -> pure ""
               logError
                 logger
                 "MCP server initialization failed"
-                [ ("name", mscName config),
+                [ ("name", cfg.name),
                   ("error", T.pack (show err)),
                   ("stderr", T.pack (take 1000 stderrContent))
                 ]
               terminateProcess procHandle
               pure $ Left err
             Right () -> do
-              logInfo logger "MCP server initialized" [("name", mscName config)]
+              logInfo logger "MCP server initialized" [("name", cfg.name)]
               pure $ Right server
     Right _ -> do
       logError logger "Failed to create process pipes" []
@@ -153,35 +153,35 @@ initializeMCPServer logger server = do
 
 -- | Send a JSON-RPC notification (no response expected)
 sendNotification :: Logger -> MCPServer -> Text -> Maybe Value -> IO ()
-sendNotification logger server method params = do
+sendNotification logger server method_ params_ = do
   let notification =
         object $
-          ["jsonrpc" .= ("2.0" :: Text), "method" .= method]
-            ++ maybe [] (\p -> ["params" .= p]) params
+          ["jsonrpc" .= ("2.0" :: Text), "method" .= method_]
+            ++ maybe [] (\p -> ["params" .= p]) params_
 
   let jsonLine = BL.toStrict (encode notification) <> "\n"
-  logDebug logger "Sending MCP notification" [("method", method)]
+  logDebug logger "Sending MCP notification" [("method", method_)]
 
-  hFlush (msStdin server)
-  BL.hPut (msStdin server) (BL.fromStrict jsonLine)
-  hFlush (msStdin server)
+  hFlush server.stdin
+  BL.hPut server.stdin (BL.fromStrict jsonLine)
+  hFlush server.stdin
 
 -- | Send a JSON-RPC request and wait for response (with timeout)
 sendRequest :: MCPServer -> Text -> Maybe Value -> IO (Either MCPError Value)
-sendRequest server method params = do
-  reqId <- atomicModifyIORef' (msRequestId server) (\n -> (n + 1, n + 1))
+sendRequest server method_ params_ = do
+  reqId <- atomicModifyIORef' server.requestId (\n -> (n + 1, n + 1))
 
   let request =
         JsonRpcRequest
-          { jrqJsonrpc = "2.0",
-            jrqMethod = method,
-            jrqParams = params,
-            jrqId = reqId
+          { jsonrpc = "2.0",
+            method = method_,
+            params = params_,
+            id_ = reqId
           }
 
   sendResult <- try $ do
-    BL8.hPutStrLn (msStdin server) (encode request)
-    hFlush (msStdin server)
+    BL8.hPutStrLn server.stdin (encode request)
+    hFlush server.stdin
 
   case sendResult of
     Left (e :: SomeException) ->
@@ -200,7 +200,7 @@ readResponse server expectedId = readJsonLine 100
     readJsonLine :: Int -> IO (Either MCPError Value)
     readJsonLine 0 = pure $ Left $ MCPProtocolError "No JSON response found after 100 lines"
     readJsonLine remaining = do
-      responseResult <- try $ BS.hGetLine (msStdout server)
+      responseResult <- try $ BS.hGetLine server.stdout
       case responseResult of
         Left (e :: SomeException) ->
           pure $ Left $ MCPRequestError $ "Failed to read response: " <> T.pack (show e)
@@ -213,7 +213,7 @@ readResponse server expectedId = readJsonLine 100
               Right response -> validateResponse response
 
     validateResponse response =
-      case jrsId response of
+      case response.id_ of
         Just respId
           | respId == expectedId -> handleResponse response
           | otherwise ->
@@ -234,17 +234,17 @@ readResponse server expectedId = readJsonLine 100
 -- | Handle a parsed JSON-RPC response
 handleResponse :: JsonRpcResponse -> IO (Either MCPError Value)
 handleResponse response =
-  case jrsError response of
-    Just err -> pure $ Left $ MCPToolError (jreCode err) (jreMessage err)
-    Nothing -> pure $ Right $ fromMaybe Null (jrsResult response)
+  case response.error of
+    Just err -> pure $ Left $ MCPToolError err.code err.message
+    Nothing -> pure $ Right $ fromMaybe Null response.result
 
 -- | Clean shutdown of an MCP server
-stopMCPServer :: MCPServer -> IO ()
-stopMCPServer server = do
-  hClose (msStdin server) `catch` ignoreException
-  hClose (msStdout server) `catch` ignoreException
-  terminateProcess (msProcess server)
-  _ <- waitForProcess (msProcess server)
+stopServer :: MCPServer -> IO ()
+stopServer server = do
+  hClose server.stdin `catch` ignoreException
+  hClose server.stdout `catch` ignoreException
+  terminateProcess server.process
+  _ <- waitForProcess server.process
   pure ()
   where
     ignoreException :: SomeException -> IO ()

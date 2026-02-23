@@ -24,10 +24,10 @@ jsonRpcTests =
     [ testCase "JsonRpcRequest serializes correctly" $ do
         let req =
               JsonRpcRequest
-                { jrqJsonrpc = "2.0",
-                  jrqMethod = "tools/list",
-                  jrqParams = Nothing,
-                  jrqId = 1
+                { jsonrpc = "2.0",
+                  method = "tools/list",
+                  params = Nothing,
+                  id_ = 1
                 }
         let jsonVal = toJSON req
         case jsonVal of
@@ -38,13 +38,13 @@ jsonRpcTests =
             KM.member "params" obj @?= False
           _ -> assertFailure "Expected object",
       testCase "JsonRpcRequest with params serializes correctly" $ do
-        let params = object ["name" .= ("test" :: String)]
+        let params_ = object ["name" .= ("test" :: String)]
         let req =
               JsonRpcRequest
-                { jrqJsonrpc = "2.0",
-                  jrqMethod = "tools/call",
-                  jrqParams = Just params,
-                  jrqId = 42
+                { jsonrpc = "2.0",
+                  method = "tools/call",
+                  params = Just params_,
+                  id_ = 42
                 }
         let jsonVal = toJSON req
         case jsonVal of
@@ -58,10 +58,10 @@ jsonRpcTests =
         case eitherDecode jsonStr :: Either String JsonRpcResponse of
           Left err -> assertFailure $ "Parse failed: " ++ err
           Right resp -> do
-            jrsJsonrpc resp @?= "2.0"
-            jrsId resp @?= Just 1
-            jrsError resp @?= Nothing
-            case jrsResult resp of
+            resp.jsonrpc @?= "2.0"
+            resp.id_ @?= Just 1
+            resp.error @?= Nothing
+            case resp.result of
               Just (Object _) -> pure ()
               _ -> assertFailure "Expected result object",
       testCase "JsonRpcResponse parses error" $ do
@@ -70,20 +70,20 @@ jsonRpcTests =
         case eitherDecode jsonStr :: Either String JsonRpcResponse of
           Left err -> assertFailure $ "Parse failed: " ++ err
           Right resp -> do
-            jrsResult resp @?= Nothing
-            case jrsError resp of
-              Just err -> do
-                jreCode err @?= (-32600)
-                jreMessage err @?= "Invalid Request"
+            resp.result @?= Nothing
+            case resp.error of
+              Just rpcErr -> do
+                rpcErr.code @?= (-32600)
+                rpcErr.message @?= "Invalid Request"
               Nothing -> assertFailure "Expected error",
       testCase "JsonRpcError parses with data" $ do
         let jsonStr = "{\"code\":-32000,\"message\":\"Server error\",\"data\":{\"detail\":\"info\"}}"
         case eitherDecode jsonStr :: Either String JsonRpcError of
           Left err -> assertFailure $ "Parse failed: " ++ err
           Right rpcErr -> do
-            jreCode rpcErr @?= (-32000)
-            jreMessage rpcErr @?= "Server error"
-            case jreData rpcErr of
+            rpcErr.code @?= (-32000)
+            rpcErr.message @?= "Server error"
+            case rpcErr.data_ of
               Just (Object _) -> pure ()
               _ -> assertFailure "Expected data object"
     ]
@@ -98,9 +98,9 @@ mcpToolTests =
         case eitherDecode jsonStr :: Either String MCPTool of
           Left err -> assertFailure $ "Parse failed: " ++ err
           Right tool -> do
-            mtName tool @?= "read_file"
-            mtDescription tool @?= Just "Read a file"
-            case mtInputSchema tool of
+            tool.name @?= "read_file"
+            tool.description @?= Just "Read a file"
+            case tool.inputSchema of
               Object obj -> KM.member "properties" obj @?= True
               _ -> assertFailure "Expected schema object",
       testCase "parses tool without description" $ do
@@ -108,8 +108,8 @@ mcpToolTests =
         case eitherDecode jsonStr :: Either String MCPTool of
           Left err -> assertFailure $ "Parse failed: " ++ err
           Right tool -> do
-            mtName tool @?= "simple_tool"
-            mtDescription tool @?= Nothing
+            tool.name @?= "simple_tool"
+            tool.description @?= Nothing
     ]
 
 mcpErrorTests :: TestTree
@@ -139,26 +139,26 @@ mcpServerConfigTests =
     [ testCase "can create config with all fields" $ do
         let config =
               MCPServerConfig
-                { mscName = "filesystem",
-                  mscCommand = "npx",
-                  mscArgs = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-                  mscEnv = Just [("DEBUG", "true")],
-                  mscStartupDelay = 2000
+                { name = "filesystem",
+                  command = "npx",
+                  args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                  env = Just [("DEBUG", "true")],
+                  startupDelay = 2000
                 }
-        mscName config @?= "filesystem"
-        mscCommand config @?= "npx"
-        length (mscArgs config) @?= 3
-        mscEnv config @?= Just [("DEBUG", "true")]
-        mscStartupDelay config @?= 2000,
+        config.name @?= "filesystem"
+        config.command @?= "npx"
+        length config.args @?= 3
+        config.env @?= Just [("DEBUG", "true")]
+        config.startupDelay @?= 2000,
       testCase "can create config without env" $ do
         let config =
               MCPServerConfig
-                { mscName = "simple",
-                  mscCommand = "my-server",
-                  mscArgs = [],
-                  mscEnv = Nothing,
-                  mscStartupDelay = 0
+                { name = "simple",
+                  command = "my-server",
+                  args = [],
+                  env = Nothing,
+                  startupDelay = 0
                 }
-        mscEnv config @?= Nothing
-        mscStartupDelay config @?= 0
+        config.env @?= Nothing
+        config.startupDelay @?= 0
     ]

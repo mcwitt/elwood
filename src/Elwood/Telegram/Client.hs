@@ -3,7 +3,7 @@
 module Elwood.Telegram.Client
   ( TelegramClient (..),
     TelegramError (..),
-    newTelegramClient,
+    newClient,
     getUpdatesAllowed,
     sendMessage,
     sendMessageWithKeyboard,
@@ -32,7 +32,7 @@ import Elwood.Telegram.Types
     GetFileResponse (..),
     GetUpdatesResponse (..),
     InlineKeyboardMarkup,
-    Message (messageId),
+    Message (..),
     SendMessageRequest (..),
     SendMessageResponse (..),
     SendMessageWithKeyboardRequest (..),
@@ -64,20 +64,20 @@ data TelegramError
 instance Exception TelegramError
 
 -- | Create a new Telegram client
-newTelegramClient :: Text -> IO TelegramClient
-newTelegramClient token = do
-  manager <- newManager tlsManagerSettings
+newClient :: Text -> IO TelegramClient
+newClient token = do
+  mgr <- newManager tlsManagerSettings
   pure
     TelegramClient
-      { tcManager = manager,
+      { tcManager = mgr,
         tcToken = token,
         tcBaseUrl = "https://api.telegram.org/bot" <> T.unpack token
       }
 
 -- | Build a request for a Telegram API method
 buildRequest :: TelegramClient -> String -> IO Request
-buildRequest client method = do
-  req <- parseRequest $ tcBaseUrl client <> "/" <> method
+buildRequest client method_ = do
+  req <- parseRequest $ client.tcBaseUrl <> "/" <> method_
   pure
     req
       { requestHeaders =
@@ -111,27 +111,27 @@ getUpdatesAllowed client offset allowedUpdates = do
             responseTimeout = responseTimeoutMicro (35 * 1000000)
           }
 
-  response <- httpLbs req' (tcManager client)
+  response <- httpLbs req' client.tcManager
 
   let status = statusCode $ responseStatus response
   if status /= 200
     then throwIO $ TelegramHttpError status (responseBody response)
-    else case eitherDecode (responseBody response) of
+    else case eitherDecode (responseBody response) :: Either String GetUpdatesResponse of
       Left err -> throwIO $ TelegramParseError err
       Right resp
-        | gurOk resp -> pure $ gurResult resp
+        | resp.ok -> pure resp.result
         | otherwise -> throwIO $ TelegramApiError "API returned ok=false"
 
 -- | Send a message to a chat
 sendMessage :: TelegramClient -> Int64 -> Text -> IO ()
-sendMessage client chatId msgText = do
+sendMessage client chatId_ msgText = do
   req <- buildRequest client "sendMessage"
   let body =
         encode
           SendMessageRequest
-            { smrChatId = chatId,
-              smrText = msgText,
-              smrParseMode = Nothing
+            { chatId = chatId_,
+              text = msgText,
+              parseMode = Nothing
             }
       req' =
         req
@@ -139,7 +139,7 @@ sendMessage client chatId msgText = do
             requestBody = RequestBodyLBS body
           }
 
-  response <- httpLbs req' (tcManager client)
+  response <- httpLbs req' client.tcManager
 
   let status = statusCode $ responseStatus response
   if status /= 200
@@ -147,7 +147,7 @@ sendMessage client chatId msgText = do
     else case eitherDecode (responseBody response) :: Either String SendMessageResponse of
       Left err -> throwIO $ TelegramParseError err
       Right resp
-        | smresOk resp -> pure ()
+        | resp.ok -> pure ()
         | otherwise -> throwIO $ TelegramApiError "sendMessage returned ok=false"
 
 -- | Send a message with an inline keyboard
@@ -157,10 +157,10 @@ sendMessageWithKeyboard client chatIdVal msgText keyboard = do
   let body =
         encode
           SendMessageWithKeyboardRequest
-            { smkChatId = chatIdVal,
-              smkText = msgText,
-              smkParseMode = Just "Markdown",
-              smkReplyMarkup = keyboard
+            { chatId = chatIdVal,
+              text = msgText,
+              parseMode = Just "Markdown",
+              replyMarkup = keyboard
             }
       req' =
         req
@@ -168,7 +168,7 @@ sendMessageWithKeyboard client chatIdVal msgText keyboard = do
             requestBody = RequestBodyLBS body
           }
 
-  response <- httpLbs req' (tcManager client)
+  response <- httpLbs req' client.tcManager
 
   let status = statusCode $ responseStatus response
   if status /= 200
@@ -176,19 +176,19 @@ sendMessageWithKeyboard client chatIdVal msgText keyboard = do
     else case eitherDecode (responseBody response) :: Either String SendMessageResponse of
       Left err -> throwIO $ TelegramParseError err
       Right resp
-        | smresOk resp -> pure $ maybe 0 messageId (smresResult resp)
+        | resp.ok -> pure $ maybe 0 (.id_) resp.result
         | otherwise -> throwIO $ TelegramApiError "sendMessage with keyboard returned ok=false"
 
 -- | Answer a callback query (acknowledge button press)
 answerCallbackQuery :: TelegramClient -> Text -> Maybe Text -> IO ()
-answerCallbackQuery client callbackQueryId responseText = do
+answerCallbackQuery client callbackQueryId_ responseText = do
   req <- buildRequest client "answerCallbackQuery"
   let body =
         encode
           AnswerCallbackQueryRequest
-            { acqCallbackQueryId = callbackQueryId,
-              acqText = responseText,
-              acqShowAlert = False
+            { callbackQueryId = callbackQueryId_,
+              text = responseText,
+              showAlert = False
             }
       req' =
         req
@@ -196,7 +196,7 @@ answerCallbackQuery client callbackQueryId responseText = do
             requestBody = RequestBodyLBS body
           }
 
-  response <- httpLbs req' (tcManager client)
+  response <- httpLbs req' client.tcManager
 
   let status = statusCode $ responseStatus response
   when (status /= 200) $
@@ -210,9 +210,9 @@ editMessageReplyMarkup client chatIdVal msgId newMarkup = do
   let body =
         encode
           EditMessageReplyMarkupRequest
-            { emrChatId = chatIdVal,
-              emrMessageId = msgId,
-              emrReplyMarkup = newMarkup
+            { chatId = chatIdVal,
+              messageId = msgId,
+              replyMarkup = newMarkup
             }
       req' =
         req
@@ -220,7 +220,7 @@ editMessageReplyMarkup client chatIdVal msgId newMarkup = do
             requestBody = RequestBodyLBS body
           }
 
-  response <- httpLbs req' (tcManager client)
+  response <- httpLbs req' client.tcManager
 
   let status = statusCode $ responseStatus response
   when (status /= 200) $
@@ -235,16 +235,16 @@ notify logger client chatIdVal msgText = do
 
 -- | Get file information for downloading
 getFile :: TelegramClient -> Text -> IO (Maybe TelegramFile)
-getFile client fileId = do
+getFile client fileId_ = do
   req <- buildRequest client "getFile"
-  let body = encode $ object ["file_id" .= fileId]
+  let body = encode $ object ["file_id" .= fileId_]
       req' =
         req
           { method = "POST",
             requestBody = RequestBodyLBS body
           }
 
-  response <- httpLbs req' (tcManager client)
+  response <- httpLbs req' client.tcManager
 
   let status = statusCode $ responseStatus response
   if status /= 200
@@ -252,15 +252,15 @@ getFile client fileId = do
     else case eitherDecode (responseBody response) :: Either String GetFileResponse of
       Left err -> throwIO $ TelegramParseError err
       Right resp
-        | gfrOk resp -> pure (gfrResult resp)
+        | resp.ok -> pure resp.result
         | otherwise -> pure Nothing
 
 -- | Download file content as raw bytes
 downloadFile :: TelegramClient -> Text -> IO ByteString
-downloadFile client filePath = do
-  let url = "https://api.telegram.org/file/bot" <> T.unpack (tcToken client) <> "/" <> T.unpack filePath
+downloadFile client fp = do
+  let url = "https://api.telegram.org/file/bot" <> T.unpack client.tcToken <> "/" <> T.unpack fp
   req <- parseRequest url
-  response <- httpLbs req (tcManager client)
+  response <- httpLbs req client.tcManager
 
   let status = statusCode $ responseStatus response
   if status /= 200
@@ -270,14 +270,14 @@ downloadFile client filePath = do
 -- | Send a photo to a chat via multipart upload
 sendPhoto :: TelegramClient -> Int64 -> FilePath -> Maybe Text -> IO ()
 sendPhoto client chatIdVal path mCaption = do
-  req <- parseRequest $ tcBaseUrl client <> "/sendPhoto"
+  req <- parseRequest $ client.tcBaseUrl <> "/sendPhoto"
   let parts =
         [ partBS "chat_id" (TE.encodeUtf8 $ T.pack $ show chatIdVal),
           partFileSource "photo" path
         ]
           <> maybe [] (\c -> [partBS "caption" (TE.encodeUtf8 c)]) mCaption
   req' <- formDataBody parts req
-  response <- httpLbs req' (tcManager client)
+  response <- httpLbs req' client.tcManager
   let status = statusCode $ responseStatus response
   when (status /= 200) $
     throwIO $
@@ -286,14 +286,14 @@ sendPhoto client chatIdVal path mCaption = do
 -- | Send a document to a chat via multipart upload
 sendDocument :: TelegramClient -> Int64 -> FilePath -> Maybe Text -> IO ()
 sendDocument client chatIdVal path mCaption = do
-  req <- parseRequest $ tcBaseUrl client <> "/sendDocument"
+  req <- parseRequest $ client.tcBaseUrl <> "/sendDocument"
   let parts =
         [ partBS "chat_id" (TE.encodeUtf8 $ T.pack $ show chatIdVal),
           partFileSource "document" path
         ]
           <> maybe [] (\c -> [partBS "caption" (TE.encodeUtf8 c)]) mCaption
   req' <- formDataBody parts req
-  response <- httpLbs req' (tcManager client)
+  response <- httpLbs req' client.tcManager
   let status = statusCode $ responseStatus response
   when (status /= 200) $
     throwIO $

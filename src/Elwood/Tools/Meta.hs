@@ -27,12 +27,12 @@ searchTools registry query =
   let terms = map T.toLower (T.words query)
       schemas = toolSchemas registry
       matchesAll ts =
-        let nameLower = T.toLower (tsName ts)
-            descLower = T.toLower (tsDescription ts)
+        let nameLower = T.toLower ts.name
+            descLower = T.toLower ts.description
             combined = nameLower <> " " <> descLower
          in all (`T.isInfixOf` combined) terms
       scoreMatch ts =
-        let nameLower = T.toLower (tsName ts)
+        let nameLower = T.toLower ts.name
          in length (filter (`T.isInfixOf` nameLower) terms)
       allMatches = filter matchesAll schemas
       ranked = sortBy (\a b -> compare (Down (scoreMatch a)) (Down (scoreMatch b))) allMatches
@@ -42,8 +42,8 @@ searchTools registry query =
    in if null shown
         then ("No tools found matching your query. Try different keywords.", Set.empty)
         else
-          let names = Set.fromList (map tsName shown)
-              formatTool ts = tsName ts <> " — " <> tsDescription ts
+          let names = Set.fromList (map (.name) shown)
+              formatTool ts = ts.name <> " — " <> ts.description
               header
                 | totalCount > maxResults =
                     "Showing "

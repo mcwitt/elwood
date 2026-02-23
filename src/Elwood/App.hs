@@ -22,53 +22,32 @@ import Elwood.Approval
     requestApproval,
     respondToApproval,
   )
-import Elwood.Claude.Client (newClaudeClient)
-import Elwood.Claude.Conversation (newConversationStore)
+import Elwood.Claude qualified as Claude
 import Elwood.Config
 import Elwood.Event (AppEnv (..), handleTelegramMessage)
 import Elwood.Logging
-import Elwood.MCP.Client (stopMCPServer)
-import Elwood.MCP.Registry (startMCPServers)
+import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
 import Elwood.Metrics (newMetricsStore)
-import Elwood.Permissions (pcApprovalTimeoutSeconds)
-import Elwood.Telegram.Client
-  ( TelegramClient,
-    answerCallbackQuery,
-    editMessageReplyMarkup,
-    newTelegramClient,
-    sendMessageWithKeyboard,
-  )
-import Elwood.Telegram.Polling
-import Elwood.Telegram.Types
-  ( CallbackQuery (..),
-    Chat (..),
-    InlineKeyboardButton (..),
-    InlineKeyboardMarkup (..),
-    Message (..),
-  )
-import Elwood.Tools.Attachment (mkQueueAttachmentTool)
-import Elwood.Tools.Command (mkRunCommandTool)
-import Elwood.Tools.Memory (mkSaveMemoryTool, mkSearchMemoryTool)
-import Elwood.Tools.Registry
-import Elwood.Tools.Types (AgentContext (..), ApprovalOutcome (..))
-import Elwood.Webhook.Server (runWebhookServer)
+import Elwood.Telegram qualified as Telegram
+import Elwood.Tools qualified as Tools
+import Elwood.Webhook qualified as Webhook
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath ((</>))
 
 -- | Load system prompt from SOUL.md file
 loadSystemPrompt :: FilePath -> IO (Maybe Text)
-loadSystemPrompt workspaceDir = do
-  let soulPath = workspaceDir </> "SOUL.md"
+loadSystemPrompt dir = do
+  let soulPath = dir </> "SOUL.md"
   exists <- doesFileExist soulPath
   if exists
     then do
-      content <-
+      c <-
         TIO.readFile soulPath
           `catch` \(_ :: SomeException) -> pure ""
-      if T.null content
+      if T.null c
         then pure Nothing
-        else pure (Just content)
+        else pure (Just c)
     else pure Nothing
 
 -- | Initialize and run the application
@@ -78,57 +57,58 @@ runApp config = do
   logger <- newLogger Info
 
   logInfo logger "Elwood starting up" []
-  logInfo logger "Configuration loaded" [("state_dir", T.pack (cfgStateDir config))]
+  logInfo logger "Configuration loaded" [("state_dir", T.pack config.stateDir)]
 
   -- Ensure state directory exists
-  createDirectoryIfMissing True (cfgStateDir config)
+  createDirectoryIfMissing True config.stateDir
 
   -- Initialize Telegram client
-  telegram <- newTelegramClient (cfgTelegramToken config)
+  tg <- Telegram.newClient config.telegramToken
   logInfo logger "Telegram client initialized" []
 
   -- Initialize Claude client
-  claude <- newClaudeClient (cfgAnthropicApiKey config)
-  logInfo logger "Claude client initialized" [("model", cfgModel config)]
+  claude <- Claude.newClient config.anthropicApiKey
+  logInfo logger "Claude client initialized" [("model", config.model)]
 
   -- Initialize conversation store
-  conversations <- newConversationStore (cfgStateDir config)
+  convs <- Claude.newConversationStore config.stateDir
   logInfo logger "Conversation store initialized" []
 
   -- Load system prompt
-  systemPrompt <- loadSystemPrompt (cfgWorkspaceDir config)
-  case systemPrompt of
+  sysPrompt <- loadSystemPrompt config.workspaceDir
+  case sysPrompt of
     Just _ -> logInfo logger "System prompt loaded from SOUL.md" []
     Nothing -> logWarn logger "No SOUL.md found, running without system prompt" []
 
   -- Initialize memory store
-  memoryStore <- newMemoryStore (cfgStateDir config)
+  memoryStore <- newMemoryStore config.stateDir
   logInfo logger "Memory store initialized" []
 
   -- Initialize approval coordinator
-  let timeoutSeconds = pcApprovalTimeoutSeconds (cfgPermissions config)
-  approvalCoordinator <- newApprovalCoordinator timeoutSeconds
-  logInfo logger "Approval coordinator initialized" [("timeout_seconds", T.pack (show timeoutSeconds))]
+  let perms = config.permissions :: PermissionConfig
+      timeoutSecs = perms.approvalTimeoutSeconds
+  approvalCoordinator <- newApprovalCoordinator timeoutSecs
+  logInfo logger "Approval coordinator initialized" [("timeout_seconds", T.pack (show timeoutSecs))]
 
   -- Initialize attachment queue
-  attachmentQueue <- newTVarIO []
+  attachmentQueue_ <- newTVarIO []
 
   -- Construct tools with explicit dependencies
   let builtinRegistry =
-        registerTool (mkQueueAttachmentTool logger attachmentQueue) $
-          registerTool (mkRunCommandTool logger (cfgWorkspaceDir config) (cfgPermissions config)) $
-            registerTool (mkSaveMemoryTool logger memoryStore) $
-              registerTool
-                (mkSearchMemoryTool logger memoryStore)
-                newToolRegistry
+        Tools.registerTool (Tools.mkQueueAttachmentTool logger attachmentQueue_) $
+          Tools.registerTool (Tools.mkRunCommandTool logger config.workspaceDir config.permissions) $
+            Tools.registerTool (Tools.mkSaveMemoryTool logger memoryStore) $
+              Tools.registerTool
+                (Tools.mkSearchMemoryTool logger memoryStore)
+                Tools.newToolRegistry
 
   logInfo
     logger
     "Built-in tools registered"
-    [("tool_count", T.pack (show (length (allTools builtinRegistry))))]
+    [("tool_count", T.pack (show (length (Tools.allTools builtinRegistry))))]
 
   -- Initialize MCP servers and merge tools
-  (registry, mcpServers) <- startMCPServers logger (cfgMCPServers config) builtinRegistry
+  (reg, mcpServers) <- MCP.startMCPServers logger config.mcpServers builtinRegistry
 
   logInfo
     logger
@@ -136,82 +116,83 @@ runApp config = do
     [("servers", T.pack (show (length mcpServers)))]
 
   -- Initialize metrics store
-  metrics <- newMetricsStore
+  mets <- newMetricsStore
   logInfo logger "Metrics store initialized" []
 
   -- Dynamic tool loading config: convert to Maybe [Text]
-  let alwaysLoadTools = fmap dtlAlwaysLoad (cfgDynamicToolLoading config)
+  let alwaysLoad = fmap (.alwaysLoad) config.dynamicToolLoading
 
   logInfo
     logger
     "Dynamic tool loading"
-    [("enabled", T.pack (show (isJust alwaysLoadTools)))]
+    [("enabled", T.pack (show (isJust alwaysLoad)))]
 
   logInfo
     logger
     "Tool registry initialized"
-    [("tool_count", T.pack (show (length (allTools registry))))]
+    [("tool_count", T.pack (show (length (Tools.allTools reg))))]
 
   -- Log allowed chats
   logInfo
     logger
     "Allowed chat IDs"
-    [("chats", T.pack (show (cfgAllowedChatIds config)))]
+    [("chats", T.pack (show config.allowedChatIds))]
 
   -- Create base agent context (without per-chat approval function)
   let baseAgentContext =
-        AgentContext
-          { acPermissionConfig = cfgPermissions config,
-            acRequestApproval = Nothing
+        Tools.AgentContext
+          { permissionConfig = config.permissions,
+            requestApproval = Nothing
           }
 
   -- Helper to create agent context with approval function for a specific chat
-  let mkAgentContextWithApproval :: Int64 -> AgentContext
+  let mkAgentContextWithApproval :: Int64 -> Tools.AgentContext
       mkAgentContextWithApproval cid =
-        baseAgentContext
-          { acRequestApproval = Just (requestToolApproval logger telegram approvalCoordinator cid)
+        Tools.AgentContext
+          { permissionConfig = config.permissions,
+            requestApproval = Just (requestToolApproval logger tg approvalCoordinator cid)
           }
 
   -- Create callback handler for approval responses
-  let callbackHandler = handleApprovalCallback logger telegram approvalCoordinator
+  let callbackHandler = handleApprovalCallback logger tg approvalCoordinator
 
   -- Create base app environment (shared by webhook and telegram handlers)
-  let mcpServerCount = length mcpServers
+  let mcpServerCount_ = length mcpServers
       appEnv =
         AppEnv
-          { eeLogger = logger,
-            eeTelegram = telegram,
-            eeClaude = claude,
-            eeConversations = conversations,
-            eeRegistry = registry,
-            eeAgentContext = baseAgentContext,
-            eeCompaction = cfgCompaction config,
-            eeSystemPrompt = systemPrompt,
-            eeModel = cfgModel config,
-            eeThinking = cfgThinking config,
-            eeNotifyChatIds = cfgAllowedChatIds config,
-            eeAttachmentQueue = attachmentQueue,
-            eeMaxIterations = cfgMaxIterations config,
-            eeMetrics = metrics,
-            eeMCPServerCount = mcpServerCount,
-            eeAlwaysLoadTools = alwaysLoadTools
+          { logger = logger,
+            telegram = tg,
+            claude = claude,
+            conversations = convs,
+            registry = reg,
+            agentContext = baseAgentContext,
+            compaction = config.compaction,
+            systemPrompt = sysPrompt,
+            model = config.model,
+            thinking = config.thinking,
+            notifyChatIds = config.allowedChatIds,
+            attachmentQueue = attachmentQueue_,
+            maxIterations = config.maxIterations,
+            metrics = mets,
+            mcpServerCount = mcpServerCount_,
+            alwaysLoadTools = alwaysLoad
           }
 
   -- Telegram message handler: inject per-chat approval into AgentContext
   let msgHandler msg =
-        let cid = chatId (chat msg)
-            envForChat = appEnv {eeAgentContext = mkAgentContextWithApproval cid}
+        let cid = msg.chat.id_
+            envForChat = appEnv {agentContext = mkAgentContextWithApproval cid}
          in handleTelegramMessage envForChat msg
 
   -- Log webhook configuration
-  let webhookConfig = cfgWebhook config
-  if wscEnabled webhookConfig
+  let webhookCfg = config.webhook
+  if webhookCfg.enabled
     then
       logInfo
         logger
         "Webhook server enabled"
-        [ ("port", T.pack (show (wscPort webhookConfig))),
-          ("endpoints", T.pack (show (length (wscWebhooks webhookConfig))))
+        [ ("port", T.pack (show webhookCfg.port)),
+          ("endpoints", T.pack (show (length webhookCfg.webhooks)))
         ]
     else logInfo logger "Webhook server disabled" []
 
@@ -220,17 +201,17 @@ runApp config = do
     ( do
         -- Start webhook server in background if enabled
         webhookThread <-
-          if wscEnabled webhookConfig
+          if webhookCfg.enabled
             then do
-              logInfo logger "Starting webhook server" [("port", T.pack (show (wscPort webhookConfig)))]
-              Just <$> async (runWebhookServer webhookConfig appEnv)
+              logInfo logger "Starting webhook server" [("port", T.pack (show webhookCfg.port))]
+              Just <$> async (Webhook.runWebhookServer webhookCfg appEnv)
             else pure Nothing
 
         -- Run Telegram polling
-        runPolling
+        Telegram.runPolling
           logger
-          telegram
-          (cfgAllowedChatIds config)
+          tg
+          config.allowedChatIds
           msgHandler
           callbackHandler
 
@@ -239,38 +220,38 @@ runApp config = do
     )
     ( do
         logInfo logger "Shutting down MCP servers" []
-        mapM_ stopMCPServer mcpServers
+        mapM_ MCP.stopServer mcpServers
     )
 
 -- | Request tool approval via Telegram inline keyboard
 requestToolApproval ::
   Logger ->
-  TelegramClient ->
+  Telegram.TelegramClient ->
   ApprovalCoordinator ->
   Int64 ->
   Text ->
   Text ->
-  IO ApprovalOutcome
-requestToolApproval logger telegram coordinator cid toolName inputSummary = do
+  IO Tools.ApprovalOutcome
+requestToolApproval logger tg coordinator cid toolName_ inputSummary = do
   -- Create approval request and get UUID
-  (requestId, waitForResult) <- requestApproval coordinator
+  (requestId_, waitForResult) <- requestApproval coordinator
 
   -- Build the approval message with inline keyboard
-  let messageText = formatApprovalRequest toolName inputSummary
+  let messageText = formatApprovalRequest toolName_ inputSummary
       keyboard =
-        InlineKeyboardMarkup
-          [ [ InlineKeyboardButton "✅ Approve" ("approve:" <> UUID.toText requestId),
-              InlineKeyboardButton "❌ Deny" ("deny:" <> UUID.toText requestId)
+        Telegram.InlineKeyboardMarkup
+          [ [ Telegram.InlineKeyboardButton "✅ Approve" ("approve:" <> UUID.toText requestId_),
+              Telegram.InlineKeyboardButton "❌ Deny" ("deny:" <> UUID.toText requestId_)
             ]
           ]
 
   -- Send the message with keyboard
-  msgId <- sendMessageWithKeyboard telegram cid messageText keyboard
+  msgId <- Telegram.sendMessageWithKeyboard tg cid messageText keyboard
   logInfo
     logger
     "Sent approval request"
-    [ ("tool", toolName),
-      ("request_id", UUID.toText requestId),
+    [ ("tool", toolName_),
+      ("request_id", UUID.toText requestId_),
       ("message_id", T.pack (show msgId))
     ]
 
@@ -279,30 +260,30 @@ requestToolApproval logger telegram coordinator cid toolName inputSummary = do
 
   -- Convert to ApprovalOutcome
   case result of
-    Approved -> pure ApprovalGranted
-    Denied -> pure ApprovalDenied
-    TimedOut -> pure ApprovalTimeout
+    Approved -> pure Tools.ApprovalGranted
+    Denied -> pure Tools.ApprovalDenied
+    TimedOut -> pure Tools.ApprovalTimeout
 
 -- | Handle callback queries for approval buttons
 handleApprovalCallback ::
   Logger ->
-  TelegramClient ->
+  Telegram.TelegramClient ->
   ApprovalCoordinator ->
-  CallbackQuery ->
+  Telegram.CallbackQuery ->
   IO ()
-handleApprovalCallback logger telegram coordinator cq = do
-  case cqData cq of
+handleApprovalCallback logger tg coordinator cq = do
+  case cq.data_ of
     Nothing -> do
       logWarn logger "Callback query without data" []
-      answerCallbackQuery telegram (cqId cq) (Just "Invalid callback")
+      Telegram.answerCallbackQuery tg cq.id_ (Just "Invalid callback")
     Just callbackData -> do
       case parseCallbackData callbackData of
         Nothing -> do
           logWarn logger "Failed to parse callback data" [("data", callbackData)]
-          answerCallbackQuery telegram (cqId cq) (Just "Invalid callback data")
-        Just (isApproved, requestId) -> do
+          Telegram.answerCallbackQuery tg cq.id_ (Just "Invalid callback data")
+        Just (isApproved, requestId_) -> do
           let result = if isApproved then Approved else Denied
-          success <- respondToApproval coordinator requestId result
+          success <- respondToApproval coordinator requestId_ result
 
           if success
             then do
@@ -310,19 +291,19 @@ handleApprovalCallback logger telegram coordinator cq = do
               logInfo
                 logger
                 "Approval response received"
-                [ ("request_id", UUID.toText requestId),
+                [ ("request_id", UUID.toText requestId_),
                   ("approved", T.pack (show isApproved))
                 ]
 
               -- Acknowledge the callback
-              answerCallbackQuery telegram (cqId cq) (Just responseText)
+              Telegram.answerCallbackQuery tg cq.id_ (Just responseText)
 
               -- Remove the inline keyboard from the message
-              case cqMessage cq of
+              case cq.message of
                 Just cbMsg -> do
-                  let cbCid = chatId (chat cbMsg)
-                  editMessageReplyMarkup telegram cbCid (messageId cbMsg) Nothing
+                  let cbCid = cbMsg.chat.id_
+                  Telegram.editMessageReplyMarkup tg cbCid cbMsg.id_ Nothing
                 Nothing -> pure ()
             else do
-              logWarn logger "Approval request not found or already responded" [("request_id", UUID.toText requestId)]
-              answerCallbackQuery telegram (cqId cq) (Just "Request expired or already responded")
+              logWarn logger "Approval request not found or already responded" [("request_id", UUID.toText requestId_)]
+              Telegram.answerCallbackQuery tg cq.id_ (Just "Request expired or already responded")

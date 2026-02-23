@@ -32,11 +32,11 @@ newToolRegistry = ToolRegistry Map.empty
 -- | Register a tool in the registry
 registerTool :: Tool -> ToolRegistry -> ToolRegistry
 registerTool tool (ToolRegistry reg) =
-  ToolRegistry $ Map.insert (toolName tool) tool reg
+  ToolRegistry $ Map.insert tool.name tool reg
 
 -- | Look up a tool by name
 lookupTool :: Text -> ToolRegistry -> Maybe Tool
-lookupTool name (ToolRegistry reg) = Map.lookup name reg
+lookupTool n (ToolRegistry reg) = Map.lookup n reg
 
 -- | Get all registered tools
 allTools :: ToolRegistry -> [Tool]
@@ -46,9 +46,9 @@ allTools (ToolRegistry reg) = Map.elems reg
 toolSchemas :: ToolRegistry -> [ToolSchema]
 toolSchemas registry =
   [ ToolSchema
-      { tsName = toolName tool,
-        tsDescription = toolDescription tool,
-        tsInputSchema = toolInputSchema tool
+      { name = tool.name,
+        description = tool.description,
+        inputSchema = tool.inputSchema
       }
   | tool <- allTools registry
   ]
@@ -57,10 +57,10 @@ toolSchemas registry =
 activeToolSchemas :: ToolRegistry -> Set Text -> [ToolSchema]
 activeToolSchemas (ToolRegistry reg) active =
   [ ToolSchema
-      { tsName = toolName tool,
-        tsDescription = toolDescription tool,
-        tsInputSchema = toolInputSchema tool
+      { name = tool.name,
+        description = tool.description,
+        inputSchema = tool.inputSchema
       }
-  | (name, tool) <- Map.toList reg,
-    Set.member name active
+  | (n, tool) <- Map.toList reg,
+    Set.member n active
   ]

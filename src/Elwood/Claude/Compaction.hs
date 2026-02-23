@@ -45,14 +45,14 @@ compactIfNeeded ::
   IO [ClaudeMessage]
 compactIfNeeded logger client config metrics source msgs = do
   let tokens = estimateTokens msgs
-  if tokens < ccTokenThreshold config
+  if tokens < config.tokenThreshold
     then pure msgs
     else do
       logInfo
         logger
         "Context compaction triggered"
         [ ("estimated_tokens", T.pack (show tokens)),
-          ("threshold", T.pack (show (ccTokenThreshold config))),
+          ("threshold", T.pack (show config.tokenThreshold)),
           ("message_count", T.pack (show (length msgs)))
         ]
       compactMessages logger client config metrics source msgs
@@ -99,8 +99,8 @@ compactMessages logger client config metrics source msgs = do
       -- Create a synthetic message with the summary
       let summaryMsg =
             ClaudeMessage
-              { cmRole = User,
-                cmContent =
+              { role = User,
+                content =
                   [ TextBlock $
                       "[Previous conversation summary]\n\n" <> summary
                   ]
@@ -120,8 +120,8 @@ summarizeMessages client config metrics source msgs = do
   let conversationText = formatMessagesForSummary msgs
       summaryRequest =
         ClaudeMessage
-          { cmRole = User,
-            cmContent =
+          { role = User,
+            content =
               [ TextBlock $
                   "Please summarize the following conversation concisely. "
                     <> "Focus on key facts, decisions, and context that would be important "
@@ -132,13 +132,13 @@ summarizeMessages client config metrics source msgs = do
           }
       request =
         MessagesRequest
-          { mrModel = ccCompactionModel config,
-            mrMaxTokens = 2048,
-            mrSystem = Just "You are a helpful assistant that summarizes conversations concisely.",
-            mrMessages = [summaryRequest],
-            mrTools = [],
-            mrThinking = Nothing,
-            mrCacheControl = False
+          { model = config.compactionModel,
+            maxTokens = 2048,
+            system = Just "You are a helpful assistant that summarizes conversations concisely.",
+            messages = [summaryRequest],
+            tools = [],
+            thinking = Nothing,
+            cacheControl = False
           }
 
   result <- sendMessages client request
@@ -146,11 +146,11 @@ summarizeMessages client config metrics source msgs = do
   case result of
     Left err -> pure $ Left $ T.pack (show err)
     Right response -> do
-      recordApiResponse metrics (ccCompactionModel config) source (mresStopReason response) (mresUsage response)
-      let text = extractText (mresContent response)
-       in if T.null text
+      recordApiResponse metrics config.compactionModel source response.stopReason response.usage
+      let txt = extractText response.content
+       in if T.null txt
             then pure $ Left "Empty summary response"
-            else pure $ Right text
+            else pure $ Right txt
 
 -- | Format messages for the summary prompt
 formatMessagesForSummary :: [ClaudeMessage] -> Text
@@ -159,11 +159,11 @@ formatMessagesForSummary msgs =
   where
     formatMsg :: ClaudeMessage -> Text
     formatMsg msg =
-      let role = case cmRole msg of
+      let r = case msg.role of
             User -> "User"
             Assistant -> "Assistant"
-          content = extractText (cmContent msg)
-       in role <> ": " <> limitText 1000 content
+          c = extractText msg.content
+       in r <> ": " <> limitText 1000 c
 
     limitText :: Int -> Text -> Text
     limitText maxLen t
@@ -189,7 +189,7 @@ safeSplit splitPoint msgs =
     startsWithToolResult :: [ClaudeMessage] -> Bool
     startsWithToolResult [] = False
     startsWithToolResult (m : _) =
-      cmRole m == User && any isToolResult (cmContent m)
+      m.role == User && any isToolResult m.content
 
     isToolResult :: ContentBlock -> Bool
     isToolResult (ToolResultBlock {}) = True
@@ -207,7 +207,7 @@ safeSplit splitPoint msgs =
 
     hasToolUse :: ClaudeMessage -> Bool
     hasToolUse m =
-      cmRole m == Assistant && any isToolUse (cmContent m)
+      m.role == Assistant && any isToolUse m.content
 
     isToolUse :: ContentBlock -> Bool
     isToolUse (ToolUseBlock {}) = True

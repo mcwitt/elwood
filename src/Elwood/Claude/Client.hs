@@ -2,7 +2,7 @@
 
 module Elwood.Claude.Client
   ( ClaudeClient (..),
-    newClaudeClient,
+    newClient,
     sendMessages,
     sendMessagesWithRetry,
     RetryConfig (..),
@@ -34,45 +34,45 @@ import Text.Read (readMaybe)
 -- | Claude API client
 data ClaudeClient = ClaudeClient
   { -- | HTTP connection manager
-    ccManager :: Manager,
+    manager :: Manager,
     -- | Anthropic API key
-    ccApiKey :: Text,
+    apiKey :: Text,
     -- | Base URL for API calls
-    ccBaseUrl :: String
+    baseUrl :: String
   }
 
 -- | Retry configuration for API calls
 data RetryConfig = RetryConfig
   { -- | Maximum number of retry attempts
-    rcMaxRetries :: Int,
+    maxRetries :: Int,
     -- | Base delay for exponential backoff (seconds) when no retry-after header
-    rcBaseDelay :: Int,
+    baseDelay :: Int,
     -- | Maximum delay cap (seconds)
-    rcMaxDelay :: Int,
+    maxDelay :: Int,
     -- | Callback for retry notifications (retry number, wait seconds, error)
-    rcOnRetry :: Maybe (Int -> Int -> ClaudeError -> IO ())
+    onRetry :: Maybe (Int -> Int -> ClaudeError -> IO ())
   }
 
 -- | Default retry configuration
 defaultRetryConfig :: RetryConfig
 defaultRetryConfig =
   RetryConfig
-    { rcMaxRetries = 3,
-      rcBaseDelay = 5,
-      rcMaxDelay = 60,
-      rcOnRetry = Nothing
+    { maxRetries = 3,
+      baseDelay = 5,
+      maxDelay = 60,
+      onRetry = Nothing
     }
 
 -- | Create a new Claude client
-newClaudeClient :: Text -> IO ClaudeClient
-newClaudeClient apiKey = do
+newClient :: Text -> IO ClaudeClient
+newClient key = do
   let settings = tlsManagerSettings {managerResponseTimeout = responseTimeoutMicro (10 * 60 * 1000000)}
-  manager <- newManager settings
+  mgr <- newManager settings
   pure
     ClaudeClient
-      { ccManager = manager,
-        ccApiKey = apiKey,
-        ccBaseUrl = "https://api.anthropic.com"
+      { manager = mgr,
+        apiKey = key,
+        baseUrl = "https://api.anthropic.com"
       }
 
 -- | Send a messages request to Claude (single attempt, no retry)
@@ -86,7 +86,7 @@ sendMessages client req = do
             requestBody = RequestBodyLBS body
           }
 
-  response <- httpLbs httpReq' (ccManager client)
+  response <- httpLbs httpReq' client.manager
   let status = statusCode $ responseStatus response
       respBody = responseBody response
       retryAfter = parseRetryAfter response
@@ -105,11 +105,11 @@ isRetryableError _ = False
 calculateRetryDelay :: RetryConfig -> ClaudeError -> Int -> Int
 calculateRetryDelay config err attempt =
   case err of
-    ClaudeRateLimited (Just secs) -> min secs (rcMaxDelay config)
-    ClaudeOverloaded (Just secs) -> min secs (rcMaxDelay config)
+    ClaudeRateLimited (Just secs) -> min secs config.maxDelay
+    ClaudeOverloaded (Just secs) -> min secs config.maxDelay
     _ ->
       -- Exponential backoff: baseDelay * 2^attempt, capped at maxDelay
-      min (rcBaseDelay config * (2 ^ attempt)) (rcMaxDelay config)
+      min (config.baseDelay * (2 ^ attempt)) config.maxDelay
 
 -- | Generic retry combinator with configurable delay function
 --
@@ -128,10 +128,10 @@ retryWithBackoff config action delayFn = go 0
       case result of
         Right resp -> pure (Right resp)
         Left err
-          | isRetryableError err && attempt < rcMaxRetries config -> do
+          | isRetryableError err && attempt < config.maxRetries -> do
               let waitSeconds = calculateRetryDelay config err attempt
               -- Notify about retry if callback is configured
-              case rcOnRetry config of
+              case config.onRetry of
                 Just notify -> notify (attempt + 1) waitSeconds err
                 Nothing -> pure ()
               -- Wait and retry
@@ -159,12 +159,12 @@ parseRetryAfter response =
 -- | Build the HTTP request with proper headers
 buildRequest :: ClaudeClient -> IO Request
 buildRequest client = do
-  req <- parseRequest $ ccBaseUrl client <> "/v1/messages"
+  req <- parseRequest $ client.baseUrl <> "/v1/messages"
   pure
     req
       { requestHeaders =
           [ ("Content-Type", "application/json"),
-            ("x-api-key", TE.encodeUtf8 $ ccApiKey client),
+            ("x-api-key", TE.encodeUtf8 client.apiKey),
             ("anthropic-version", "2023-06-01")
           ]
       }

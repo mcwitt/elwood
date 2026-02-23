@@ -22,28 +22,28 @@ import System.FilePath (takeExtension)
 mkQueueAttachmentTool :: Logger -> TVar [Attachment] -> Tool
 mkQueueAttachmentTool logger queue =
   Tool
-    { toolName = "queue_attachment",
-      toolDescription =
+    { name = "queue_attachment",
+      description =
         "Queue a file to be sent as a Telegram attachment after the text response. "
           <> "Supports photos (png, jpg, jpeg, gif, webp) and documents (any file type). "
           <> "The path must be an absolute path to an existing file.",
-      toolInputSchema = queueAttachmentSchema,
-      toolExecute = \input -> case parseInput input of
+      inputSchema = queueAttachmentSchema,
+      execute = \input -> case parseInput input of
         Left err -> pure $ toolError err
-        Right (path, attTy, cap) -> do
-          exists <- doesFileExist path
+        Right (p, attTy, cap) -> do
+          exists <- doesFileExist p
           if not exists
-            then pure $ toolError $ "File not found: " <> T.pack path
+            then pure $ toolError $ "File not found: " <> T.pack p
             else do
               let attachment =
                     Attachment
-                      { attPath = path,
-                        attType = attTy,
-                        attCaption = cap
+                      { path = p,
+                        type_ = attTy,
+                        caption = cap
                       }
               atomically $ modifyTVar' queue (<> [attachment])
-              logInfo logger "Attachment queued" [("path", T.pack path)]
-              pure $ toolSuccess $ "{\"status\":\"queued\",\"path\":" <> T.pack (show path) <> "}"
+              logInfo logger "Attachment queued" [("path", T.pack p)]
+              pure $ toolSuccess $ "{\"status\":\"queued\",\"path\":" <> T.pack (show p) <> "}"
     }
 
 -- | JSON Schema for queue_attachment input
@@ -76,8 +76,8 @@ queueAttachmentSchema =
 -- | Parse queue_attachment input
 parseInput :: Value -> Either Text (FilePath, AttachmentType, Maybe Text)
 parseInput (Aeson.Object obj) = do
-  path <- case KM.lookup "path" obj of
-    Just (Aeson.String p) -> Right (T.unpack p)
+  p <- case KM.lookup "path" obj of
+    Just (Aeson.String pv) -> Right (T.unpack pv)
     _ -> Left "Missing or invalid 'path' parameter"
   let attTy = case KM.lookup "type" obj of
         Just (Aeson.String "photo") -> AttachPhoto
@@ -86,7 +86,7 @@ parseInput (Aeson.Object obj) = do
       cap = case KM.lookup "caption" obj of
         Just (Aeson.String c) -> Just c
         _ -> Nothing
-  Right (path, attTy, cap)
+  Right (p, attTy, cap)
 parseInput _ = Left "Expected object input"
 
 -- | Check if a file extension is a photo type supported by Telegram

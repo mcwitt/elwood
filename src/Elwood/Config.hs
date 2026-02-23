@@ -7,6 +7,7 @@ module Elwood.Config
     ThinkingLevel (..),
     ThinkingEffort (..),
     DynamicToolLoadingConfig (..),
+    PermissionConfig (..),
     PermissionConfigFile (..),
     loadConfig,
     parseDynamicToolLoading,
@@ -58,7 +59,7 @@ data ThinkingEffort = EffortLow | EffortMedium | EffortHigh
 
 -- | Configuration for dynamic tool loading
 newtype DynamicToolLoadingConfig = DynamicToolLoadingConfig
-  { dtlAlwaysLoad :: [Text]
+  { alwaysLoad :: [Text]
   }
   deriving stock (Show, Eq)
 
@@ -97,97 +98,97 @@ lookupText key obj = case KM.lookup (Key.fromText key) obj of
 -- | Main configuration for Elwood
 data Config = Config
   { -- | Directory for persistent state
-    cfgStateDir :: FilePath,
+    stateDir :: FilePath,
     -- | Directory containing SOUL.md, AGENTS.md, etc.
-    cfgWorkspaceDir :: FilePath,
+    workspaceDir :: FilePath,
     -- | Telegram bot token (loaded from environment)
-    cfgTelegramToken :: Text,
+    telegramToken :: Text,
     -- | Anthropic API key (loaded from environment)
-    cfgAnthropicApiKey :: Text,
+    anthropicApiKey :: Text,
     -- | List of chat IDs allowed to interact with the bot
-    cfgAllowedChatIds :: [Int64],
+    allowedChatIds :: [Int64],
     -- | Claude model to use (e.g., "claude-sonnet-4-20250514")
-    cfgModel :: Text,
+    model :: Text,
     -- | Permission configuration for tools
-    cfgPermissions :: PermissionConfig,
+    permissions :: PermissionConfig,
     -- | Context compaction configuration
-    cfgCompaction :: CompactionConfig,
+    compaction :: CompactionConfig,
     -- | MCP server configurations
-    cfgMCPServers :: [MCPServerConfig],
+    mcpServers :: [MCPServerConfig],
     -- | Webhook server configuration
-    cfgWebhook :: WebhookServerConfig,
+    webhook :: WebhookServerConfig,
     -- | Extended thinking level
-    cfgThinking :: ThinkingLevel,
+    thinking :: ThinkingLevel,
     -- | Maximum agent loop iterations per turn (prevents infinite tool-use loops)
-    cfgMaxIterations :: Int,
+    maxIterations :: Int,
     -- | Dynamic tool loading (Nothing = disabled, Just cfg = enabled)
-    cfgDynamicToolLoading :: Maybe DynamicToolLoadingConfig
+    dynamicToolLoading :: Maybe DynamicToolLoadingConfig
   }
   deriving stock (Show, Generic)
 
 -- | Configuration for context compaction
 data CompactionConfig = CompactionConfig
   { -- | Compact when estimated tokens exceed this
-    ccTokenThreshold :: Int,
+    tokenThreshold :: Int,
     -- | Model to use for summarization (e.g., "claude-3-5-haiku-20241022")
-    ccCompactionModel :: Text
+    compactionModel :: Text
   }
   deriving stock (Show, Generic)
 
 -- | Configuration for an MCP server
 data MCPServerConfig = MCPServerConfig
   { -- | Server identifier for namespacing tools
-    mscName :: Text,
+    name :: Text,
     -- | Command to run (e.g., "npx")
-    mscCommand :: Text,
+    command :: Text,
     -- | Command arguments
-    mscArgs :: [Text],
+    args :: [Text],
     -- | Optional environment variables
-    mscEnv :: Maybe [(Text, Text)],
+    env :: Maybe [(Text, Text)],
     -- | Milliseconds to wait after spawning before sending initialize (default: 0)
-    mscStartupDelay :: Int
+    startupDelay :: Int
   }
   deriving stock (Show, Generic)
 
 -- | YAML file configuration (without secrets)
 data ConfigFile = ConfigFile
-  { cfStateDir :: Maybe FilePath,
-    cfWorkspaceDir :: Maybe FilePath,
-    cfAllowedChatIds :: Maybe [Int64],
-    cfModel :: Maybe Text,
-    cfPermissions :: Maybe PermissionConfigFile,
-    cfCompaction :: Maybe CompactionConfigFile,
-    cfMCPServers :: Maybe (Map Text MCPServerConfigFile),
-    cfWebhook :: Maybe WebhookServerConfigFile,
-    cfThinking :: Maybe Value,
-    cfMaxIterations :: Maybe Int,
-    cfDynamicToolLoading :: Maybe Value
+  { stateDir :: Maybe FilePath,
+    workspaceDir :: Maybe FilePath,
+    allowedChatIds :: Maybe [Int64],
+    model :: Maybe Text,
+    permissions :: Maybe PermissionConfigFile,
+    compaction :: Maybe CompactionConfigFile,
+    mcpServers :: Maybe (Map Text MCPServerConfigFile),
+    webhook :: Maybe WebhookServerConfigFile,
+    thinking :: Maybe Value,
+    maxIterations :: Maybe Int,
+    dynamicToolLoading :: Maybe Value
   }
   deriving stock (Show, Generic)
 
 -- | Permission configuration from YAML file
 data PermissionConfigFile = PermissionConfigFile
-  { pcfSafeCommands :: Maybe [Text],
-    pcfDangerousPatterns :: Maybe [Text],
-    pcfToolPolicies :: Maybe (Map Text Text),
-    pcfDefaultPolicy :: Maybe Text,
-    pcfApprovalTimeoutSeconds :: Maybe Int
+  { safeCommands :: Maybe [Text],
+    dangerousPatterns :: Maybe [Text],
+    toolPolicies :: Maybe (Map Text Text),
+    defaultPolicy :: Maybe Text,
+    approvalTimeoutSeconds :: Maybe Int
   }
   deriving stock (Show, Generic)
 
 -- | Compaction configuration from YAML file
 data CompactionConfigFile = CompactionConfigFile
-  { ccfTokenThreshold :: Maybe Int,
-    ccfCompactionModel :: Maybe Text
+  { tokenThreshold :: Maybe Int,
+    compactionModel :: Maybe Text
   }
   deriving stock (Show, Generic)
 
 -- | MCP server configuration from YAML file
 data MCPServerConfigFile = MCPServerConfigFile
-  { mcfCommand :: Text,
-    mcfArgs :: Maybe [Text],
-    mcfEnv :: Maybe (Map Text Text),
-    mcfStartupDelay :: Maybe Int
+  { command :: Text,
+    args :: Maybe [Text],
+    env :: Maybe (Map Text Text),
+    startupDelay :: Maybe Int
   }
   deriving stock (Show, Generic)
 
@@ -237,8 +238,8 @@ instance FromJSON MCPServerConfigFile where
 defaultCompaction :: CompactionConfig
 defaultCompaction =
   CompactionConfig
-    { ccTokenThreshold = 50000,
-      ccCompactionModel = "claude-3-5-haiku-20241022"
+    { tokenThreshold = 50000,
+      compactionModel = "claude-3-5-haiku-20241022"
     }
 
 -- | Load configuration from a YAML file and environment variables
@@ -248,13 +249,13 @@ loadConfig path = do
   configFile <- Yaml.decodeFileThrow path :: IO ConfigFile
 
   -- Load Telegram token from environment (required)
-  telegramToken <-
+  telegramToken_ <-
     lookupEnv "TELEGRAM_BOT_TOKEN" >>= \case
       Nothing -> fail "TELEGRAM_BOT_TOKEN environment variable is required"
       Just t -> pure (T.pack t)
 
   -- Load Anthropic API key from environment (required)
-  anthropicApiKey <-
+  anthropicApiKey_ <-
     lookupEnv "ANTHROPIC_API_KEY" >>= \case
       Nothing -> fail "ANTHROPIC_API_KEY environment variable is required"
       Just k -> pure (T.pack k)
@@ -274,96 +275,102 @@ loadConfig path = do
       parseToolPolicyOrDefault :: Text -> ToolPolicy
       parseToolPolicyOrDefault t = fromMaybe PolicyAllow (parseToolPolicy t)
 
-  let permissions = case cfPermissions configFile of
+  let perms = case configFile.permissions of
         Nothing -> defaultPermissionConfig
         Just pcf ->
           PermissionConfig
-            { pcSafeCommands = fromMaybe (pcSafeCommands defaultPermissionConfig) (pcfSafeCommands pcf),
-              pcDangerousPatterns = fromMaybe (pcDangerousPatterns defaultPermissionConfig) (pcfDangerousPatterns pcf),
-              pcToolPolicies = maybe Map.empty (Map.mapMaybe parseToolPolicy) (pcfToolPolicies pcf),
-              pcDefaultPolicy = maybe (pcDefaultPolicy defaultPermissionConfig) parseToolPolicyOrDefault (pcfDefaultPolicy pcf),
-              pcApprovalTimeoutSeconds = fromMaybe (pcApprovalTimeoutSeconds defaultPermissionConfig) (pcfApprovalTimeoutSeconds pcf)
+            { safeCommands = fromMaybe defaultPermissionConfig.safeCommands pcf.safeCommands,
+              dangerousPatterns = fromMaybe defaultPermissionConfig.dangerousPatterns pcf.dangerousPatterns,
+              toolPolicies = maybe Map.empty (Map.mapMaybe parseToolPolicy) pcf.toolPolicies,
+              defaultPolicy = maybe defaultPermissionConfig.defaultPolicy parseToolPolicyOrDefault pcf.defaultPolicy,
+              approvalTimeoutSeconds = fromMaybe defaultPermissionConfig.approvalTimeoutSeconds pcf.approvalTimeoutSeconds
             }
 
-  let compaction = case cfCompaction configFile of
+  let compact = case configFile.compaction of
         Nothing -> defaultCompaction
         Just ccf ->
           CompactionConfig
-            { ccTokenThreshold = fromMaybe (ccTokenThreshold defaultCompaction) (ccfTokenThreshold ccf),
-              ccCompactionModel = fromMaybe (ccCompactionModel defaultCompaction) (ccfCompactionModel ccf)
+            { tokenThreshold = fromMaybe defaultCompaction.tokenThreshold ccf.tokenThreshold,
+              compactionModel = fromMaybe defaultCompaction.compactionModel ccf.compactionModel
             }
 
-  let mcpServers = case cfMCPServers configFile of
+  let servers = case configFile.mcpServers of
         Nothing -> []
         Just serverMap ->
           [ MCPServerConfig
-              { mscName = name,
-                mscCommand = mcfCommand mcf,
-                mscArgs = fromMaybe [] (mcfArgs mcf),
-                mscEnv = Map.toList <$> mcfEnv mcf,
-                mscStartupDelay = fromMaybe 0 (mcfStartupDelay mcf)
+              { name = n,
+                command = mcf.command,
+                args = fromMaybe [] mcf.args,
+                env = Map.toList <$> mcf.env,
+                startupDelay = fromMaybe 0 mcf.startupDelay
               }
-          | (name, mcf) <- Map.toList serverMap
+          | (n, mcf) <- Map.toList serverMap
           ]
 
   -- Helper to resolve delivery targets from file objects
   let resolveDeliveryTarget :: DeliveryTargetFile -> Maybe DeliveryTarget
-      resolveDeliveryTarget dtf = case T.toLower (dtfType dtf) of
-        "telegram" -> Just $ maybe TelegramBroadcast TelegramDelivery (dtfSession dtf)
+      resolveDeliveryTarget dtf = case T.toLower dtf.type_ of
+        "telegram" -> Just $ maybe TelegramBroadcast TelegramDelivery dtf.session
         "log" -> Just LogOnly
         _ -> Nothing
 
-  let workspaceDir = fromMaybe "/var/lib/assistant/workspace" (cfWorkspaceDir configFile)
+  let workspaceDir_ = fromMaybe "/var/lib/assistant/workspace" configFile.workspaceDir
 
   -- Webhook secret: env var takes precedence over config file
-  let webhookGlobalSecret = webhookSecretEnv <|> (cfWebhook configFile >>= wscfGlobalSecret)
+  let webhookGlobalSecret = webhookSecretEnv <|> (configFile.webhook >>= (.globalSecret))
 
-  let webhook = case cfWebhook configFile of
-        Nothing -> defaultWebhookServerConfig {wscGlobalSecret = webhookGlobalSecret}
+  let webhookCfg = case configFile.webhook of
+        Nothing ->
+          WebhookServerConfig
+            { enabled = False,
+              port = 8080,
+              globalSecret = webhookGlobalSecret,
+              webhooks = []
+            }
         Just wscf ->
           WebhookServerConfig
-            { wscEnabled = fromMaybe False (wscfEnabled wscf),
-              wscPort = fromMaybe 8080 (wscfPort wscf),
-              wscGlobalSecret = webhookGlobalSecret,
-              wscWebhooks = case wscfEndpoints wscf of
+            { enabled = fromMaybe False wscf.enabled,
+              port = fromMaybe 8080 wscf.port,
+              globalSecret = webhookGlobalSecret,
+              webhooks = case wscf.endpoints of
                 Nothing -> []
-                Just endpoints ->
+                Just eps ->
                   [ WebhookConfig
-                      { wcName = wcfName ep,
-                        wcSecret = wcfSecret ep,
-                        wcPromptTemplate = wcfPromptTemplate ep,
-                        wcPromptFile = fmap (workspaceDir </>) (wcfPromptFile ep),
-                        wcSession = maybe Isolated Named (wcfSession ep),
-                        wcDelivery = case wcfDeliver ep of
+                      { name = ep.name,
+                        secret = ep.secret,
+                        promptTemplate = ep.promptTemplate,
+                        promptFile = fmap (workspaceDir_ </>) ep.promptFile,
+                        session = maybe Isolated Named ep.session,
+                        delivery = case ep.deliver of
                           Nothing -> [TelegramBroadcast]
                           Just targets ->
                             let parsed = mapMaybe resolveDeliveryTarget targets
                              in if null parsed
                                   then [TelegramBroadcast]
                                   else parsed,
-                        wcSuppressIfContains = wcfSuppressIfContains ep,
-                        wcModel = wcfModel ep,
-                        wcThinking = wcfThinking ep
+                        suppressIfContains = ep.suppressIfContains,
+                        model = ep.model,
+                        thinking = ep.thinking
                       }
-                  | ep <- endpoints
+                  | ep <- eps
                   ]
             }
 
   pure
     Config
-      { cfgStateDir = fromMaybe "/var/lib/assistant" (cfStateDir configFile),
-        cfgWorkspaceDir = workspaceDir,
-        cfgTelegramToken = telegramToken,
-        cfgAnthropicApiKey = anthropicApiKey,
-        cfgAllowedChatIds = fromMaybe [] (cfAllowedChatIds configFile),
-        cfgModel = fromMaybe "claude-sonnet-4-20250514" (cfModel configFile),
-        cfgPermissions = permissions,
-        cfgCompaction = compaction,
-        cfgMCPServers = mcpServers,
-        cfgWebhook = webhook,
-        cfgThinking = maybe ThinkingOff parseThinkingLevel (cfThinking configFile),
-        cfgMaxIterations = fromMaybe 30 (cfMaxIterations configFile),
-        cfgDynamicToolLoading = parseDynamicToolLoading =<< cfDynamicToolLoading configFile
+      { stateDir = fromMaybe "/var/lib/assistant" configFile.stateDir,
+        workspaceDir = workspaceDir_,
+        telegramToken = telegramToken_,
+        anthropicApiKey = anthropicApiKey_,
+        allowedChatIds = fromMaybe [] configFile.allowedChatIds,
+        model = fromMaybe "claude-sonnet-4-20250514" configFile.model,
+        permissions = perms,
+        compaction = compact,
+        mcpServers = servers,
+        webhook = webhookCfg,
+        thinking = maybe ThinkingOff parseThinkingLevel configFile.thinking,
+        maxIterations = fromMaybe 30 configFile.maxIterations,
+        dynamicToolLoading = parseDynamicToolLoading =<< configFile.dynamicToolLoading
       }
 
 -- | Parse dynamic tool loading from a YAML value
@@ -381,13 +388,3 @@ parseDynamicToolLoading (Object obj) =
         _ -> []
    in Just (DynamicToolLoadingConfig names)
 parseDynamicToolLoading _ = Nothing
-
--- | Default webhook server configuration (disabled)
-defaultWebhookServerConfig :: WebhookServerConfig
-defaultWebhookServerConfig =
-  WebhookServerConfig
-    { wscEnabled = False,
-      wscPort = 8080,
-      wscGlobalSecret = Nothing,
-      wscWebhooks = []
-    }

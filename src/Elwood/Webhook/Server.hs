@@ -56,128 +56,146 @@ webhookSecretHeader = "X-Webhook-Secret"
 -- | Start the webhook server
 runWebhookServer :: WebhookServerConfig -> AppEnv -> IO ()
 runWebhookServer config env = do
-  let logger = eeLogger env
-      port = wscPort config
+  let lgr = env.logger
+      p = config.port
 
-  logInfo logger "Starting webhook server" [("port", T.pack (show port))]
+  logInfo lgr "Starting webhook server" [("port", T.pack (show p))]
 
-  run port (webhookApp config env)
+  run p (webhookApp config env)
     `catch` \(e :: SomeException) ->
-      logError logger "Webhook server error" [("error", T.pack (show e))]
+      logError lgr "Webhook server error" [("error", T.pack (show e))]
 
 -- | WAI application for webhook handling
 webhookApp :: WebhookServerConfig -> AppEnv -> Application
 webhookApp config env request respond = do
-  let logger = eeLogger env
+  let lgr = env.logger
       path = pathInfo request
 
   case path of
     ["webhook", webhookName] -> do
       -- Find matching webhook config
-      case findWebhook webhookName (wscWebhooks config) of
+      case findWebhook webhookName config.webhooks of
         Nothing -> do
-          logWarn logger "Unknown webhook" [("name", webhookName)]
+          logWarn lgr "Unknown webhook" [("name", webhookName)]
           respond $ jsonResponse status404 $ errorJson "Unknown webhook"
-        Just webhookConfig -> do
+        Just webhookCfg -> do
           -- Verify authentication
-          let effectiveSecret = wcSecret webhookConfig <|> wscGlobalSecret config
+          let effectiveSecret = webhookCfg.secret <|> config.globalSecret
           case effectiveSecret of
-            Just secret -> do
+            Just sec -> do
               let providedSecret = lookup webhookSecretHeader (requestHeaders request)
-              if providedSecret == Just (TE.encodeUtf8 secret)
-                then handleWebhookRequest logger webhookConfig env request respond
+              if providedSecret == Just (TE.encodeUtf8 sec)
+                then handleWebhookRequest lgr webhookCfg env request respond
                 else do
-                  logWarn logger "Invalid webhook secret" [("name", webhookName)]
+                  logWarn lgr "Invalid webhook secret" [("name", webhookName)]
                   respond $ jsonResponse status401 $ errorJson "Invalid or missing secret"
             Nothing ->
               -- No secret required
-              handleWebhookRequest logger webhookConfig env request respond
+              handleWebhookRequest lgr webhookCfg env request respond
     ["health"] -> do
       -- Health check endpoint
       respond $ jsonResponse status200 "{\"status\": \"ok\"}"
     ["metrics"] -> do
       -- Prometheus metrics endpoint
-      body <- renderMetrics (eeMetrics env) (eeConversations env) (eeRegistry env) (eeMCPServerCount env)
+      body <- renderMetrics env.metrics env.conversations env.registry env.mcpServerCount
       respond $ responseLBS status200 [("Content-Type", "text/plain; version=0.0.4; charset=utf-8")] body
     _ -> do
-      logWarn logger "Unknown path" [("path", T.intercalate "/" path)]
+      logWarn lgr "Unknown path" [("path", T.intercalate "/" path)]
       respond $ jsonResponse status404 $ errorJson "Not found"
 
 -- | Handle a webhook request after authentication
 handleWebhookRequest :: Logger -> WebhookConfig -> AppEnv -> Request -> (Response -> IO a) -> IO a
-handleWebhookRequest logger webhookConfig env request respond = do
+handleWebhookRequest lgr webhookCfg env request respond = do
   -- Read and parse request body
   body <- strictRequestBody request
 
   case eitherDecode body of
     Left err -> do
-      logWarn logger "Invalid JSON body" [("error", T.pack err)]
+      logWarn lgr "Invalid JSON body" [("error", T.pack err)]
       respond $ jsonResponse status400 $ errorJson "Invalid JSON body"
-    Right payload -> do
+    Right payloadVal -> do
       logInfo
-        logger
+        lgr
         "Processing webhook"
-        [ ("name", wcName webhookConfig),
+        [ ("name", webhookCfg.name),
           ("payload_size", T.pack (show (LBS.length body)))
         ]
 
       -- Apply per-endpoint model/thinking overrides
-      let envWithOverrides =
-            env
-              { eeModel = fromMaybe (eeModel env) (wcModel webhookConfig),
-                eeThinking = maybe (eeThinking env) parseThinkingLevel (wcThinking webhookConfig)
-              }
+      let envWithOverrides = applyOverrides env webhookCfg
 
       -- Get prompt: either from template or from file
-      promptResult <- case (wcPromptTemplate webhookConfig, wcPromptFile webhookConfig) of
-        (Just template, _) -> pure $ Right $ renderTemplate template payload
-        (Nothing, Just filePath) -> readPromptFile filePath
+      promptResult <- case (webhookCfg.promptTemplate, webhookCfg.promptFile) of
+        (Just template, _) -> pure $ Right $ renderTemplate template payloadVal
+        (Nothing, Just fp) -> readPromptFile fp
         (Nothing, Nothing) -> pure $ Left "No prompt or promptFile configured"
 
       case promptResult of
         Left err -> do
-          logError logger "Failed to get prompt" [("error", T.pack err)]
+          logError lgr "Failed to get prompt" [("error", T.pack err)]
           respond $ jsonResponse status500 $ errorJson (T.pack err)
-        Right prompt -> do
+        Right promptText -> do
           -- Create event with LogOnly delivery - we handle notification manually
           -- to support conditional suppression
           now <- getCurrentTime
-          let event =
+          let evt =
                 Event
-                  { evSource = WebhookSource (wcName webhookConfig),
-                    evTimestamp = now,
-                    evPayload = payload,
-                    evPrompt = prompt,
-                    evImage = Nothing,
-                    evSession = wcSession webhookConfig,
-                    evDelivery = [LogOnly]
+                  { source = WebhookSource webhookCfg.name,
+                    timestamp = now,
+                    payload = payloadVal,
+                    prompt = promptText,
+                    image = Nothing,
+                    session = webhookCfg.session,
+                    delivery = [LogOnly]
                   }
 
           -- Handle the event
-          result <- handleEvent envWithOverrides event
+          result <- handleEvent envWithOverrides evt
 
           case result of
             Right responseText -> do
               -- Check if we should suppress notification
-              let shouldSuppress = case wcSuppressIfContains webhookConfig of
+              let shouldSuppress = case webhookCfg.suppressIfContains of
                     Just suppressPattern -> suppressPattern `T.isInfixOf` responseText
                     Nothing -> False
 
               if shouldSuppress
                 then do
                   logInfo
-                    logger
+                    lgr
                     "Webhook response suppressed"
-                    [("name", wcName webhookConfig), ("pattern", fromMaybe "" (wcSuppressIfContains webhookConfig))]
+                    [("name", webhookCfg.name), ("pattern", fromMaybe "" webhookCfg.suppressIfContains)]
                   respond $ jsonResponse status200 $ successJson responseText
                 else do
                   -- Deliver to configured targets
-                  deliverToTargets envWithOverrides (wcDelivery webhookConfig) responseText
-                  logInfo logger "Webhook processed successfully" [("name", wcName webhookConfig)]
+                  deliverToTargets envWithOverrides webhookCfg.delivery responseText
+                  logInfo lgr "Webhook processed successfully" [("name", webhookCfg.name)]
                   respond $ jsonResponse status200 $ successJson responseText
             Left err -> do
-              logError logger "Webhook processing failed" [("name", wcName webhookConfig), ("error", err)]
+              logError lgr "Webhook processing failed" [("name", webhookCfg.name), ("error", err)]
               respond $ jsonResponse status500 $ errorJson err
+
+-- | Apply per-endpoint model/thinking overrides to the environment
+applyOverrides :: AppEnv -> WebhookConfig -> AppEnv
+applyOverrides env wc =
+  AppEnv
+    { logger = env.logger,
+      telegram = env.telegram,
+      claude = env.claude,
+      conversations = env.conversations,
+      registry = env.registry,
+      agentContext = env.agentContext,
+      compaction = env.compaction,
+      systemPrompt = env.systemPrompt,
+      model = fromMaybe env.model wc.model,
+      thinking = maybe env.thinking parseThinkingLevel wc.thinking,
+      notifyChatIds = env.notifyChatIds,
+      attachmentQueue = env.attachmentQueue,
+      maxIterations = env.maxIterations,
+      metrics = env.metrics,
+      mcpServerCount = env.mcpServerCount,
+      alwaysLoadTools = env.alwaysLoadTools
+    }
 
 -- | Read prompt from a file
 readPromptFile :: FilePath -> IO (Either String Text)
@@ -188,9 +206,9 @@ readPromptFile path = do
         pure $ Left $ "Failed to read " <> path <> ": " <> show e
   pure $ case result of
     Left err -> Left err
-    Right content
-      | T.null content -> Left $ "Empty prompt file: " <> path
-      | otherwise -> Right content
+    Right c
+      | T.null c -> Left $ "Empty prompt file: " <> path
+      | otherwise -> Right c
 
 -- | status400 for bad request
 status400 :: Status
@@ -198,14 +216,14 @@ status400 = mkStatus 400 "Bad Request"
 
 -- | Find a webhook by name
 findWebhook :: Text -> [WebhookConfig] -> Maybe WebhookConfig
-findWebhook name = find (\wc -> wcName wc == name)
+findWebhook n = find (\wc -> wc.name == n)
 
 -- | Render a prompt template with JSON payload
 --
 -- Supports mustache-style {{.field}} placeholders.
 -- Nested fields use dot notation: {{.user.name}}
 renderTemplate :: Text -> Value -> Text
-renderTemplate template payload = go template
+renderTemplate template payloadVal = go template
   where
     go :: Text -> Text
     go t = case T.breakOn "{{." t of
@@ -217,14 +235,14 @@ renderTemplate template payload = go template
                   (fieldPath, afterClose)
                     | T.null afterClose -> t -- Malformed, no closing }}
                     | otherwise ->
-                        let value = lookupPath (T.splitOn "." fieldPath) payload
+                        let value = lookupPath (T.splitOn "." fieldPath) payloadVal
                             remaining = T.drop 2 afterClose -- Drop "}}"
                          in before <> value <> go remaining
 
     lookupPath :: [Text] -> Value -> Text
     lookupPath [] v = valueToText v
-    lookupPath (key : keys) (Object obj) =
-      case KM.lookup (fromText key) obj of
+    lookupPath (k : keys) (Object obj) =
+      case KM.lookup (fromText k) obj of
         Just v -> lookupPath keys v
         Nothing -> ""
     lookupPath _ _ = ""

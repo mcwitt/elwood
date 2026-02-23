@@ -32,7 +32,7 @@ import GHC.Generics (Generic)
 -- | Incoming update from Telegram's getUpdates API
 data Update = Update
   { -- | Unique update identifier
-    updateId :: Int,
+    id_ :: Int,
     -- | New incoming message (if any)
     message :: Maybe Message,
     -- | Callback query from inline keyboard button press
@@ -50,15 +50,15 @@ instance FromJSON Update where
 -- | A photo size variant (Telegram sends multiple sizes)
 data PhotoSize = PhotoSize
   { -- | Identifier for this file
-    psFileId :: Text,
+    fileId :: Text,
     -- | Unique file identifier (consistent across bots)
-    psFileUniqueId :: Text,
+    fileUniqueId :: Text,
     -- | Photo width
-    psWidth :: Int,
+    width :: Int,
     -- | Photo height
-    psHeight :: Int,
+    height :: Int,
     -- | File size in bytes (optional)
-    psFileSize :: Maybe Int
+    fileSize :: Maybe Int
   }
   deriving stock (Show, Generic)
 
@@ -74,13 +74,13 @@ instance FromJSON PhotoSize where
 -- | A Telegram message
 data Message = Message
   { -- | Unique message identifier
-    messageId :: Int,
+    id_ :: Int,
     -- | Chat the message belongs to
     chat :: Chat,
     -- | Text content of the message
     text :: Maybe Text,
     -- | Sender of the message
-    from :: Maybe User,
+    from_ :: Maybe User,
     -- | Photos attached to the message (multiple sizes)
     photo :: Maybe [PhotoSize],
     -- | Caption for media messages
@@ -101,9 +101,9 @@ instance FromJSON Message where
 -- | A Telegram chat
 data Chat = Chat
   { -- | Unique chat identifier
-    chatId :: Int64,
+    id_ :: Int64,
     -- | Type of chat: "private", "group", "supergroup", or "channel"
-    chatType :: Text
+    type_ :: Text
   }
   deriving stock (Show, Generic)
 
@@ -116,7 +116,7 @@ instance FromJSON Chat where
 -- | A Telegram user
 data User = User
   { -- | Unique user identifier
-    userId :: Int64,
+    id_ :: Int64,
     -- | User's first name
     firstName :: Text,
     -- | User's last name (optional)
@@ -136,24 +136,24 @@ instance FromJSON User where
 
 -- | Request body for sendMessage API
 data SendMessageRequest = SendMessageRequest
-  { smrChatId :: Int64,
-    smrText :: Text,
-    smrParseMode :: Maybe Text
+  { chatId :: Int64,
+    text :: Text,
+    parseMode :: Maybe Text
   }
   deriving stock (Show, Generic)
 
 instance ToJSON SendMessageRequest where
   toJSON req =
     object $
-      [ "chat_id" .= smrChatId req,
-        "text" .= smrText req
+      [ "chat_id" .= req.chatId,
+        "text" .= req.text
       ]
-        ++ maybe [] (\pm -> ["parse_mode" .= pm]) (smrParseMode req)
+        ++ maybe [] (\pm -> ["parse_mode" .= pm]) req.parseMode
 
 -- | Response wrapper for Telegram API
 data GetUpdatesResponse = GetUpdatesResponse
-  { gurOk :: Bool,
-    gurResult :: [Update]
+  { ok :: Bool,
+    result :: [Update]
   }
   deriving stock (Show, Generic)
 
@@ -165,8 +165,8 @@ instance FromJSON GetUpdatesResponse where
 
 -- | Response for sendMessage API
 data SendMessageResponse = SendMessageResponse
-  { smresOk :: Bool,
-    smresResult :: Maybe Message
+  { ok :: Bool,
+    result :: Maybe Message
   }
   deriving stock (Show, Generic)
 
@@ -179,13 +179,13 @@ instance FromJSON SendMessageResponse where
 -- | File information from Telegram getFile API
 data TelegramFile = TelegramFile
   { -- | Identifier for this file
-    tfFileId :: Text,
+    fileId :: Text,
     -- | Unique file identifier
-    tfFileUniqueId :: Text,
+    fileUniqueId :: Text,
     -- | File size in bytes (optional)
-    tfFileSize :: Maybe Int,
+    fileSize :: Maybe Int,
     -- | File path for download (optional, use with file download URL)
-    tfFilePath :: Maybe Text
+    filePath :: Maybe Text
   }
   deriving stock (Show, Generic)
 
@@ -199,8 +199,8 @@ instance FromJSON TelegramFile where
 
 -- | Response for getFile API
 data GetFileResponse = GetFileResponse
-  { gfrOk :: Bool,
-    gfrResult :: Maybe TelegramFile
+  { ok :: Bool,
+    result :: Maybe TelegramFile
   }
   deriving stock (Show, Generic)
 
@@ -213,13 +213,13 @@ instance FromJSON GetFileResponse where
 -- | Callback query from pressing an inline keyboard button
 data CallbackQuery = CallbackQuery
   { -- | Unique callback query identifier
-    cqId :: Text,
+    id_ :: Text,
     -- | User who pressed the button
-    cqFrom :: User,
+    from_ :: User,
     -- | Message with the callback button (if available)
-    cqMessage :: Maybe Message,
+    message :: Maybe Message,
     -- | Data associated with the callback button
-    cqData :: Maybe Text
+    data_ :: Maybe Text
   }
   deriving stock (Show, Generic)
 
@@ -234,74 +234,74 @@ instance FromJSON CallbackQuery where
 -- | Inline keyboard button
 data InlineKeyboardButton = InlineKeyboardButton
   { -- | Button text
-    ikbText :: Text,
+    text :: Text,
     -- | Data to be sent in callback query
-    ikbCallbackData :: Text
+    callbackData :: Text
   }
   deriving stock (Show, Generic)
 
 instance ToJSON InlineKeyboardButton where
   toJSON btn =
     object
-      [ "text" .= ikbText btn,
-        "callback_data" .= ikbCallbackData btn
+      [ "text" .= btn.text,
+        "callback_data" .= btn.callbackData
       ]
 
 -- | Inline keyboard markup (array of button rows)
 newtype InlineKeyboardMarkup = InlineKeyboardMarkup
-  { ikmInlineKeyboard :: [[InlineKeyboardButton]]
+  { inlineKeyboard :: [[InlineKeyboardButton]]
   }
   deriving stock (Show, Generic)
 
 instance ToJSON InlineKeyboardMarkup where
   toJSON markup =
-    object ["inline_keyboard" .= ikmInlineKeyboard markup]
+    object ["inline_keyboard" .= markup.inlineKeyboard]
 
 -- | Request body for sendMessage with inline keyboard
 data SendMessageWithKeyboardRequest = SendMessageWithKeyboardRequest
-  { smkChatId :: Int64,
-    smkText :: Text,
-    smkParseMode :: Maybe Text,
-    smkReplyMarkup :: InlineKeyboardMarkup
+  { chatId :: Int64,
+    text :: Text,
+    parseMode :: Maybe Text,
+    replyMarkup :: InlineKeyboardMarkup
   }
   deriving stock (Show, Generic)
 
 instance ToJSON SendMessageWithKeyboardRequest where
   toJSON req =
     object $
-      [ "chat_id" .= smkChatId req,
-        "text" .= smkText req,
-        "reply_markup" .= smkReplyMarkup req
+      [ "chat_id" .= req.chatId,
+        "text" .= req.text,
+        "reply_markup" .= req.replyMarkup
       ]
-        ++ maybe [] (\pm -> ["parse_mode" .= pm]) (smkParseMode req)
+        ++ maybe [] (\pm -> ["parse_mode" .= pm]) req.parseMode
 
 -- | Request body for answerCallbackQuery
 data AnswerCallbackQueryRequest = AnswerCallbackQueryRequest
-  { acqCallbackQueryId :: Text,
-    acqText :: Maybe Text,
-    acqShowAlert :: Bool
+  { callbackQueryId :: Text,
+    text :: Maybe Text,
+    showAlert :: Bool
   }
   deriving stock (Show, Generic)
 
 instance ToJSON AnswerCallbackQueryRequest where
   toJSON req =
     object $
-      ["callback_query_id" .= acqCallbackQueryId req]
-        ++ maybe [] (\t -> ["text" .= t]) (acqText req)
-        ++ ["show_alert" .= acqShowAlert req | acqShowAlert req]
+      ["callback_query_id" .= req.callbackQueryId]
+        ++ maybe [] (\t -> ["text" .= t]) req.text
+        ++ ["show_alert" .= req.showAlert | req.showAlert]
 
 -- | Request body for editMessageReplyMarkup
 data EditMessageReplyMarkupRequest = EditMessageReplyMarkupRequest
-  { emrChatId :: Int64,
-    emrMessageId :: Int,
-    emrReplyMarkup :: Maybe InlineKeyboardMarkup
+  { chatId :: Int64,
+    messageId :: Int,
+    replyMarkup :: Maybe InlineKeyboardMarkup
   }
   deriving stock (Show, Generic)
 
 instance ToJSON EditMessageReplyMarkupRequest where
   toJSON req =
     object $
-      [ "chat_id" .= emrChatId req,
-        "message_id" .= emrMessageId req
+      [ "chat_id" .= req.chatId,
+        "message_id" .= req.messageId
       ]
-        ++ maybe [] (\rm -> ["reply_markup" .= rm]) (emrReplyMarkup req)
+        ++ maybe [] (\rm -> ["reply_markup" .= rm]) req.replyMarkup

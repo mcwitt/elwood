@@ -93,76 +93,76 @@ webhookConfigTests =
     [ testCase "can create config with promptTemplate" $ do
         let config =
               WebhookConfig
-                { wcName = "test-hook",
-                  wcSecret = Nothing,
-                  wcPromptTemplate = Just "Hello",
-                  wcPromptFile = Nothing,
-                  wcSession = Isolated,
-                  wcDelivery = [LogOnly],
-                  wcSuppressIfContains = Nothing,
-                  wcModel = Nothing,
-                  wcThinking = Nothing
+                { name = "test-hook",
+                  secret = Nothing,
+                  promptTemplate = Just "Hello",
+                  promptFile = Nothing,
+                  session = Isolated,
+                  delivery = [LogOnly],
+                  suppressIfContains = Nothing,
+                  model = Nothing,
+                  thinking = Nothing
                 }
-        wcName config @?= "test-hook"
-        wcPromptTemplate config @?= Just "Hello"
-        wcSession config @?= Isolated,
+        config.name @?= "test-hook"
+        config.promptTemplate @?= Just "Hello"
+        config.session @?= Isolated,
       testCase "can create config with promptFile" $ do
         let config =
               WebhookConfig
-                { wcName = "file-hook",
-                  wcSecret = Nothing,
-                  wcPromptTemplate = Nothing,
-                  wcPromptFile = Just "HEARTBEAT.md",
-                  wcSession = Isolated,
-                  wcDelivery = [TelegramBroadcast],
-                  wcSuppressIfContains = Nothing,
-                  wcModel = Nothing,
-                  wcThinking = Nothing
+                { name = "file-hook",
+                  secret = Nothing,
+                  promptTemplate = Nothing,
+                  promptFile = Just "HEARTBEAT.md",
+                  session = Isolated,
+                  delivery = [TelegramBroadcast],
+                  suppressIfContains = Nothing,
+                  model = Nothing,
+                  thinking = Nothing
                 }
-        wcPromptFile config @?= Just "HEARTBEAT.md",
+        config.promptFile @?= Just "HEARTBEAT.md",
       testCase "can create config with secret" $ do
         let config =
               WebhookConfig
-                { wcName = "secure-hook",
-                  wcSecret = Just "my-secret",
-                  wcPromptTemplate = Just "Hello",
-                  wcPromptFile = Nothing,
-                  wcSession = Named "session",
-                  wcDelivery = [TelegramBroadcast],
-                  wcSuppressIfContains = Nothing,
-                  wcModel = Nothing,
-                  wcThinking = Nothing
+                { name = "secure-hook",
+                  secret = Just "my-secret",
+                  promptTemplate = Just "Hello",
+                  promptFile = Nothing,
+                  session = Named "session",
+                  delivery = [TelegramBroadcast],
+                  suppressIfContains = Nothing,
+                  model = Nothing,
+                  thinking = Nothing
                 }
-        wcSecret config @?= Just "my-secret"
-        wcSession config @?= Named "session",
+        config.secret @?= Just "my-secret"
+        config.session @?= Named "session",
       testCase "can have multiple delivery targets" $ do
         let config =
               WebhookConfig
-                { wcName = "multi-target",
-                  wcSecret = Nothing,
-                  wcPromptTemplate = Just "Test",
-                  wcPromptFile = Nothing,
-                  wcSession = Isolated,
-                  wcDelivery = [TelegramBroadcast, TelegramDelivery "123", LogOnly],
-                  wcSuppressIfContains = Nothing,
-                  wcModel = Nothing,
-                  wcThinking = Nothing
+                { name = "multi-target",
+                  secret = Nothing,
+                  promptTemplate = Just "Test",
+                  promptFile = Nothing,
+                  session = Isolated,
+                  delivery = [TelegramBroadcast, TelegramDelivery "123", LogOnly],
+                  suppressIfContains = Nothing,
+                  model = Nothing,
+                  thinking = Nothing
                 }
-        length (wcDelivery config) @?= 3,
+        length config.delivery @?= 3,
       testCase "can have suppressIfContains" $ do
         let config =
               WebhookConfig
-                { wcName = "heartbeat",
-                  wcSecret = Nothing,
-                  wcPromptTemplate = Nothing,
-                  wcPromptFile = Just "HEARTBEAT.md",
-                  wcSession = Isolated,
-                  wcDelivery = [TelegramBroadcast],
-                  wcSuppressIfContains = Just "HEARTBEAT_OK",
-                  wcModel = Nothing,
-                  wcThinking = Nothing
+                { name = "heartbeat",
+                  secret = Nothing,
+                  promptTemplate = Nothing,
+                  promptFile = Just "HEARTBEAT.md",
+                  session = Isolated,
+                  delivery = [TelegramBroadcast],
+                  suppressIfContains = Just "HEARTBEAT_OK",
+                  model = Nothing,
+                  thinking = Nothing
                 }
-        wcSuppressIfContains config @?= Just "HEARTBEAT_OK"
+        config.suppressIfContains @?= Just "HEARTBEAT_OK"
     ]
 
 webhookServerConfigTests :: TestTree
@@ -172,44 +172,44 @@ webhookServerConfigTests =
     [ testCase "can create disabled config" $ do
         let config =
               WebhookServerConfig
-                { wscEnabled = False,
-                  wscPort = 8080,
-                  wscGlobalSecret = Nothing,
-                  wscWebhooks = []
+                { enabled = False,
+                  port = 8080,
+                  globalSecret = Nothing,
+                  webhooks = []
                 }
-        wscEnabled config @?= False
-        wscWebhooks config @?= [],
+        config.enabled @?= False
+        config.webhooks @?= [],
       testCase "can create enabled config with webhooks" $ do
         let webhook =
               WebhookConfig
-                { wcName = "hook1",
-                  wcSecret = Nothing,
-                  wcPromptTemplate = Just "Test",
-                  wcPromptFile = Nothing,
-                  wcSession = Isolated,
-                  wcDelivery = [LogOnly],
-                  wcSuppressIfContains = Nothing,
-                  wcModel = Nothing,
-                  wcThinking = Nothing
+                { name = "hook1",
+                  secret = Nothing,
+                  promptTemplate = Just "Test",
+                  promptFile = Nothing,
+                  session = Isolated,
+                  delivery = [LogOnly],
+                  suppressIfContains = Nothing,
+                  model = Nothing,
+                  thinking = Nothing
                 }
             config =
               WebhookServerConfig
-                { wscEnabled = True,
-                  wscPort = 9000,
-                  wscGlobalSecret = Just "global-secret",
-                  wscWebhooks = [webhook]
+                { enabled = True,
+                  port = 9000,
+                  globalSecret = Just "global-secret",
+                  webhooks = [webhook]
                 }
-        wscEnabled config @?= True
-        wscPort config @?= 9000
-        wscGlobalSecret config @?= Just "global-secret"
-        length (wscWebhooks config) @?= 1,
+        config.enabled @?= True
+        config.port @?= 9000
+        config.globalSecret @?= Just "global-secret"
+        length config.webhooks @?= 1,
       testCase "default port is 8080" $ do
         let config =
               WebhookServerConfig
-                { wscEnabled = True,
-                  wscPort = 8080,
-                  wscGlobalSecret = Nothing,
-                  wscWebhooks = []
+                { enabled = True,
+                  port = 8080,
+                  globalSecret = Nothing,
+                  webhooks = []
                 }
-        wscPort config @?= 8080
+        config.port @?= 8080
     ]

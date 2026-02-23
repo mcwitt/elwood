@@ -19,34 +19,34 @@ import Elwood.Tools.Types
 mkSaveMemoryTool :: Logger -> MemoryStore -> Tool
 mkSaveMemoryTool logger memStore =
   Tool
-    { toolName = "save_memory",
-      toolDescription =
+    { name = "save_memory",
+      description =
         "Save information to persistent memory for future reference. "
           <> "Use this to remember important facts, preferences, or information "
           <> "that should persist across conversations. "
           <> "The key should be a short, descriptive identifier.",
-      toolInputSchema = saveMemorySchema,
-      toolExecute = \input -> case parseSaveInput input of
+      inputSchema = saveMemorySchema,
+      execute = \input -> case parseSaveInput input of
         Left err -> pure $ toolError err
-        Right (key, content) -> do
-          logInfo logger "Saving memory" [("key", key)]
-          result <- saveMemory memStore key content
+        Right (k, c) -> do
+          logInfo logger "Saving memory" [("key", k)]
+          result <- saveMemory memStore k c
           case result of
             Left err -> pure $ toolError err
-            Right () -> pure $ toolSuccess $ "Memory saved with key: " <> key
+            Right () -> pure $ toolSuccess $ "Memory saved with key: " <> k
     }
 
 -- | Construct a tool for searching memories
 mkSearchMemoryTool :: Logger -> MemoryStore -> Tool
 mkSearchMemoryTool logger memStore =
   Tool
-    { toolName = "search_memory",
-      toolDescription =
+    { name = "search_memory",
+      description =
         "Search persistent memory for previously saved information. "
           <> "Use this to recall facts, preferences, or context from past conversations. "
           <> "The query can contain multiple keywords.",
-      toolInputSchema = searchMemorySchema,
-      toolExecute = \input -> case parseSearchInput input of
+      inputSchema = searchMemorySchema,
+      execute = \input -> case parseSearchInput input of
         Left err -> pure $ toolError err
         Right query -> do
           logInfo logger "Searching memory" [("query", query)]
@@ -96,13 +96,13 @@ searchMemorySchema =
 -- | Parse save_memory input
 parseSaveInput :: Value -> Either Text (Text, Text)
 parseSaveInput (Aeson.Object obj) = do
-  key <- case KM.lookup "key" obj of
-    Just (Aeson.String k) -> Right k
+  k <- case KM.lookup "key" obj of
+    Just (Aeson.String kv) -> Right kv
     _ -> Left "Missing or invalid 'key' parameter"
-  content <- case KM.lookup "content" obj of
-    Just (Aeson.String c) -> Right c
+  c <- case KM.lookup "content" obj of
+    Just (Aeson.String cv) -> Right cv
     _ -> Left "Missing or invalid 'content' parameter"
-  Right (key, content)
+  Right (k, c)
 parseSaveInput _ = Left "Expected object input"
 
 -- | Parse search_memory input
@@ -120,7 +120,7 @@ formatResults results =
   where
     formatResult :: MemoryResult -> Text
     formatResult r =
-      "**" <> mrKey r <> "**\n" <> limitContent (mrContent r)
+      "**" <> r.key <> "**\n" <> limitContent r.content
 
     limitContent :: Text -> Text
     limitContent t

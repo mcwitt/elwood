@@ -34,38 +34,38 @@ import System.FilePath (takeBaseName, (</>))
 -- | Memory store handle
 newtype MemoryStore = MemoryStore
   { -- | Directory containing memory files
-    msDirectory :: FilePath
+    directory :: FilePath
   }
   deriving stock (Show)
 
 -- | Result from a memory search
 data MemoryResult = MemoryResult
   { -- | Memory key (filename without extension)
-    mrKey :: Text,
+    key :: Text,
     -- | Memory content
-    mrContent :: Text,
+    content :: Text,
     -- | Relevance score (number of matching terms)
-    mrScore :: Int
+    score :: Int
   }
   deriving stock (Show, Eq)
 
 -- | Create a new memory store
 newMemoryStore :: FilePath -> IO MemoryStore
-newMemoryStore stateDir = do
-  let memDir = stateDir </> "memory"
+newMemoryStore stateDir_ = do
+  let memDir = stateDir_ </> "memory"
   createDirectoryIfMissing True memDir
-  pure MemoryStore {msDirectory = memDir}
+  pure MemoryStore {directory = memDir}
 
 -- | Save a memory with the given key
 -- Keys are sanitized to be filesystem-safe
 saveMemory :: MemoryStore -> Text -> Text -> IO (Either Text ())
-saveMemory store key content = do
-  case sanitizeKey key of
+saveMemory store k c = do
+  case sanitizeKey k of
     Nothing -> pure $ Left "Invalid memory key (must contain alphanumeric characters)"
     Just safeKey -> do
-      let path = msDirectory store </> T.unpack safeKey <> ".md"
+      let path = store.directory </> T.unpack safeKey <> ".md"
       catch
-        (Right <$> TIO.writeFile path content)
+        (Right <$> TIO.writeFile path c)
         (\(e :: SomeException) -> pure $ Left $ "Failed to save memory: " <> T.pack (show e))
 
 -- | Search memories by keyword
@@ -78,19 +78,19 @@ searchMemory store query = do
     else do
       memories <- listMemories store
       results <- mapM (scoreMemory terms) memories
-      pure $ sortOn (Down . mrScore) $ filter ((> 0) . mrScore) results
+      pure $ sortOn (Down . (.score)) $ filter (\r -> r.score > 0) results
   where
     scoreMemory :: [Text] -> (Text, Text) -> IO MemoryResult
-    scoreMemory terms (key, content) = do
-      let lowerContent = T.toLower content
-          lowerKey = T.toLower key
+    scoreMemory terms (k, c) = do
+      let lowerContent = T.toLower c
+          lowerKey = T.toLower k
           -- Score: count how many terms appear in content or key
-          score = length $ filter (\t -> t `T.isInfixOf` lowerContent || t `T.isInfixOf` lowerKey) terms
+          s = length $ filter (\t -> t `T.isInfixOf` lowerContent || t `T.isInfixOf` lowerKey) terms
       pure
         MemoryResult
-          { mrKey = key,
-            mrContent = content,
-            mrScore = score
+          { key = k,
+            content = c,
+            score = s
           }
 
 -- | List all memories with their contents
@@ -98,26 +98,26 @@ listMemories :: MemoryStore -> IO [(Text, Text)]
 listMemories store = do
   files <-
     catch
-      (listDirectory (msDirectory store))
+      (listDirectory store.directory)
       (\(_ :: SomeException) -> pure [])
   let mdFiles = filter (\f -> ".md" `T.isSuffixOf` T.pack f) files
   mapM readMemoryFile mdFiles
   where
     readMemoryFile :: FilePath -> IO (Text, Text)
     readMemoryFile filename = do
-      let key = T.pack $ takeBaseName filename
-          path = msDirectory store </> filename
-      content <-
+      let k = T.pack $ takeBaseName filename
+          path = store.directory </> filename
+      c <-
         catch
           (TIO.readFile path)
           (\(_ :: SomeException) -> pure "")
-      pure (key, content)
+      pure (k, c)
 
 -- | Sanitize a key to be filesystem-safe
 -- Returns Nothing if the key would be empty after sanitization
 sanitizeKey :: Text -> Maybe Text
-sanitizeKey key =
-  let sanitized = T.filter (\c -> isAlphaNum c || c == '-' || c == '_') key
+sanitizeKey k =
+  let sanitized = T.filter (\c -> isAlphaNum c || c == '-' || c == '_') k
    in if T.null sanitized
         then Nothing
         else Just $ T.take 100 sanitized -- Limit length

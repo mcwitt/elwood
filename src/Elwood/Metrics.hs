@@ -28,11 +28,11 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Elwood.Claude.Conversation (ConversationStore, allConversations)
-import Elwood.Claude.Types (ClaudeMessage, Conversation (..), StopReason, Usage (..), stopReasonToText)
+import Elwood.Claude.Conversation qualified as Claude
+import Elwood.Claude.Types qualified as Claude
 import Elwood.Event.Types (EventSource (..))
-import Elwood.Tools.Registry (ToolRegistry, allTools)
-import Elwood.Tools.Types (Tool (..))
+import Elwood.Tools.Registry qualified as Tools
+import Elwood.Tools.Types qualified as Tools
 
 -- | Key for a counter metric
 data CounterKey
@@ -48,7 +48,7 @@ data CounterKey
 
 -- | Thread-safe metrics store
 newtype MetricsStore = MetricsStore
-  { msCounters :: IORef (Map CounterKey Int64)
+  { counters :: IORef (Map CounterKey Int64)
   }
 
 -- | Create an empty metrics store
@@ -57,24 +57,24 @@ newMetricsStore = MetricsStore <$> newIORef Map.empty
 
 -- | Increment a counter by a given amount
 incrementCounter :: MetricsStore -> CounterKey -> Int64 -> IO ()
-incrementCounter store key delta =
-  atomicModifyIORef' (msCounters store) $ \m ->
-    (Map.insertWith (+) key delta m, ())
+incrementCounter store k delta =
+  atomicModifyIORef' store.counters $ \m ->
+    (Map.insertWith (+) k delta m, ())
 
 -- | Record metrics from an API response
-recordApiResponse :: MetricsStore -> Text -> Text -> StopReason -> Usage -> IO ()
-recordApiResponse store model source stopReason usage = do
-  let reasonText = stopReasonToText stopReason
-  incrementCounter store (CkTokens "input" model source) (fromIntegral (usageInputTokens usage))
-  incrementCounter store (CkTokens "output" model source) (fromIntegral (usageOutputTokens usage))
-  incrementCounter store (CkTokens "cache_read" model source) (fromIntegral (usageCacheReadInputTokens usage))
-  incrementCounter store (CkTokens "cache_creation" model source) (fromIntegral (usageCacheCreationInputTokens usage))
-  incrementCounter store (CkApiRequests model source reasonText) 1
+recordApiResponse :: MetricsStore -> Text -> Text -> Claude.StopReason -> Claude.Usage -> IO ()
+recordApiResponse store m source stopReason u = do
+  let reasonText = Claude.stopReasonToText stopReason
+  incrementCounter store (CkTokens "input" m source) (fromIntegral u.inputTokens)
+  incrementCounter store (CkTokens "output" m source) (fromIntegral u.outputTokens)
+  incrementCounter store (CkTokens "cache_read" m source) (fromIntegral u.cacheReadInputTokens)
+  incrementCounter store (CkTokens "cache_creation" m source) (fromIntegral u.cacheCreationInputTokens)
+  incrementCounter store (CkApiRequests m source reasonText) 1
 
 -- | Record a tool call
 recordToolCall :: MetricsStore -> Text -> IO ()
-recordToolCall store toolName =
-  incrementCounter store (CkToolCalls toolName) 1
+recordToolCall store toolName_ =
+  incrementCounter store (CkToolCalls toolName_) 1
 
 -- | Record a compaction event
 recordCompaction :: MetricsStore -> IO ()
@@ -84,83 +84,83 @@ recordCompaction store =
 -- | Normalize an EventSource to a metrics label
 metricsSource :: EventSource -> Text
 metricsSource (TelegramSource _) = "telegram"
-metricsSource (WebhookSource name) = "webhook:" <> name
-metricsSource (CronSource name) = "cron:" <> name
+metricsSource (WebhookSource n) = "webhook:" <> n
+metricsSource (CronSource n) = "cron:" <> n
 
 -- | Render all metrics in Prometheus text exposition format
-renderMetrics :: MetricsStore -> ConversationStore -> ToolRegistry -> Int -> IO LBS.ByteString
+renderMetrics :: MetricsStore -> Claude.ConversationStore -> Tools.ToolRegistry -> Int -> IO LBS.ByteString
 renderMetrics store convStore registry mcpServerCount = do
-  counters <- readIORef (msCounters store)
-  convs <- allConversations convStore
-  let tools = allTools registry
+  cs <- readIORef store.counters
+  convs <- Claude.allConversations convStore
+  let ts = Tools.allTools registry
       builder =
-        renderCounters counters
+        renderCounters cs
           <> renderConversationGauges convs
-          <> renderToolGauge tools
+          <> renderToolGauge ts
           <> renderMCPGauge mcpServerCount
   pure $ B.toLazyByteString builder
 
 -- | Render all counter metrics
 renderCounters :: Map CounterKey Int64 -> B.Builder
-renderCounters counters =
-  renderTokenCounters "input" counters
-    <> renderTokenCounters "output" counters
-    <> renderTokenCounters "cache_read" counters
-    <> renderTokenCounters "cache_creation" counters
-    <> renderApiRequestCounters counters
-    <> renderToolCallCounters counters
-    <> renderCompactionCounter counters
+renderCounters cs =
+  renderTokenCounters "input" cs
+    <> renderTokenCounters "output" cs
+    <> renderTokenCounters "cache_read" cs
+    <> renderTokenCounters "cache_creation" cs
+    <> renderApiRequestCounters cs
+    <> renderToolCallCounters cs
+    <> renderCompactionCounter cs
 
 -- | Render token counters for a given suffix
 renderTokenCounters :: Text -> Map CounterKey Int64 -> B.Builder
-renderTokenCounters suffix counters =
+renderTokenCounters suffix cs =
   let metricName = "elwood_" <> suffix <> "_tokens_total"
-      matching = [(model, source, v) | (CkTokens s model source, v) <- Map.toList counters, s == suffix]
+      matching = [(m, source, v) | (CkTokens s m source, v) <- Map.toList cs, s == suffix]
    in if null matching
         then mempty
         else
           helpLine metricName ("Total " <> suffix <> " tokens used")
             <> typeLine metricName "counter"
             <> mconcat
-              [ metricLine metricName [("model", model), ("source", source)] v
-              | (model, source, v) <- matching
+              [ metricLine metricName [("model", m), ("source", source)] v
+              | (m, source, v) <- matching
               ]
 
 -- | Render API request counters
 renderApiRequestCounters :: Map CounterKey Int64 -> B.Builder
-renderApiRequestCounters counters =
+renderApiRequestCounters cs =
   let metricName = "elwood_api_requests_total"
-      matching = [(model, source, reason, v) | (CkApiRequests model source reason, v) <- Map.toList counters]
+      matching = [(m, source, reason, v) | (CkApiRequests m source reason, v) <- Map.toList cs]
    in if null matching
         then mempty
         else
           helpLine metricName "Total API requests"
             <> typeLine metricName "counter"
             <> mconcat
-              [ metricLine metricName [("model", model), ("source", source), ("stop_reason", reason)] v
-              | (model, source, reason, v) <- matching
+              [ metricLine metricName [("model", m), ("source", source), ("stop_reason", reason)] v
+              | (m, source, reason, v) <- matching
               ]
 
 -- | Render tool call counters
 renderToolCallCounters :: Map CounterKey Int64 -> B.Builder
-renderToolCallCounters counters =
+renderToolCallCounters cs =
   let metricName = "elwood_tool_calls_total"
-      matching = [(name, v) | (CkToolCalls name, v) <- Map.toList counters]
+      matching = [(n, v) | (CkToolCalls n, v) <- Map.toList cs]
    in if null matching
         then mempty
         else
           helpLine metricName "Total tool calls"
             <> typeLine metricName "counter"
             <> mconcat
-              [ metricLine metricName [("tool", name)] v
-              | (name, v) <- matching
+              [ metricLine metricName [("tool", n)] v
+              | (n, v) <- matching
               ]
 
 -- | Render compaction counter
 renderCompactionCounter :: Map CounterKey Int64 -> B.Builder
-renderCompactionCounter counters =
+renderCompactionCounter cs =
   let metricName = "elwood_compactions_total"
-      value = Map.findWithDefault 0 CkCompactions counters
+      value = Map.findWithDefault 0 CkCompactions cs
    in if value == 0
         then mempty
         else
@@ -169,29 +169,29 @@ renderCompactionCounter counters =
             <> metricLine metricName [] value
 
 -- | Render conversation gauges
-renderConversationGauges :: Map Text Conversation -> B.Builder
+renderConversationGauges :: Map Text Claude.Conversation -> B.Builder
 renderConversationGauges convs
   | Map.null convs = mempty
   | otherwise =
       helpLine "elwood_conversation_messages" "Number of messages in conversation"
         <> typeLine "elwood_conversation_messages" "gauge"
         <> mconcat
-          [ metricLine "elwood_conversation_messages" [("session", convSessionId conv)] (fromIntegral (length (convMessages conv)))
+          [ metricLine "elwood_conversation_messages" [("session", conv.sessionId)] (fromIntegral (length conv.messages))
           | conv <- Map.elems convs
           ]
         <> helpLine "elwood_conversation_estimated_tokens" "Estimated tokens in conversation"
         <> typeLine "elwood_conversation_estimated_tokens" "gauge"
         <> mconcat
-          [ metricLine "elwood_conversation_estimated_tokens" [("session", convSessionId conv)] (fromIntegral (estimateMessageTokens (convMessages conv)))
+          [ metricLine "elwood_conversation_estimated_tokens" [("session", conv.sessionId)] (fromIntegral (estimateMessageTokens conv.messages))
           | conv <- Map.elems convs
           ]
 
 -- | Render tools registered gauge
-renderToolGauge :: [Tool] -> B.Builder
-renderToolGauge tools =
+renderToolGauge :: [Tools.Tool] -> B.Builder
+renderToolGauge ts =
   helpLine "elwood_tools_registered" "Number of registered tools"
     <> typeLine "elwood_tools_registered" "gauge"
-    <> metricLine "elwood_tools_registered" [] (fromIntegral (length tools))
+    <> metricLine "elwood_tools_registered" [] (fromIntegral (length ts))
 
 -- | Render MCP server count gauge
 renderMCPGauge :: Int -> B.Builder
@@ -202,26 +202,26 @@ renderMCPGauge count =
 
 -- | Build a # HELP line
 helpLine :: Text -> Text -> B.Builder
-helpLine name desc =
+helpLine n desc =
   B.byteString "# HELP "
-    <> B.byteString (TE.encodeUtf8 name)
+    <> B.byteString (TE.encodeUtf8 n)
     <> B.char7 ' '
     <> B.byteString (TE.encodeUtf8 desc)
     <> B.char7 '\n'
 
 -- | Build a # TYPE line
 typeLine :: Text -> Text -> B.Builder
-typeLine name ty =
+typeLine n ty =
   B.byteString "# TYPE "
-    <> B.byteString (TE.encodeUtf8 name)
+    <> B.byteString (TE.encodeUtf8 n)
     <> B.char7 ' '
     <> B.byteString (TE.encodeUtf8 ty)
     <> B.char7 '\n'
 
 -- | Build a metric line with optional labels
 metricLine :: Text -> [(Text, Text)] -> Int64 -> B.Builder
-metricLine name labels value =
-  B.byteString (TE.encodeUtf8 name)
+metricLine n labels value =
+  B.byteString (TE.encodeUtf8 n)
     <> renderLabels labels
     <> B.char7 ' '
     <> B.int64Dec value
@@ -251,7 +251,7 @@ escapeLabelValue = T.concatMap escape
     escape c = T.singleton c
 
 -- | Estimate the number of tokens in a message list (JSON length / 4)
-estimateMessageTokens :: [ClaudeMessage] -> Int
+estimateMessageTokens :: [Claude.ClaudeMessage] -> Int
 estimateMessageTokens msgs =
   let jsonBytes = LBS.length $ encode msgs
    in fromIntegral jsonBytes `div` 4

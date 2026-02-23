@@ -26,6 +26,7 @@ library
     Elwood.Aeson
     Elwood.App
     Elwood.Approval
+    Elwood.Claude
     Elwood.Claude.AgentLoop
     Elwood.Claude.Client
     Elwood.Claude.Compaction
@@ -35,21 +36,25 @@ library
     Elwood.Event
     Elwood.Event.Types
     Elwood.Logging
+    Elwood.MCP
     Elwood.MCP.Client
     Elwood.MCP.Registry
     Elwood.MCP.Types
     Elwood.Memory
     Elwood.Metrics
     Elwood.Permissions
+    Elwood.Telegram
     Elwood.Telegram.Client
     Elwood.Telegram.Polling
     Elwood.Telegram.Types
+    Elwood.Tools
     Elwood.Tools.Attachment
     Elwood.Tools.Command
     Elwood.Tools.Memory
     Elwood.Tools.Meta
     Elwood.Tools.Registry
     Elwood.Tools.Types
+    Elwood.Webhook
     Elwood.Webhook.Server
     Elwood.Webhook.Types
 
@@ -84,10 +89,12 @@ library
     DeriveAnyClass
     DeriveGeneric
     DerivingStrategies
+    DuplicateRecordFields
     GeneralizedNewtypeDeriving
     LambdaCase
+    NoFieldSelectors
+    OverloadedRecordDot
     OverloadedStrings
-    RecordWildCards
     TypeApplications
 
 executable elwood
@@ -140,7 +147,10 @@ test-suite elwood-test
   hs-source-dirs:     test
   default-language:   GHC2021
   default-extensions:
+    DuplicateRecordFields
     LambdaCase
+    NoFieldSelectors
+    OverloadedRecordDot
     OverloadedStrings
 
   ghc-options:        -threaded -rtsopts -with-rtsopts=-N

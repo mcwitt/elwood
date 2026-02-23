@@ -13,12 +13,12 @@ import Test.Tasty.HUnit
 
 -- | A simple no-op tool for testing
 mkTestTool :: Text -> Text -> Tool
-mkTestTool name desc =
+mkTestTool n desc =
   Tool
-    { toolName = name,
-      toolDescription = desc,
-      toolInputSchema = object ["type" .= ("object" :: Text)],
-      toolExecute = \_ -> pure (ToolSuccess "ok")
+    { name = n,
+      description = desc,
+      inputSchema = object ["type" .= ("object" :: Text)],
+      execute = \_ -> pure (ToolSuccess "ok")
     }
 
 -- | Build a test registry with several tools
@@ -61,7 +61,7 @@ searchToolsTests =
       testCase "returned names match activeToolSchemas" $ do
         let (_text, names) = searchTools testRegistry "weather"
             schemas = activeToolSchemas testRegistry names
-            schemaNames = Set.fromList (map tsName schemas)
+            schemaNames = Set.fromList (map (.name) schemas)
         assertBool "Should contain loaded tool" (Set.member "mcp_weather_forecast" schemaNames)
         assertBool "Should not contain unloaded tool" (not $ Set.member "mcp_calendar_list" schemaNames),
       testCase "top-20 limiting" $ do

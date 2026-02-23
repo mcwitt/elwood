@@ -89,7 +89,7 @@ calculateDelayTests =
         60
         (calculateRetryDelay defaultRetryConfig (ClaudeRateLimited Nothing) 10),
     testCase "custom config respected" $
-      let config = defaultRetryConfig {rcBaseDelay = 2, rcMaxDelay = 30}
+      let config = defaultRetryConfig {baseDelay = 2, maxDelay = 30}
        in assertEqual
             "should use custom baseDelay"
             8
@@ -128,7 +128,7 @@ retryTests =
       assertEqual "should attempt 3 times" 3 attempts,
     testCase "stops after max retries" $ do
       attemptsRef <- newIORef (0 :: Int)
-      let config = defaultRetryConfig {rcMaxRetries = 2}
+      let config = defaultRetryConfig {maxRetries = 2}
           action :: IO (Either ClaudeError ())
           action = do
             modifyIORef attemptsRef (+ 1)
@@ -158,8 +158,8 @@ retryTests =
       callbackRef <- newIORef ([] :: [(Int, Int)])
       let config =
             defaultRetryConfig
-              { rcMaxRetries = 2,
-                rcOnRetry = Just $ \attempt secs _err ->
+              { maxRetries = 2,
+                onRetry = Just $ \attempt secs _err ->
                   modifyIORef callbackRef ((attempt, secs) :)
               }
           action = pure (Left $ ClaudeRateLimited (Just 30))

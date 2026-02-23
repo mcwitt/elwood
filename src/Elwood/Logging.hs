@@ -29,9 +29,9 @@ data LogLevel
 
 -- | Structured log message
 data LogMsg = LogMsg
-  { logLevel :: LogLevel,
-    logMessage :: Text,
-    logContext :: [(Text, Text)]
+  { level :: LogLevel,
+    message :: Text,
+    context :: [(Text, Text)]
   }
   deriving stock (Show)
 
@@ -55,23 +55,23 @@ formatContext ctx =
 -- | Create a new logger that writes to stdout
 newLogger :: LogLevel -> IO Logger
 newLogger minLevel = pure $ LogAction $ \msg ->
-  when (logLevel msg >= minLevel) $ do
+  when (msg.level >= minLevel) $ do
     timestamp <- getCurrentTime
     let timeStr = T.pack $ formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%S" timestamp
         line =
           T.concat
             [ "[" <> timeStr <> "] ",
-              "[" <> formatLevel (logLevel msg) <> "] ",
-              logMessage msg,
-              formatContext (logContext msg)
+              "[" <> formatLevel msg.level <> "] ",
+              msg.message,
+              formatContext msg.context
             ]
     TIO.putStrLn line
     hFlush stdout
 
 -- | Log a message with the given level and context
 logMsg :: Logger -> LogLevel -> Text -> [(Text, Text)] -> IO ()
-logMsg (LogAction action) level message context =
-  action LogMsg {logLevel = level, logMessage = message, logContext = context}
+logMsg (LogAction action) lvl msg ctx =
+  action LogMsg {level = lvl, message = msg, context = ctx}
 
 -- | Log a debug message
 logDebug :: Logger -> Text -> [(Text, Text)] -> IO ()

@@ -21,66 +21,66 @@ import GHC.Generics (Generic)
 -- | Configuration for a single webhook endpoint
 data WebhookConfig = WebhookConfig
   { -- | Route name: /webhook/<name>
-    wcName :: Text,
+    name :: Text,
     -- | Required secret (header: X-Webhook-Secret)
-    wcSecret :: Maybe Text,
-    -- | Template with {{.field}} placeholders (mutually exclusive with wcPromptFile)
-    wcPromptTemplate :: Maybe Text,
+    secret :: Maybe Text,
+    -- | Template with {{.field}} placeholders (mutually exclusive with promptFile)
+    promptTemplate :: Maybe Text,
     -- | Absolute path to prompt file (resolved from workspaceDir at config load time)
-    wcPromptFile :: Maybe FilePath,
+    promptFile :: Maybe FilePath,
     -- | Session mode: isolated or named:<id>
-    wcSession :: SessionConfig,
+    session :: SessionConfig,
     -- | Where to deliver responses
-    wcDelivery :: [DeliveryTarget],
+    delivery :: [DeliveryTarget],
     -- | Suppress notification if response contains this string
-    wcSuppressIfContains :: Maybe Text,
+    suppressIfContains :: Maybe Text,
     -- | Model override for this endpoint (Nothing = use global)
-    wcModel :: Maybe Text,
+    model :: Maybe Text,
     -- | Thinking level override for this endpoint (Nothing = use global)
-    wcThinking :: Maybe Value
+    thinking :: Maybe Value
   }
   deriving stock (Show, Eq, Generic)
 
 -- | Configuration for the webhook server
 data WebhookServerConfig = WebhookServerConfig
   { -- | Whether webhook server is enabled
-    wscEnabled :: Bool,
+    enabled :: Bool,
     -- | Port to listen on (default: 8080)
-    wscPort :: Int,
+    port :: Int,
     -- | Global secret (fallback if webhook has no secret)
-    wscGlobalSecret :: Maybe Text,
+    globalSecret :: Maybe Text,
     -- | Configured webhook endpoints
-    wscWebhooks :: [WebhookConfig]
+    webhooks :: [WebhookConfig]
   }
   deriving stock (Show, Eq, Generic)
 
 -- | YAML file configuration for webhook server
 data WebhookServerConfigFile = WebhookServerConfigFile
-  { wscfEnabled :: Maybe Bool,
-    wscfPort :: Maybe Int,
-    wscfGlobalSecret :: Maybe Text,
-    wscfEndpoints :: Maybe [WebhookConfigFile]
+  { enabled :: Maybe Bool,
+    port :: Maybe Int,
+    globalSecret :: Maybe Text,
+    endpoints :: Maybe [WebhookConfigFile]
   }
   deriving stock (Show, Generic)
 
 -- | YAML file configuration for a webhook endpoint
 data WebhookConfigFile = WebhookConfigFile
-  { wcfName :: Text,
-    wcfSecret :: Maybe Text,
-    wcfPromptTemplate :: Maybe Text,
-    wcfPromptFile :: Maybe FilePath,
-    wcfSession :: Maybe Text,
-    wcfDeliver :: Maybe [DeliveryTargetFile],
-    wcfSuppressIfContains :: Maybe Text,
-    wcfModel :: Maybe Text,
-    wcfThinking :: Maybe Value
+  { name :: Text,
+    secret :: Maybe Text,
+    promptTemplate :: Maybe Text,
+    promptFile :: Maybe FilePath,
+    session :: Maybe Text,
+    deliver :: Maybe [DeliveryTargetFile],
+    suppressIfContains :: Maybe Text,
+    model :: Maybe Text,
+    thinking :: Maybe Value
   }
   deriving stock (Show, Generic)
 
 -- | YAML file configuration for a delivery target
 data DeliveryTargetFile = DeliveryTargetFile
-  { dtfType :: Text,
-    dtfSession :: Maybe Text
+  { type_ :: Text,
+    session :: Maybe Text
   }
   deriving stock (Show, Generic)
 

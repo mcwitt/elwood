@@ -2,10 +2,10 @@
 
 module Elwood.MCP.Registry
   ( -- * Tool Discovery
-    discoverMCPTools,
+    discoverTools,
 
     -- * Tool Conversion
-    mcpToolToTool,
+    toTool,
 
     -- * Server Management
     startMCPServers,
@@ -21,14 +21,14 @@ import Data.Text qualified as T
 import Data.Vector qualified as V
 import Elwood.Config (MCPServerConfig (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
-import Elwood.MCP.Client (sendRequest, spawnMCPServer, stopMCPServer)
+import Elwood.MCP.Client (sendRequest, spawnServer, stopServer)
 import Elwood.MCP.Types
 import Elwood.Tools.Registry (ToolRegistry, registerTool)
 import Elwood.Tools.Types (Tool (..), ToolResult (..))
 
 -- | Response from tools/list
 newtype ToolsListResponse = ToolsListResponse
-  { tlrTools :: [MCPTool]
+  { tools :: [MCPTool]
   }
 
 instance FromJSON ToolsListResponse where
@@ -36,15 +36,15 @@ instance FromJSON ToolsListResponse where
     ToolsListResponse <$> v .: "tools"
 
 -- | Query available tools from an MCP server
-discoverMCPTools :: MCPServer -> IO (Either MCPError [MCPTool])
-discoverMCPTools server = do
+discoverTools :: MCPServer -> IO (Either MCPError [MCPTool])
+discoverTools server = do
   result <- sendRequest server "tools/list" Nothing
   case result of
     Left err -> pure $ Left err
     Right value -> do
-      case fromJSONValue value of
+      case fromJSONValue value :: Maybe ToolsListResponse of
         Nothing -> pure $ Left $ MCPProtocolError "Failed to parse tools/list response"
-        Just resp -> pure $ Right $ tlrTools resp
+        Just resp -> pure $ Right resp.tools
 
 -- | Helper to parse JSON Value
 fromJSONValue :: (FromJSON a) => Value -> Maybe a
@@ -53,13 +53,13 @@ fromJSONValue v = case fromJSON v of
   Success a -> Just a
 
 -- | Convert an MCP tool to an Elwood Tool
-mcpToolToTool :: Text -> MCPServer -> MCPTool -> Tool
-mcpToolToTool serverName server mcpTool =
+toTool :: Text -> MCPServer -> MCPTool -> Tool
+toTool serverName server mcpTool =
   Tool
-    { toolName = "mcp_" <> serverName <> "_" <> mtName mcpTool,
-      toolDescription = fromMaybe "(MCP tool)" (mtDescription mcpTool),
-      toolInputSchema = ensureTypeObject (mtInputSchema mcpTool),
-      toolExecute = executeMCPTool server mcpTool
+    { name = "mcp_" <> serverName <> "_" <> mcpTool.name,
+      description = fromMaybe "(MCP tool)" mcpTool.description,
+      inputSchema = ensureTypeObject mcpTool.inputSchema,
+      execute = executeMCPTool server mcpTool
     }
 
 -- | Ensure the input schema has type: "object" at the top level
@@ -71,14 +71,14 @@ ensureTypeObject v = v
 -- | Execute an MCP tool
 executeMCPTool :: MCPServer -> MCPTool -> Value -> IO ToolResult
 executeMCPTool server mcpTool input = do
-  let params =
+  let params_ =
         object
-          [ "name" .= mtName mcpTool,
+          [ "name" .= mcpTool.name,
             "arguments" .= input
           ]
 
   result <-
-    sendRequest server "tools/call" (Just params)
+    sendRequest server "tools/call" (Just params_)
       `catch` \(e :: SomeException) ->
         pure $ Left $ MCPRequestError $ T.pack $ show e
 
@@ -124,19 +124,19 @@ startMCPServers logger configs registry = do
 
   let (failures, successes) = partitionResults results
       servers = map fst successes
-      allTools = concatMap snd successes
+      allToolsList = concatMap snd successes
 
   -- Log any failures
   mapM_ (logServerFailure logger) failures
 
   -- Register all MCP tools
-  let finalRegistry = foldr registerTool registry allTools
+  let finalRegistry = foldr registerTool registry allToolsList
 
   logInfo
     logger
     "MCP initialization complete"
     [ ("servers", T.pack $ show $ length servers),
-      ("tools", T.pack $ show $ length allTools)
+      ("tools", T.pack $ show $ length allToolsList)
     ]
 
   pure (finalRegistry, servers)
@@ -146,25 +146,25 @@ startOneServer ::
   Logger ->
   MCPServerConfig ->
   IO (Either (MCPServerConfig, MCPError) (MCPServer, [Tool]))
-startOneServer logger config = do
-  spawnResult <- spawnMCPServer logger config
+startOneServer logger cfg = do
+  spawnResult <- spawnServer logger cfg
   case spawnResult of
-    Left err -> pure $ Left (config, err)
+    Left err -> pure $ Left (cfg, err)
     Right server -> do
-      toolsResult <- discoverMCPTools server
+      toolsResult <- discoverTools server
       case toolsResult of
         Left err -> do
-          stopMCPServer server
-          pure $ Left (config, err)
+          stopServer server
+          pure $ Left (cfg, err)
         Right mcpTools -> do
-          let tools = map (mcpToolToTool (mscName config) server) mcpTools
+          let ts = map (toTool cfg.name server) mcpTools
           logInfo
             logger
             "Discovered MCP tools"
-            [ ("server", mscName config),
-              ("count", T.pack $ show $ length tools)
+            [ ("server", cfg.name),
+              ("count", T.pack $ show $ length ts)
             ]
-          pure $ Right (server, tools)
+          pure $ Right (server, ts)
 
 -- | Partition results into failures and successes
 partitionResults ::
@@ -177,10 +177,10 @@ partitionResults = foldr go ([], [])
 
 -- | Log a server failure
 logServerFailure :: Logger -> (MCPServerConfig, MCPError) -> IO ()
-logServerFailure logger (config, err) =
+logServerFailure logger (cfg, err) =
   logWarn
     logger
     "MCP server failed to start"
-    [ ("server", mscName config),
+    [ ("server", cfg.name),
       ("error", T.pack $ show err)
     ]

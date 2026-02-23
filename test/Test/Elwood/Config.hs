@@ -37,16 +37,16 @@ compactionConfigTests =
     [ testCase "has sensible defaults" $ do
         let cc =
               CompactionConfig
-                { ccTokenThreshold = 50000,
-                  ccCompactionModel = "claude-3-5-haiku-20241022"
+                { tokenThreshold = 50000,
+                  compactionModel = "claude-3-5-haiku-20241022"
                 }
-        ccTokenThreshold cc @?= 50000
-        ccCompactionModel cc @?= "claude-3-5-haiku-20241022",
+        cc.tokenThreshold @?= 50000
+        cc.compactionModel @?= "claude-3-5-haiku-20241022",
       testCase "threshold is reasonable" $ do
         let cc = CompactionConfig 30000 "model"
         -- Threshold should be positive and reasonable
-        ccTokenThreshold cc > 0 @?= True
-        ccTokenThreshold cc < 1000000 @?= True
+        cc.tokenThreshold > 0 @?= True
+        cc.tokenThreshold < 1000000 @?= True
     ]
 
 thinkingLevelTests :: TestTree
@@ -132,13 +132,13 @@ exampleConfigTests =
         unsetEnv "TELEGRAM_BOT_TOKEN"
         unsetEnv "ANTHROPIC_API_KEY"
         -- Verify some fields parsed correctly
-        cfgModel config @?= "claude-sonnet-4-20250514"
-        cfgThinking config @?= ThinkingOff
-        cfgAllowedChatIds config @?= [123456789]
-        ccTokenThreshold (cfgCompaction config) @?= 50000
+        config.model @?= "claude-sonnet-4-20250514"
+        config.thinking @?= ThinkingOff
+        config.allowedChatIds @?= [123456789]
+        config.compaction.tokenThreshold @?= 50000
         -- Verify delivery targets from example config
-        let webhooks = wscWebhooks (cfgWebhook config)
+        let webhooks = config.webhook.webhooks
         length webhooks @?= 1
         let wh = head webhooks
-        wcDelivery wh @?= [TelegramBroadcast, LogOnly]
+        wh.delivery @?= [TelegramBroadcast, LogOnly]
     ]

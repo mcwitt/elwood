@@ -27,15 +27,15 @@ import System.Timeout (timeout)
 
 -- | Construct a tool for running shell commands
 mkRunCommandTool :: Logger -> FilePath -> PermissionConfig -> Tool
-mkRunCommandTool logger workspaceDir perms =
+mkRunCommandTool logger workspaceDir_ perms =
   Tool
-    { toolName = "run_command",
-      toolDescription =
+    { name = "run_command",
+      description =
         "Execute a shell command in the workspace directory. "
           <> "Use this for listing files, checking git status, running builds, etc. "
           <> "The command runs with a 30 second timeout.",
-      toolInputSchema = commandSchema,
-      toolExecute = \input -> case parseInput input of
+      inputSchema = commandSchema,
+      execute = \input -> case parseInput input of
         Left err -> pure $ toolError err
         Right (cmd, timeoutSecs) ->
           case checkCommandPermission perms cmd of
@@ -44,7 +44,7 @@ mkRunCommandTool logger workspaceDir perms =
               pure $ toolError $ "Permission denied: " <> reason
             Allowed -> do
               logInfo logger "Executing command" [("command", cmd)]
-              runWithTimeout cmd timeoutSecs workspaceDir
+              runWithTimeout cmd timeoutSecs workspaceDir_
     }
 
 -- | JSON Schema for command input
@@ -103,22 +103,22 @@ runCommand cmd workDir = do
     (_, Just hOut, Just hErr, ph) <- createProcess process
 
     -- Read output strictly (limit to avoid memory issues)
-    stdout <- limitOutput 50000 <$> hGetContents hOut
-    stderr <- limitOutput 10000 <$> hGetContents hErr
+    stdoutStr <- limitOutput 50000 <$> hGetContents hOut
+    stderrStr <- limitOutput 10000 <$> hGetContents hErr
 
     -- Force evaluation before waiting
-    let !_ = length stdout
-        !_ = length stderr
+    let !_ = length stdoutStr
+        !_ = length stderrStr
 
     exitCode <- waitForProcess ph
 
-    pure (exitCode, stdout, stderr)
+    pure (exitCode, stdoutStr, stderrStr)
 
   case result of
     Left (e :: SomeException) ->
       pure $ toolError $ "Failed to execute command: " <> T.pack (show e)
-    Right (exitCode, stdout, stderr) ->
-      let output = formatOutput exitCode stdout stderr
+    Right (exitCode, stdoutStr, stderrStr) ->
+      let output = formatOutput exitCode stdoutStr stderrStr
        in case exitCode of
             ExitSuccess -> pure $ toolSuccess output
             ExitFailure code ->
@@ -131,9 +131,9 @@ runCommand cmd workDir = do
 
 -- | Format command output
 formatOutput :: ExitCode -> String -> String -> Text
-formatOutput _exitCode stdout stderr =
-  let stdoutText = T.pack stdout
-      stderrText = T.pack stderr
+formatOutput _exitCode stdoutStr stderrStr =
+  let stdoutText = T.pack stdoutStr
+      stderrText = T.pack stderrStr
    in case (T.null (T.strip stdoutText), T.null (T.strip stderrText)) of
         (True, True) -> "(no output)"
         (False, True) -> stdoutText

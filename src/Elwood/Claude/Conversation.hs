@@ -28,51 +28,51 @@ type ConversationCache = Map.Map Text Conversation
 -- | Store for conversation persistence
 data ConversationStore = ConversationStore
   { -- | Directory for conversation files
-    csStateDir :: FilePath,
+    stateDir :: FilePath,
     -- | In-memory cache
-    csCache :: MVar ConversationCache
+    cache :: MVar ConversationCache
   }
 
 -- | Create a new conversation store
 newConversationStore :: FilePath -> IO ConversationStore
-newConversationStore stateDir = do
+newConversationStore dir = do
   -- Ensure conversations directory exists
-  let convDir = stateDir </> "conversations"
+  let convDir = dir </> "conversations"
   createDirectoryIfMissing True convDir
 
-  cache <- newMVar Map.empty
+  c <- newMVar Map.empty
   pure
     ConversationStore
-      { csStateDir = convDir,
-        csCache = cache
+      { stateDir = convDir,
+        cache = c
       }
 
 -- | Sanitize a text value for use as a filename
 sanitizeFilename :: Text -> String
 sanitizeFilename = map sanitize . T.unpack
   where
-    sanitize c
-      | isAlphaNum c = c
-      | c `elem` ['-', '_', '.'] = c
+    sanitize ch
+      | isAlphaNum ch = ch
+      | ch `elem` ['-', '_', '.'] = ch
       | otherwise = '_'
 
 -- | Get the file path for a conversation
 conversationPath :: ConversationStore -> Text -> FilePath
-conversationPath store sessionId =
-  csStateDir store </> sanitizeFilename sessionId <> ".json"
+conversationPath store sid =
+  store.stateDir </> sanitizeFilename sid <> ".json"
 
 -- | Get or create a conversation for a session
 getConversation :: ConversationStore -> Text -> IO Conversation
-getConversation store sessionId = do
-  cache <- readMVar (csCache store)
-  case Map.lookup sessionId cache of
+getConversation store sid = do
+  c <- readMVar store.cache
+  case Map.lookup sid c of
     Just conv -> pure conv
-    Nothing -> loadOrCreateConversation store sessionId
+    Nothing -> loadOrCreateConversation store sid
 
 -- | Load conversation from disk, or create a new one
 loadOrCreateConversation :: ConversationStore -> Text -> IO Conversation
-loadOrCreateConversation store sessionId = do
-  let path = conversationPath store sessionId
+loadOrCreateConversation store sid = do
+  let path = conversationPath store sid
   exists <- doesFileExist path
 
   conv <-
@@ -81,30 +81,30 @@ loadOrCreateConversation store sessionId = do
         result <- eitherDecodeFileStrict path
         case result of
           Right loadedConv -> pure loadedConv
-          Left _err -> createEmptyConversation sessionId
-      else createEmptyConversation sessionId
+          Left _err -> createEmptyConversation sid
+      else createEmptyConversation sid
 
   -- Update cache
-  modifyMVar_ (csCache store) $ \c ->
-    pure $ Map.insert sessionId conv c
+  modifyMVar_ store.cache $ \c ->
+    pure $ Map.insert sid conv c
 
   pure conv
 
 -- | Create an empty conversation
 createEmptyConversation :: Text -> IO Conversation
-createEmptyConversation sessionId = do
+createEmptyConversation sid = do
   now <- getCurrentTime
   pure
     Conversation
-      { convSessionId = sessionId,
-        convMessages = [],
-        convLastUpdated = now
+      { sessionId = sid,
+        messages = [],
+        lastUpdated = now
       }
 
 -- | Save a conversation to disk
 saveConversation :: ConversationStore -> Conversation -> IO ()
 saveConversation store conv = do
-  let path = conversationPath store (convSessionId conv)
+  let path = conversationPath store conv.sessionId
   encodeFile path conv
     `catch` \(_ :: SomeException) ->
       -- Silently ignore write errors for now
@@ -115,34 +115,34 @@ saveConversation store conv = do
 -- Used by agent loop to persist full conversation including tool interactions
 -- Note: Context limits are managed by compaction, not message trimming
 updateConversation :: ConversationStore -> Text -> [ClaudeMessage] -> IO ()
-updateConversation store sessionId messages = do
+updateConversation store sid msgs = do
   now <- getCurrentTime
 
   let conv =
         Conversation
-          { convSessionId = sessionId,
-            convMessages = messages,
-            convLastUpdated = now
+          { sessionId = sid,
+            messages = msgs,
+            lastUpdated = now
           }
 
   -- Update cache and persist
-  modifyMVar_ (csCache store) $ \c ->
-    pure $ Map.insert sessionId conv c
+  modifyMVar_ store.cache $ \c ->
+    pure $ Map.insert sid conv c
 
   saveConversation store conv
 
 -- | Clear a conversation's history
 clearConversation :: ConversationStore -> Text -> IO ()
-clearConversation store sessionId = do
-  conv <- createEmptyConversation sessionId
+clearConversation store sid = do
+  conv <- createEmptyConversation sid
 
   -- Update cache
-  modifyMVar_ (csCache store) $ \c ->
-    pure $ Map.insert sessionId conv c
+  modifyMVar_ store.cache $ \c ->
+    pure $ Map.insert sid conv c
 
   -- Persist empty conversation
   saveConversation store conv
 
 -- | Get all conversations currently in the cache
 allConversations :: ConversationStore -> IO (Map.Map Text Conversation)
-allConversations store = readMVar (csCache store)
+allConversations store = readMVar store.cache
