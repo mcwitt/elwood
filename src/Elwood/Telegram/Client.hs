@@ -21,6 +21,7 @@ import Control.Exception (Exception, throwIO)
 import Control.Monad (when)
 import Data.Aeson (eitherDecode, encode, object, (.=))
 import Data.ByteString.Lazy (ByteString)
+import Data.ByteString.Lazy qualified as LBS
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -123,57 +124,92 @@ getUpdatesAllowed client offset allowedUpdates = do
         | otherwise -> throwIO $ TelegramApiError "API returned ok=false"
 
 -- | Send a message to a chat
+--
+-- Sends with MarkdownV2 parse mode. If Telegram rejects the message due to
+-- entity parsing errors, retries without formatting (plain text) so the
+-- message is never silently lost.
 sendMessage :: TelegramClient -> Int64 -> Text -> IO ()
 sendMessage client chatId_ msgText = do
+  let msgReq =
+        SendMessageRequest
+          { chatId = chatId_,
+            text = msgText,
+            parseMode = Just "MarkdownV2"
+          }
+  sendMessageRaw client msgReq >>= \case
+    Right () -> pure ()
+    Left (status, body)
+      | status == 400,
+        isParseEntityError body ->
+          -- Retry without formatting
+          let plainReq =
+                SendMessageRequest
+                  { chatId = msgReq.chatId,
+                    text = msgReq.text,
+                    parseMode = Nothing
+                  }
+           in sendMessageRaw client plainReq >>= \case
+                Right () -> pure ()
+                Left (s, b) -> throwIO $ TelegramHttpError s b
+      | otherwise -> throwIO $ TelegramHttpError status body
+
+-- | Low-level send: returns Right () on success, Left (status, body) on HTTP error
+sendMessageRaw :: TelegramClient -> SendMessageRequest -> IO (Either (Int, ByteString) ())
+sendMessageRaw client msgReq = do
   req <- buildRequest client "sendMessage"
-  let body =
-        encode
-          SendMessageRequest
-            { chatId = chatId_,
-              text = msgText,
-              parseMode = Just "Markdown"
-            }
-      req' =
+  let req' =
         req
           { method = "POST",
-            requestBody = RequestBodyLBS body
+            requestBody = RequestBodyLBS (encode msgReq)
           }
-
   response <- httpLbs req' client.tcManager
-
   let status = statusCode $ responseStatus response
   if status /= 200
-    then throwIO $ TelegramHttpError status (responseBody response)
+    then pure $ Left (status, responseBody response)
     else case eitherDecode (responseBody response) :: Either String SendMessageResponse of
       Left err -> throwIO $ TelegramParseError err
       Right resp
-        | resp.ok -> pure ()
+        | resp.ok -> pure $ Right ()
         | otherwise -> throwIO $ TelegramApiError "sendMessage returned ok=false"
 
+-- | Check if a Telegram error response indicates a markdown entity parsing failure
+isParseEntityError :: ByteString -> Bool
+isParseEntityError body =
+  "can't parse entities" `T.isInfixOf` TE.decodeUtf8Lenient (LBS.toStrict body)
+
 -- | Send a message with an inline keyboard
+--
+-- Uses MarkdownV2 with plain-text fallback (same as sendMessage).
 sendMessageWithKeyboard :: TelegramClient -> Int64 -> Text -> InlineKeyboardMarkup -> IO Int
 sendMessageWithKeyboard client chatIdVal msgText keyboard = do
-  req <- buildRequest client "sendMessage"
-  let body =
-        encode
-          SendMessageWithKeyboardRequest
-            { chatId = chatIdVal,
-              text = msgText,
-              parseMode = Just "Markdown",
-              replyMarkup = keyboard
-            }
-      req' =
-        req
-          { method = "POST",
-            requestBody = RequestBodyLBS body
-          }
+  let send pm = do
+        req <- buildRequest client "sendMessage"
+        let body =
+              encode
+                SendMessageWithKeyboardRequest
+                  { chatId = chatIdVal,
+                    text = msgText,
+                    parseMode = pm,
+                    replyMarkup = keyboard
+                  }
+            req' =
+              req
+                { method = "POST",
+                  requestBody = RequestBodyLBS body
+                }
+        response <- httpLbs req' client.tcManager
+        let status = statusCode $ responseStatus response
+        pure (status, responseBody response)
 
-  response <- httpLbs req' client.tcManager
+  (status, body) <- send (Just "MarkdownV2")
+  (finalStatus, finalBody) <-
+    if status == 400 && isParseEntityError body
+      then send Nothing
+      else pure (status, body)
 
-  let status = statusCode $ responseStatus response
-  if status /= 200
-    then throwIO $ TelegramHttpError status (responseBody response)
-    else case eitherDecode (responseBody response) :: Either String SendMessageResponse of
+  if finalStatus /= 200
+    then throwIO $ TelegramHttpError finalStatus finalBody
+    else case eitherDecode finalBody :: Either String SendMessageResponse of
       Left err -> throwIO $ TelegramParseError err
       Right resp
         | resp.ok -> pure $ maybe 0 (.id_) resp.result

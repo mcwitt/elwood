@@ -101,13 +101,13 @@ respondToApproval coordinator requestId_ result = atomically $ do
       pure success
     Nothing -> pure False
 
--- | Format a tool use request for display in Telegram
+-- | Format a tool use request for display in Telegram (MarkdownV2)
 formatApprovalRequest :: Text -> Text -> Text
 formatApprovalRequest toolName_ inputSummary =
   T.unlines
     [ "🔐 *Tool Approval Required*",
       "",
-      "*Tool:* `" <> toolName_ <> "`",
+      "*Tool:* `" <> escapeCodeSpan toolName_ <> "`",
       "*Input:*",
       "```",
       escapeCodeBlock inputSummary,
@@ -115,7 +115,9 @@ formatApprovalRequest toolName_ inputSummary =
       "Do you want to allow this action?"
     ]
   where
-    -- Escape triple backticks inside code blocks
+    -- In MarkdownV2, only backtick and backslash need escaping inside code spans
+    escapeCodeSpan = T.replace "\\" "\\\\" . T.replace "`" "\\`"
+    -- Escape triple backticks inside pre blocks
     escapeCodeBlock = T.replace "```" "\\`\\`\\`"
 
 -- | Parse callback data to extract approval decision and request ID
