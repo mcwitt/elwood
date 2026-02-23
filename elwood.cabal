@@ -30,7 +30,6 @@ library
     Elwood.Claude.Client
     Elwood.Claude.Compaction
     Elwood.Claude.Conversation
-    Elwood.Claude.Handler
     Elwood.Claude.Types
     Elwood.Config
     Elwood.Event
@@ -131,6 +130,7 @@ test-suite elwood-test
     , directory         >=1.3  && <1.4
     , elwood
     , filepath          >=1.4  && <1.6
+    , stm               >=2.5  && <2.6
     , tasty             >=1.4  && <1.6
     , tasty-hunit       >=0.10 && <0.11
     , tasty-quickcheck  >=0.10 && <0.12

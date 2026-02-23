@@ -2,35 +2,46 @@
 
 module Elwood.Claude.AgentLoop
   ( runAgentTurn,
+    AgentConfig (..),
     AgentResult (..),
     RateLimitCallback,
     TextCallback,
   )
 where
 
-import Data.Aeson (Value, encode)
+import Data.Aeson (Value (..), encode, object, (.=))
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as LBS
-import Data.IORef (IORef, newIORef, readIORef)
-import Data.Maybe (fromMaybe)
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Types
-import Elwood.Config (DynamicToolLoadingConfig (..), ThinkingEffort (..), ThinkingLevel (..))
+  ( ClaudeError (..),
+    ClaudeMessage (..),
+    ContentBlock (..),
+    MessagesRequest (..),
+    MessagesResponse (..),
+    Role (..),
+    StopReason (..),
+    ThinkingConfig (..),
+    ToolSchema (..),
+    Usage (..),
+    stopReasonToText,
+  )
+import Elwood.Config (ThinkingEffort (..), ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, recordApiResponse, recordToolCall)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
-import Elwood.Tools.Meta (mkFindToolsTool)
+import Elwood.Tools.Meta (searchTools)
 import Elwood.Tools.Registry
-  ( ActiveToolSet,
-    ToolRegistry,
-    activateTool,
+  ( ToolRegistry,
     activeToolSchemas,
     lookupTool,
-    newActiveToolSet,
-    registerTool,
     toolSchemas,
   )
 import Elwood.Tools.Types (AgentContext (..), ApprovalOutcome (..), Tool (..), ToolResult (..))
@@ -50,6 +61,28 @@ type RateLimitCallback = Int -> Int -> IO ()
 -- | Callback for intermediate text content produced during tool-use turns
 type TextCallback = Text -> IO ()
 
+-- | Configuration for the agent loop (all environment/config params)
+data AgentConfig = AgentConfig
+  { acLogger :: Logger,
+    acClient :: ClaudeClient,
+    acRegistry :: ToolRegistry,
+    acContext :: AgentContext,
+    acCompaction :: CompactionConfig,
+    acSystemPrompt :: Maybe Text,
+    acModel :: Text,
+    acThinking :: ThinkingLevel,
+    acMaxIterations :: Int,
+    acMetrics :: MetricsStore,
+    -- | Source label for metrics
+    acSource :: Text,
+    -- | Optional callback for rate limit notifications
+    acOnRateLimit :: Maybe RateLimitCallback,
+    -- | Optional callback for intermediate text produced during tool-use turns
+    acOnText :: Maybe TextCallback,
+    -- | Always-loaded tools (Nothing = all tools, Just = dynamic loading with these tools)
+    acAlwaysLoadTools :: Maybe [Text]
+  }
+
 -- | Convert a thinking level to the API thinking config
 thinkingToConfig :: ThinkingLevel -> Maybe ThinkingConfig
 thinkingToConfig ThinkingOff = Nothing
@@ -66,97 +99,54 @@ thinkingMaxTokens (ThinkingBudget n) = max 4096 (n * 2)
 
 -- | Run a complete agent turn, handling tool use loops
 runAgentTurn ::
-  Logger ->
-  ClaudeClient ->
-  ToolRegistry ->
-  AgentContext ->
-  CompactionConfig ->
-  -- | System prompt
-  Maybe Text ->
-  -- | Model name
-  Text ->
-  -- | Extended thinking level
-  ThinkingLevel ->
-  -- | Maximum agent loop iterations
-  Int ->
-  -- | Metrics store
-  MetricsStore ->
-  -- | Source label for metrics
-  Text ->
+  AgentConfig ->
   -- | Existing conversation history
   [ClaudeMessage] ->
   -- | New user message
   ClaudeMessage ->
-  -- | Optional callback for rate limit notifications
-  Maybe RateLimitCallback ->
-  -- | Dynamic tool loading config (Nothing = disabled, Just cfg = enabled)
-  Maybe DynamicToolLoadingConfig ->
-  -- | Optional callback for intermediate text produced during tool-use turns
-  Maybe TextCallback ->
   IO AgentResult
-runAgentTurn logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source history userMessage onRateLimit dynamicLoading onText = do
+runAgentTurn cfg history userMessage = do
   -- Compact history if needed before adding new message
-  compactedHistory <- compactIfNeeded logger client compactionConfig metrics source history
+  compactedHistory <- compactIfNeeded (acLogger cfg) (acClient cfg) (acCompaction cfg) (acMetrics cfg) (acSource cfg) history
   let messages = compactedHistory ++ [userMessage]
 
-  -- Set up dynamic tool loading state if enabled
-  mActiveRef <- case dynamicLoading of
-    Nothing -> pure Nothing
-    Just dtlConfig -> do
-      let initialActive =
-            foldr activateTool newActiveToolSet $
-              "find_tools" : dtlAlwaysLoad dtlConfig
-      activeRef <- newIORef initialActive
-      let findTool = mkFindToolsTool registry activeRef
-          registryWithMeta = registerTool findTool registry
-      pure $ Just (activeRef, registryWithMeta)
+  -- Initialize the active tool set
+  let activeTools = case acAlwaysLoadTools cfg of
+        Nothing -> Nothing -- disabled: send all tools
+        Just alwaysLoad -> Just $ Set.fromList ("find_tools" : alwaysLoad)
 
-  let effectiveRegistry = case mActiveRef of
-        Nothing -> registry
-        Just (_, regWithMeta) -> regWithMeta
-      mActive = fmap fst mActiveRef
-
-  agentLoop logger client effectiveRegistry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages 0 onRateLimit mActive onText
+  agentLoop cfg messages 0 activeTools
 
 -- | The main agent loop
 agentLoop ::
-  Logger ->
-  ClaudeClient ->
-  ToolRegistry ->
-  AgentContext ->
-  CompactionConfig ->
-  Maybe Text ->
-  Text ->
-  ThinkingLevel ->
-  Int ->
-  MetricsStore ->
-  Text ->
+  AgentConfig ->
   [ClaudeMessage] ->
   Int ->
-  Maybe RateLimitCallback ->
-  -- | Active tool set IORef (Nothing = send all tools)
-  Maybe (IORef ActiveToolSet) ->
-  -- | Optional callback for intermediate text
-  Maybe TextCallback ->
+  -- | Active tool set (Nothing = send all tools, Just = dynamic loading)
+  Maybe (Set Text) ->
   IO AgentResult
-agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages iteration onRateLimit mActiveRef onText
-  | iteration >= maxIter = do
-      logError logger "Agent loop exceeded max iterations" []
+agentLoop cfg messages iteration mActiveTools
+  | iteration >= acMaxIterations cfg = do
+      logError (acLogger cfg) "Agent loop exceeded max iterations" []
       pure $ AgentError "(Agent loop exceeded max iterations)"
   | otherwise = do
+      let logger = acLogger cfg
+          registry = acRegistry cfg
+          model = acModel cfg
+          thinking = acThinking cfg
+
       -- Determine which tool schemas to send
-      schemas <- case mActiveRef of
-        Nothing -> pure $ toolSchemas registry
-        Just activeRef -> do
-          ats <- readIORef activeRef
-          pure $ activeToolSchemas registry ats
+      let schemas = case mActiveTools of
+            Nothing -> toolSchemas registry
+            Just active ->
+              findToolsSchema : activeToolSchemas registry active
 
       -- Build and send request
       let request =
             MessagesRequest
               { mrModel = model,
                 mrMaxTokens = thinkingMaxTokens thinking,
-                mrSystem = systemPrompt,
+                mrSystem = acSystemPrompt cfg,
                 mrMessages = messages,
                 mrTools = schemas,
                 mrThinking = thinkingToConfig thinking,
@@ -183,12 +173,12 @@ agentLoop logger client registry ctx compactionConfig systemPrompt model thinkin
                       ("error", T.pack (show err))
                     ]
                   -- Notify user if callback is configured
-                  case onRateLimit of
+                  case acOnRateLimit cfg of
                     Just notify -> notify attemptNum waitSecs
                     Nothing -> pure ()
               }
 
-      result <- sendMessagesWithRetry client retryConfig request
+      result <- sendMessagesWithRetry (acClient cfg) retryConfig request
 
       case result of
         Left err -> do
@@ -196,10 +186,11 @@ agentLoop logger client registry ctx compactionConfig systemPrompt model thinkin
           pure $ AgentError $ formatError err
         Right response -> do
           let usage = mresUsage response
+              source = acSource cfg
           logInfo
             logger
             "Claude response received"
-            [ ("stop_reason", fromMaybe "none" (mresStopReason response)),
+            [ ("stop_reason", stopReasonToText (mresStopReason response)),
               ("content_blocks", T.pack (show (length (mresContent response)))),
               ("input_tokens", T.pack (show (usageInputTokens usage))),
               ("output_tokens", T.pack (show (usageOutputTokens usage))),
@@ -208,83 +199,122 @@ agentLoop logger client registry ctx compactionConfig systemPrompt model thinkin
             ]
 
           -- Record API metrics
-          recordApiResponse metrics model source (fromMaybe "unknown" (mresStopReason response)) (mresUsage response)
+          recordApiResponse (acMetrics cfg) model source (mresStopReason response) (mresUsage response)
 
-          handleResponse logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages response iteration onRateLimit mActiveRef onText
+          handleResponse cfg messages response iteration mActiveTools
 
--- | Handle Claude's response
+-- | Classification of a Claude response into a pure action
+data AgentAction
+  = -- | Normal completion: response text + all messages
+    Complete Text [ClaudeMessage]
+  | -- | Tool use requested: tool use blocks, intermediate text, all messages so far
+    ContinueWithTools [ContentBlock] Text [ClaudeMessage]
+  | -- | Response truncated due to token limit
+    TruncatedResponse Text [ClaudeMessage]
+
+-- | Pure classification of a response based on stop reason and content.
+classifyResponse :: StopReason -> [ContentBlock] -> [ClaudeMessage] -> AgentAction
+classifyResponse stopReason content messages =
+  let responseText = extractTextContent content
+      assistantMsg = ClaudeMessage Assistant content
+      allMessages = messages ++ [assistantMsg]
+   in case stopReason of
+        EndTurn -> Complete responseText allMessages
+        ToolUse ->
+          let toolUses = extractToolUses content
+           in ContinueWithTools toolUses responseText allMessages
+        MaxTokens -> TruncatedResponse responseText allMessages
+        StopReasonOther _ -> Complete responseText allMessages
+
+-- | Build the user message for the next iteration from tool results.
+buildToolResultMessage :: [ContentBlock] -> [ToolResult] -> Int -> Int -> ClaudeMessage
+buildToolResultMessage toolUses toolResults nextIteration maxIter =
+  let resultBlocks = zipWith makeResultBlock toolUses toolResults
+      turnInfo = TextBlock $ formatTurnInfo nextIteration maxIter
+   in ClaudeMessage User (resultBlocks ++ [turnInfo])
+
+-- | Handle Claude's response (thin IO wrapper around pure classification)
 handleResponse ::
-  Logger ->
-  ClaudeClient ->
-  ToolRegistry ->
-  AgentContext ->
-  CompactionConfig ->
-  Maybe Text ->
-  Text ->
-  ThinkingLevel ->
-  Int ->
-  MetricsStore ->
-  Text ->
+  AgentConfig ->
   [ClaudeMessage] ->
   MessagesResponse ->
   Int ->
-  Maybe RateLimitCallback ->
-  Maybe (IORef ActiveToolSet) ->
-  Maybe TextCallback ->
+  Maybe (Set Text) ->
   IO AgentResult
-handleResponse logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source messages response iteration onRateLimit mActiveRef onText =
-  case mresStopReason response of
-    Just "end_turn" -> do
-      -- Normal completion - extract text and return
-      let responseText = extractTextContent (mresContent response)
-          assistantMsg = ClaudeMessage Assistant (mresContent response)
-          allMessages = messages ++ [assistantMsg]
+handleResponse cfg messages response iteration mActiveTools =
+  case classifyResponse (mresStopReason response) (mresContent response) messages of
+    Complete responseText allMessages ->
       pure $ AgentSuccess responseText allMessages
-    Just "tool_use" -> do
-      -- Tool use requested - execute tools and continue
-      let toolUses = extractToolUses (mresContent response)
+    TruncatedResponse responseText allMessages -> do
+      logWarn (acLogger cfg) "Response hit max tokens" []
+      pure $ AgentSuccess (responseText <> "\n\n(Response was truncated due to length)") allMessages
+    ContinueWithTools toolUses intermediateText allMessages -> do
+      let logger = acLogger cfg
+          registry = acRegistry cfg
+          metrics = acMetrics cfg
 
-      logInfo
-        logger
-        "Tool use requested"
-        [("tool_count", T.pack (show (length toolUses)))]
+      logInfo logger "Tool use requested" [("tool_count", T.pack (show (length toolUses)))]
 
       -- Send any intermediate text to the user immediately
-      let intermediateText = extractTextContent (mresContent response)
-      case onText of
+      case acOnText cfg of
         Just cb | not (T.null intermediateText) -> cb intermediateText
         _ -> pure ()
 
       -- Record tool call metrics
       mapM_ (\case ToolUseBlock _ name _ -> recordToolCall metrics name; _ -> pure ()) toolUses
 
-      -- Execute all tool uses
-      toolResults <- mapM (executeToolUse logger registry ctx) toolUses
+      -- Execute all tool uses, handling find_tools as a built-in
+      (toolResults, updatedActiveTools) <- executeToolUses logger registry (acContext cfg) mActiveTools toolUses
 
-      -- Build messages for next iteration
+      -- Build messages for next iteration (pure)
       let nextIteration = iteration + 1
-          assistantMsg = ClaudeMessage Assistant (mresContent response)
-          resultBlocks = zipWith makeResultBlock toolUses toolResults
-          turnInfo = TextBlock $ formatTurnInfo nextIteration maxIter
-          userMsg = ClaudeMessage User (resultBlocks ++ [turnInfo])
-          newMessages = messages ++ [assistantMsg, userMsg]
+          userMsg = buildToolResultMessage toolUses toolResults nextIteration (acMaxIterations cfg)
+          newMessages = allMessages ++ [userMsg]
 
-      -- Continue the loop
-      agentLoop logger client registry ctx compactionConfig systemPrompt model thinking maxIter metrics source newMessages nextIteration onRateLimit mActiveRef onText
-    Just "max_tokens" -> do
-      -- Hit token limit - return what we have
-      let responseText = extractTextContent (mresContent response)
-          assistantMsg = ClaudeMessage Assistant (mresContent response)
-          allMessages = messages ++ [assistantMsg]
-      logWarn logger "Response hit max tokens" []
-      pure $ AgentSuccess (responseText <> "\n\n(Response was truncated due to length)") allMessages
-    other -> do
-      -- Unknown stop reason
-      logWarn logger "Unknown stop reason" [("reason", fromMaybe "null" other)]
-      let responseText = extractTextContent (mresContent response)
-          assistantMsg = ClaudeMessage Assistant (mresContent response)
-          allMessages = messages ++ [assistantMsg]
-      pure $ AgentSuccess responseText allMessages
+      -- Continue the loop with possibly updated active tools
+      agentLoop cfg newMessages nextIteration updatedActiveTools
+
+-- | Execute all tool uses, handling find_tools as a built-in.
+-- Returns the results and the (possibly updated) active tool set.
+executeToolUses ::
+  Logger ->
+  ToolRegistry ->
+  AgentContext ->
+  Maybe (Set Text) ->
+  [ContentBlock] ->
+  IO ([ToolResult], Maybe (Set Text))
+executeToolUses logger registry ctx mActiveTools toolUses = do
+  go mActiveTools toolUses []
+  where
+    go active [] acc = pure (reverse acc, active)
+    go active (tu : rest) acc = do
+      case tu of
+        ToolUseBlock _ "find_tools" input | Just _ <- active -> do
+          -- Handle find_tools as built-in
+          let result = handleFindTools registry input
+              newActive = case result of
+                ToolSuccess _ ->
+                  -- Extract the query and activate matching tools
+                  case extractQuery input of
+                    Just query ->
+                      let (_text, names) = searchTools registry query
+                       in fmap (`Set.union` names) active
+                    Nothing -> active
+                ToolError _ -> active
+          logInfo logger "Executing tool" [("tool", "find_tools")]
+          go newActive rest (result : acc)
+        _ -> do
+          result <- executeToolUse logger registry ctx tu
+          go active rest (result : acc)
+
+-- | Handle find_tools as a built-in (pure search, no IORef)
+handleFindTools :: ToolRegistry -> Value -> ToolResult
+handleFindTools registry input =
+  case extractQuery input of
+    Nothing -> ToolError "Missing required parameter: query"
+    Just query ->
+      let (text, _names) = searchTools registry query
+       in ToolSuccess text
 
 -- | Extract text content from content blocks
 extractTextContent :: [ContentBlock] -> Text
@@ -375,6 +405,37 @@ formatTurnInfo turn maxTurn =
         | remaining <= 5 = prefix <> " Approaching limit — wrap up soon."
         | otherwise = prefix
    in "<harness>" <> body <> "</harness>"
+
+-- | Schema for the built-in find_tools tool
+findToolsSchema :: ToolSchema
+findToolsSchema =
+  ToolSchema
+    { tsName = "find_tools",
+      tsDescription =
+        "Search for available tools by keyword (multi-word queries use AND matching). "
+          <> "Returns matching tool names and descriptions, and makes them available for use. "
+          <> "Use when you need a tool that isn't already available.",
+      tsInputSchema =
+        object
+          [ "type" .= ("object" :: Text),
+            "properties"
+              .= object
+                [ "query"
+                    .= object
+                      [ "type" .= ("string" :: Text),
+                        "description" .= ("Keyword to search for in tool names and descriptions" :: Text)
+                      ]
+                ],
+            "required" .= (["query"] :: [Text])
+          ]
+    }
+
+-- | Extract query from find_tools input
+extractQuery :: Value -> Maybe Text
+extractQuery (Object obj) = case KM.lookup (Key.fromText "query") obj of
+  Just (String q) -> Just q
+  _ -> Nothing
+extractQuery _ = Nothing
 
 -- | Format an error for user display
 formatError :: ClaudeError -> Text

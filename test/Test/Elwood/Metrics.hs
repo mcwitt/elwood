@@ -4,7 +4,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.ByteString.Lazy.Char8 qualified as LBS8
 import Data.Text qualified as T
 import Elwood.Claude.Conversation (ConversationStore, newConversationStore)
-import Elwood.Claude.Types (Usage (..))
+import Elwood.Claude.Types (StopReason (..), Usage (..))
 import Elwood.Event.Types (EventSource (..))
 import Elwood.Metrics
   ( metricsSource,
@@ -46,7 +46,7 @@ recordingTests =
     [ testCase "recordApiResponse increments counters" $ do
         store <- newMetricsStore
         let usage = Usage 100 50 10 20
-        recordApiResponse store "claude-3" "telegram" "end_turn" usage
+        recordApiResponse store "claude-3" "telegram" EndTurn usage
         withTempConvStore $ \convStore -> do
           output <- renderMetrics store convStore newToolRegistry 0
           let s = LBS8.unpack output
@@ -78,8 +78,8 @@ recordingTests =
         store <- newMetricsStore
         let usage1 = Usage 100 50 0 0
             usage2 = Usage 200 100 0 0
-        recordApiResponse store "claude-3" "telegram" "end_turn" usage1
-        recordApiResponse store "claude-3" "telegram" "end_turn" usage2
+        recordApiResponse store "claude-3" "telegram" EndTurn usage1
+        recordApiResponse store "claude-3" "telegram" EndTurn usage2
         withTempConvStore $ \convStore -> do
           output <- renderMetrics store convStore newToolRegistry 0
           let s = LBS8.unpack output

@@ -29,7 +29,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Elwood.Claude.Conversation (ConversationStore, allConversations)
-import Elwood.Claude.Types (ClaudeMessage, Conversation (..), Usage (..))
+import Elwood.Claude.Types (ClaudeMessage, Conversation (..), StopReason, Usage (..), stopReasonToText)
 import Elwood.Event.Types (EventSource (..))
 import Elwood.Tools.Registry (ToolRegistry, allTools)
 import Elwood.Tools.Types (Tool (..))
@@ -62,13 +62,14 @@ incrementCounter store key delta =
     (Map.insertWith (+) key delta m, ())
 
 -- | Record metrics from an API response
-recordApiResponse :: MetricsStore -> Text -> Text -> Text -> Usage -> IO ()
+recordApiResponse :: MetricsStore -> Text -> Text -> StopReason -> Usage -> IO ()
 recordApiResponse store model source stopReason usage = do
+  let reasonText = stopReasonToText stopReason
   incrementCounter store (CkTokens "input" model source) (fromIntegral (usageInputTokens usage))
   incrementCounter store (CkTokens "output" model source) (fromIntegral (usageOutputTokens usage))
   incrementCounter store (CkTokens "cache_read" model source) (fromIntegral (usageCacheReadInputTokens usage))
   incrementCounter store (CkTokens "cache_creation" model source) (fromIntegral (usageCacheCreationInputTokens usage))
-  incrementCounter store (CkApiRequests model source stopReason) 1
+  incrementCounter store (CkApiRequests model source reasonText) 1
 
 -- | Record a tool call
 recordToolCall :: MetricsStore -> Text -> IO ()

@@ -6,11 +6,11 @@ module Elwood.Tools.Attachment
   )
 where
 
+import Control.Concurrent.STM (TVar, atomically, modifyTVar')
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Char (toLower)
-import Data.IORef (IORef, modifyIORef')
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Logging (Logger, logInfo)
@@ -19,7 +19,7 @@ import System.Directory (doesFileExist)
 import System.FilePath (takeExtension)
 
 -- | Construct a tool for queuing file attachments to send after the text response
-mkQueueAttachmentTool :: Logger -> IORef [Attachment] -> Tool
+mkQueueAttachmentTool :: Logger -> TVar [Attachment] -> Tool
 mkQueueAttachmentTool logger queue =
   Tool
     { toolName = "queue_attachment",
@@ -41,7 +41,7 @@ mkQueueAttachmentTool logger queue =
                         attType = attTy,
                         attCaption = cap
                       }
-              modifyIORef' queue (<> [attachment])
+              atomically $ modifyTVar' queue (<> [attachment])
               logInfo logger "Attachment queued" [("path", T.pack path)]
               pure $ toolSuccess $ "{\"status\":\"queued\",\"path\":" <> T.pack (show path) <> "}"
     }

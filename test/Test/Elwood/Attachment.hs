@@ -1,7 +1,7 @@
 module Test.Elwood.Attachment (tests) where
 
+import Control.Concurrent.STM (newTVarIO, readTVarIO)
 import Data.Aeson (object, (.=))
-import Data.IORef (newIORef, readIORef)
 import Data.Text (Text)
 import Elwood.Logging (LogLevel (..), newLogger)
 import Elwood.Tools.Attachment (isPhotoExtension, mkQueueAttachmentTool)
@@ -41,69 +41,69 @@ queueAttachmentTests =
     [ testCase "queues valid file" $ withSystemTempDirectory "att-test" $ \tmpDir -> do
         let filePath = tmpDir <> "/test.png"
         writeFile filePath "fake image data"
-        queue <- newIORef []
+        queue <- newTVarIO []
         logger <- newLogger Error
         let tool = mkQueueAttachmentTool logger queue
             input = object ["path" .= (filePath :: String)]
         result <- toolExecute tool input
         assertSuccess result
-        attachments <- readIORef queue
+        attachments <- readTVarIO queue
         length attachments @?= 1
         attPath (head attachments) @?= filePath
         attType (head attachments) @?= AttachAuto
         attCaption (head attachments) @?= Nothing,
       testCase "rejects missing file" $ withSystemTempDirectory "att-test" $ \tmpDir -> do
-        queue <- newIORef []
+        queue <- newTVarIO []
         logger <- newLogger Error
         let tool = mkQueueAttachmentTool logger queue
             input = object ["path" .= ("/nonexistent/file.png" :: String)]
         result <- toolExecute tool input
         assertError result
-        attachments <- readIORef queue
+        attachments <- readTVarIO queue
         length attachments @?= 0,
       testCase "parses photo type" $ withSystemTempDirectory "att-test" $ \tmpDir -> do
         let filePath = tmpDir <> "/test.pdf"
         writeFile filePath "fake pdf"
-        queue <- newIORef []
+        queue <- newTVarIO []
         logger <- newLogger Error
         let tool = mkQueueAttachmentTool logger queue
             input = object ["path" .= (filePath :: String), "type" .= ("photo" :: Text)]
         result <- toolExecute tool input
         assertSuccess result
-        attachments <- readIORef queue
+        attachments <- readTVarIO queue
         attType (head attachments) @?= AttachPhoto,
       testCase "parses document type" $ withSystemTempDirectory "att-test" $ \tmpDir -> do
         let filePath = tmpDir <> "/test.png"
         writeFile filePath "fake png"
-        queue <- newIORef []
+        queue <- newTVarIO []
         logger <- newLogger Error
         let tool = mkQueueAttachmentTool logger queue
             input = object ["path" .= (filePath :: String), "type" .= ("document" :: Text)]
         result <- toolExecute tool input
         assertSuccess result
-        attachments <- readIORef queue
+        attachments <- readTVarIO queue
         attType (head attachments) @?= AttachDocument,
       testCase "parses caption" $ withSystemTempDirectory "att-test" $ \tmpDir -> do
         let filePath = tmpDir <> "/test.png"
         writeFile filePath "fake png"
-        queue <- newIORef []
+        queue <- newTVarIO []
         logger <- newLogger Error
         let tool = mkQueueAttachmentTool logger queue
             input = object ["path" .= (filePath :: String), "caption" .= ("My caption" :: Text)]
         result <- toolExecute tool input
         assertSuccess result
-        attachments <- readIORef queue
+        attachments <- readTVarIO queue
         attCaption (head attachments) @?= Just "My caption",
       testCase "caption is Nothing when omitted" $ withSystemTempDirectory "att-test" $ \tmpDir -> do
         let filePath = tmpDir <> "/test.png"
         writeFile filePath "fake png"
-        queue <- newIORef []
+        queue <- newTVarIO []
         logger <- newLogger Error
         let tool = mkQueueAttachmentTool logger queue
             input = object ["path" .= (filePath :: String)]
         result <- toolExecute tool input
         assertSuccess result
-        attachments <- readIORef queue
+        attachments <- readTVarIO queue
         attCaption (head attachments) @?= Nothing
     ]
 

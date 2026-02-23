@@ -17,7 +17,6 @@ where
 
 import Data.Aeson (encode)
 import Data.ByteString.Lazy qualified as LBS
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Claude.Client (ClaudeClient, sendMessages)
@@ -147,8 +146,7 @@ summarizeMessages client config metrics source msgs = do
   case result of
     Left err -> pure $ Left $ T.pack (show err)
     Right response -> do
-      let stopReason = fromMaybe "unknown" (mresStopReason response)
-      recordApiResponse metrics (ccCompactionModel config) source stopReason (mresUsage response)
+      recordApiResponse metrics (ccCompactionModel config) source (mresStopReason response) (mresUsage response)
       let text = extractText (mresContent response)
        in if T.null text
             then pure $ Left "Empty summary response"

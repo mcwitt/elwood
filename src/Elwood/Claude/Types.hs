@@ -13,6 +13,10 @@ module Elwood.Claude.Types
     -- * Thinking
     ThinkingConfig (..),
 
+    -- * Stop Reason
+    StopReason (..),
+    stopReasonToText,
+
     -- * API Request/Response
     MessagesRequest (..),
     MessagesResponse (..),
@@ -208,6 +212,32 @@ instance FromJSON Conversation where
       <*> v .: "messages"
       <*> v .: "lastUpdated"
 
+-- | Why the model stopped generating
+data StopReason
+  = -- | Normal completion
+    EndTurn
+  | -- | Model wants to use a tool
+    ToolUse
+  | -- | Hit the max_tokens limit
+    MaxTokens
+  | -- | Unknown or new stop reason
+    StopReasonOther Text
+  deriving stock (Show, Eq, Generic)
+
+-- | Convert a stop reason to its API text representation
+stopReasonToText :: StopReason -> Text
+stopReasonToText EndTurn = "end_turn"
+stopReasonToText ToolUse = "tool_use"
+stopReasonToText MaxTokens = "max_tokens"
+stopReasonToText (StopReasonOther t) = t
+
+-- | Parse a stop reason from API text
+parseStopReason :: Text -> StopReason
+parseStopReason "end_turn" = EndTurn
+parseStopReason "tool_use" = ToolUse
+parseStopReason "max_tokens" = MaxTokens
+parseStopReason other = StopReasonOther other
+
 -- | Tool schema for API requests
 data ToolSchema = ToolSchema
   { -- | Tool name
@@ -299,8 +329,8 @@ data MessagesResponse = MessagesResponse
     mresId :: Text,
     -- | Response content blocks
     mresContent :: [ContentBlock],
-    -- | Why the model stopped (end_turn, max_tokens, tool_use, etc.)
-    mresStopReason :: Maybe Text,
+    -- | Why the model stopped
+    mresStopReason :: StopReason,
     -- | Token usage
     mresUsage :: Usage
   }
@@ -311,7 +341,7 @@ instance FromJSON MessagesResponse where
     MessagesResponse
       <$> v .: "id"
       <*> v .: "content"
-      <*> v .:? "stop_reason"
+      <*> (maybe (StopReasonOther "null") parseStopReason <$> v .:? "stop_reason")
       <*> v .: "usage"
 
 -- | Errors from Claude API

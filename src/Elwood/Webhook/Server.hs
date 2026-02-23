@@ -48,7 +48,6 @@ import Network.Wai
     strictRequestBody,
   )
 import Network.Wai.Handler.Warp (run)
-import System.FilePath ((</>))
 
 -- | Header name for webhook secret
 webhookSecretHeader :: HeaderName
@@ -132,9 +131,7 @@ handleWebhookRequest logger webhookConfig env request respond = do
       -- Get prompt: either from template or from file
       promptResult <- case (wcPromptTemplate webhookConfig, wcPromptFile webhookConfig) of
         (Just template, _) -> pure $ Right $ renderTemplate template payload
-        (Nothing, Just filePath) -> do
-          let fullPath = eeWorkspaceDir envWithOverrides </> filePath
-          readPromptFile fullPath
+        (Nothing, Just filePath) -> readPromptFile filePath
         (Nothing, Nothing) -> pure $ Left "No prompt or promptFile configured"
 
       case promptResult of

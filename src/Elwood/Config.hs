@@ -42,6 +42,7 @@ import Elwood.Webhook.Types
   )
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
+import System.FilePath ((</>))
 
 -- | Extended thinking level for Claude
 data ThinkingLevel
@@ -312,6 +313,8 @@ loadConfig path = do
         "log" -> Just LogOnly
         _ -> Nothing
 
+  let workspaceDir = fromMaybe "/var/lib/assistant/workspace" (cfWorkspaceDir configFile)
+
   -- Webhook secret: env var takes precedence over config file
   let webhookGlobalSecret = webhookSecretEnv <|> (cfWebhook configFile >>= wscfGlobalSecret)
 
@@ -329,7 +332,7 @@ loadConfig path = do
                       { wcName = wcfName ep,
                         wcSecret = wcfSecret ep,
                         wcPromptTemplate = wcfPromptTemplate ep,
-                        wcPromptFile = wcfPromptFile ep,
+                        wcPromptFile = fmap (workspaceDir </>) (wcfPromptFile ep),
                         wcSession = maybe Isolated Named (wcfSession ep),
                         wcDelivery = case wcfDeliver ep of
                           Nothing -> [TelegramBroadcast]
@@ -349,7 +352,7 @@ loadConfig path = do
   pure
     Config
       { cfgStateDir = fromMaybe "/var/lib/assistant" (cfStateDir configFile),
-        cfgWorkspaceDir = fromMaybe "/var/lib/assistant/workspace" (cfWorkspaceDir configFile),
+        cfgWorkspaceDir = workspaceDir,
         cfgTelegramToken = telegramToken,
         cfgAnthropicApiKey = anthropicApiKey,
         cfgAllowedChatIds = fromMaybe [] (cfAllowedChatIds configFile),

@@ -24,7 +24,6 @@ tests =
   testGroup
     "Tools.Registry"
     [ registryBasicsTests,
-      activeToolSetTests,
       activeToolSchemasTests
     ]
 
@@ -54,41 +53,30 @@ registryBasicsTests =
         length (toolSchemas reg) @?= 2
     ]
 
-activeToolSetTests :: TestTree
-activeToolSetTests =
-  testGroup
-    "ActiveToolSet"
-    [ testCase "activateTool is idempotent" $ do
-        let ats0 = newActiveToolSet
-            ats1 = activateTool "x" ats0
-            ats2 = activateTool "x" ats1
-        ats1 @?= ats2
-    ]
-
 activeToolSchemasTests :: TestTree
 activeToolSchemasTests =
   testGroup
     "activeToolSchemas"
-    [ testCase "returns only tools in ActiveToolSet" $ do
+    [ testCase "returns only tools in the active set" $ do
         let reg =
               registerTool (mkTestTool "a") $
                 registerTool (mkTestTool "b") $
                   registerTool (mkTestTool "c") newToolRegistry
-            ats = activateTool "a" $ activateTool "c" newActiveToolSet
-            schemas = activeToolSchemas reg ats
+            active = Set.fromList ["a", "c"]
+            schemas = activeToolSchemas reg active
             names = Set.fromList (map tsName schemas)
         names @?= Set.fromList ["a", "c"],
       testCase "returns all tools when all activated" $ do
         let reg =
               registerTool (mkTestTool "a") $
                 registerTool (mkTestTool "b") newToolRegistry
-            ats = activateTool "a" $ activateTool "b" newActiveToolSet
-            schemas = activeToolSchemas reg ats
+            active = Set.fromList ["a", "b"]
+            schemas = activeToolSchemas reg active
         length schemas @?= 2,
       testCase "returns empty when none activated" $ do
         let reg =
               registerTool (mkTestTool "a") $
                 registerTool (mkTestTool "b") newToolRegistry
-            schemas = activeToolSchemas reg newActiveToolSet
+            schemas = activeToolSchemas reg Set.empty
         length schemas @?= 0
     ]

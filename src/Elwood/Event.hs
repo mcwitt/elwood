@@ -14,6 +14,7 @@ module Elwood.Event
 
     -- * Event Handling
     handleEvent,
+    handleTelegramMessage,
 
     -- * Delivery
     deliverToTargets,
@@ -27,28 +28,35 @@ module Elwood.Event
   )
 where
 
+import Control.Concurrent.STM (TVar, atomically, readTVar, writeTVar)
 import Control.Exception (SomeException, catch)
 import Control.Monad (unless)
-import Data.Aeson (Value)
-import Data.IORef (IORef, readIORef, writeIORef)
+import Data.Aeson (Value (..))
+import Data.ByteString.Base64.Lazy qualified as B64
+import Data.ByteString.Lazy qualified as LBS
 import Data.Int (Int64)
+import Data.List (sortOn)
+import Data.Maybe (fromMaybe, isNothing, listToMaybe)
+import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time (UTCTime)
-import Elwood.Claude.AgentLoop (AgentResult (..), RateLimitCallback, TextCallback, runAgentTurn)
+import Data.Text.Encoding qualified as TE
+import Data.Time (UTCTime, getCurrentTime)
+import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), RateLimitCallback, TextCallback, runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Compaction (CompactionConfig)
-import Elwood.Claude.Conversation (ConversationStore, getConversation, updateConversation)
+import Elwood.Claude.Conversation (ConversationStore, clearConversation, getConversation, updateConversation)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Conversation (..), Role (..))
-import Elwood.Config (DynamicToolLoadingConfig, ThinkingLevel)
+import Elwood.Config (ThinkingLevel)
 import Elwood.Event.Types
   ( DeliveryTarget (..),
     EventSource (..),
     SessionConfig (..),
   )
-import Elwood.Logging (Logger, logError, logInfo)
+import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, metricsSource)
-import Elwood.Telegram.Client (TelegramClient, notify, sendDocument, sendPhoto)
+import Elwood.Telegram.Client (TelegramClient, downloadFile, getFile, notify, sendDocument, sendPhoto)
+import Elwood.Telegram.Types (Chat (..), Message (..), PhotoSize (..), TelegramFile (..))
 import Elwood.Tools.Attachment (isPhotoExtension)
 import Elwood.Tools.Registry (ToolRegistry)
 import Elwood.Tools.Types (AgentContext, Attachment (..), AttachmentType (..))
@@ -89,17 +97,15 @@ data AppEnv = AppEnv
     -- | All allowed chat IDs (for broadcast)
     eeNotifyChatIds :: [Int64],
     -- | Attachment queue
-    eeAttachmentQueue :: IORef [Attachment],
-    -- | Workspace directory (for webhook prompt files)
-    eeWorkspaceDir :: FilePath,
+    eeAttachmentQueue :: TVar [Attachment],
     -- | Maximum agent loop iterations per turn
     eeMaxIterations :: Int,
     -- | Metrics store for Prometheus counters
     eeMetrics :: MetricsStore,
     -- | Number of active MCP servers
     eeMCPServerCount :: Int,
-    -- | Dynamic tool loading config (Nothing = disabled)
-    eeDynamicToolLoading :: Maybe DynamicToolLoadingConfig
+    -- | Always-loaded tools for dynamic loading (Nothing = disabled, Just = enabled)
+    eeAlwaysLoadTools :: Maybe [Text]
   }
 
 -- | Handle any event through the agent pipeline
@@ -134,34 +140,28 @@ handleEvent env event = do
           [TextBlock (evPrompt event)]
       userMsg = ClaudeMessage User contentBlocks
 
-  -- Create rate limit notification callback based on delivery targets
-  let rateLimitCallback = mkRateLimitCallback env event
-
-  -- Create text callback to deliver intermediate text immediately
-  let textCallback = mkTextCallback env event
-
-  -- Compute metrics source label
-  let sourceLabel = metricsSource source
+  -- Build agent config from environment
+  let agentConfig =
+        AgentConfig
+          { acLogger = logger,
+            acClient = eeClaude env,
+            acRegistry = eeRegistry env,
+            acContext = eeAgentContext env,
+            acCompaction = eeCompaction env,
+            acSystemPrompt = eeSystemPrompt env,
+            acModel = eeModel env,
+            acThinking = eeThinking env,
+            acMaxIterations = eeMaxIterations env,
+            acMetrics = eeMetrics env,
+            acSource = metricsSource source,
+            acOnRateLimit = Just (mkRateLimitCallback env event),
+            acOnText = Just (mkTextCallback env event),
+            acAlwaysLoadTools = eeAlwaysLoadTools env
+          }
 
   -- Run the agent turn
   result <-
-    runAgentTurn
-      logger
-      (eeClaude env)
-      (eeRegistry env)
-      (eeAgentContext env)
-      (eeCompaction env)
-      (eeSystemPrompt env)
-      (eeModel env)
-      (eeThinking env)
-      (eeMaxIterations env)
-      (eeMetrics env)
-      sourceLabel
-      history
-      userMsg
-      (Just rateLimitCallback)
-      (eeDynamicToolLoading env)
-      (Just textCallback)
+    runAgentTurn agentConfig history userMsg
       `catch` \(e :: SomeException) -> do
         logError logger "Event handler agent error" [("error", T.pack (show e))]
         pure $ AgentError $ "Agent error: " <> T.pack (show e)
@@ -201,9 +201,11 @@ deliverToTargets env targets msg = do
   -- the polling path in App.hs handles attachment delivery separately.
   let chatIds = concatMap (targetChatIds env) targets
   unless (null chatIds) $ do
-    attachments <- readIORef (eeAttachmentQueue env)
+    attachments <- atomically $ do
+      atts <- readTVar (eeAttachmentQueue env)
+      writeTVar (eeAttachmentQueue env) []
+      pure atts
     mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) attachments
-    writeIORef (eeAttachmentQueue env) []
   where
     deliver :: DeliveryTarget -> IO ()
     deliver target = case target of
@@ -284,6 +286,150 @@ mkRateLimitCallback env event attemptNum waitSecs = do
         mapM_ (\cid -> notifySafe env cid msg) (eeNotifyChatIds env)
       LogOnly ->
         logInfo (eeLogger env) "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
+
+-- | Handle a Telegram message: commands, image fetching, and event dispatch.
+--
+-- Returns 'Nothing' on success (the event system delivers via Telegram),
+-- or 'Just errorMsg' on failure (for the polling loop to send).
+handleTelegramMessage :: AppEnv -> Message -> IO (Maybe Text)
+handleTelegramMessage env msg =
+  case (text msg, photo msg) of
+    -- Handle /clear command
+    (Just txt, _) | T.strip txt == "/clear" -> handleClear
+    -- Ignore other slash commands
+    (Just txt, _) | T.isPrefixOf "/" txt -> pure Nothing
+    -- Handle text with optional photo
+    (Just txt, photos) -> handleMessageWithPhoto txt photos
+    -- Handle photo with caption only
+    (Nothing, Just photos@(_ : _)) -> handleMessageWithPhoto (fromMaybe "" (caption msg)) (Just photos)
+    -- No text and no photos (or empty photo list)
+    (Nothing, _) -> pure Nothing
+  where
+    logger :: Logger
+    logger = eeLogger env
+
+    chatIdVal :: Int64
+    chatIdVal = chatId (chat msg)
+
+    handleClear :: IO (Maybe Text)
+    handleClear = do
+      clearConversation (eeConversations env) (T.pack (show chatIdVal))
+      logInfo logger "Conversation cleared" [("chat_id", T.pack (show chatIdVal))]
+      pure (Just "Conversation cleared. Starting fresh!")
+
+    handleMessageWithPhoto :: Text -> Maybe [PhotoSize] -> IO (Maybe Text)
+    handleMessageWithPhoto userText maybePhotos = do
+      logInfo
+        logger
+        "Processing message"
+        [ ("chat_id", T.pack (show chatIdVal)),
+          ("text_length", T.pack (show (T.length userText))),
+          ("has_photo", T.pack (show (maybe False (not . null) maybePhotos)))
+        ]
+
+      -- Fetch image if present
+      imageData <- case maybePhotos of
+        Just photos@(_ : _) -> fetchImageData photos
+        _ -> pure Nothing
+
+      -- If no content, skip
+      if T.null userText && isNothing imageData
+        then pure Nothing
+        else do
+          -- Create Telegram event
+          now <- getCurrentTime
+          let event =
+                Event
+                  { evSource = TelegramSource chatIdVal,
+                    evTimestamp = now,
+                    evPayload = Null,
+                    evPrompt = userText,
+                    evImage = imageData,
+                    evSession = Named (T.pack (show chatIdVal)),
+                    evDelivery = [TelegramDelivery (T.pack (show chatIdVal))]
+                  }
+
+          -- Handle the event - delivery to Telegram is done by the event system
+          result <- handleEvent env event
+
+          case result of
+            Right responseText -> do
+              logInfo
+                logger
+                "Agent turn completed"
+                [ ("chat_id", T.pack (show chatIdVal)),
+                  ("response_length", T.pack (show (T.length responseText)))
+                ]
+              -- Return Nothing: the event system already delivered to Telegram
+              pure Nothing
+            Left errorMsg -> do
+              logInfo
+                logger
+                "Agent turn failed"
+                [ ("chat_id", T.pack (show chatIdVal)),
+                  ("error", errorMsg)
+                ]
+              -- Errors are still returned for the polling loop to send,
+              -- since the event system only delivers on success
+              pure (Just errorMsg)
+
+    -- Fetch the largest photo and return (mediaType, base64Data)
+    fetchImageData :: [PhotoSize] -> IO (Maybe (Text, Text))
+    fetchImageData photos = do
+      let telegram = eeTelegram env
+      -- Get the largest photo (sort by file size descending, take first)
+      let largestPhoto = listToMaybe $ sortOn (Down . psFileSize) photos
+      case largestPhoto of
+        Nothing -> pure Nothing
+        Just ps -> do
+          logInfo
+            logger
+            "Fetching photo"
+            [ ("file_id", psFileId ps),
+              ("width", T.pack (show (psWidth ps))),
+              ("height", T.pack (show (psHeight ps)))
+            ]
+
+          -- Get file info from Telegram
+          maybeFile <- getFile telegram (psFileId ps)
+          case maybeFile of
+            Nothing -> do
+              logWarn logger "Failed to get file info" [("file_id", psFileId ps)]
+              pure Nothing
+            Just file -> case tfFilePath file of
+              Nothing -> do
+                logWarn logger "No file path in response" [("file_id", psFileId ps)]
+                pure Nothing
+              Just filePath -> do
+                -- Download the file
+                rawImageData <-
+                  downloadFile telegram filePath
+                    `catch` \(e :: SomeException) -> do
+                      logWarn logger "Failed to download file" [("error", T.pack (show e))]
+                      pure LBS.empty
+
+                if LBS.null rawImageData
+                  then pure Nothing
+                  else do
+                    -- Determine media type from file extension
+                    let mediaType = guessMediaType filePath
+                        base64Data = TE.decodeUtf8 $ LBS.toStrict $ B64.encode rawImageData
+                    logInfo
+                      logger
+                      "Photo downloaded and encoded"
+                      [ ("media_type", mediaType),
+                        ("size_bytes", T.pack (show (LBS.length rawImageData)))
+                      ]
+                    pure $ Just (mediaType, base64Data)
+
+    -- Guess media type from file path
+    guessMediaType :: Text -> Text
+    guessMediaType path
+      | T.isSuffixOf ".jpg" path || T.isSuffixOf ".jpeg" path = "image/jpeg"
+      | T.isSuffixOf ".png" path = "image/png"
+      | T.isSuffixOf ".gif" path = "image/gif"
+      | T.isSuffixOf ".webp" path = "image/webp"
+      | otherwise = "image/jpeg" -- Default to JPEG for Telegram photos
 
 -- | Format event source for logging
 formatSource :: EventSource -> Text

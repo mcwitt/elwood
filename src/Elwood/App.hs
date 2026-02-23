@@ -4,13 +4,14 @@ module Elwood.App
 where
 
 import Control.Concurrent.Async (async, wait)
-import Control.Exception (finally)
+import Control.Concurrent.STM (newTVarIO)
+import Control.Exception (SomeException, catch, finally)
 import Data.Foldable (for_)
-import Data.IORef (IORef, newIORef)
 import Data.Int (Int64)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Data.UUID qualified as UUID
 import Elwood.Approval
   ( ApprovalCoordinator,
@@ -21,16 +22,15 @@ import Elwood.Approval
     requestApproval,
     respondToApproval,
   )
-import Elwood.Claude.Client (ClaudeClient, newClaudeClient)
-import Elwood.Claude.Conversation
-import Elwood.Claude.Handler
+import Elwood.Claude.Client (newClaudeClient)
+import Elwood.Claude.Conversation (newConversationStore)
 import Elwood.Config
-import Elwood.Event (AppEnv (..))
+import Elwood.Event (AppEnv (..), handleTelegramMessage)
 import Elwood.Logging
 import Elwood.MCP.Client (stopMCPServer)
 import Elwood.MCP.Registry (startMCPServers)
 import Elwood.Memory (newMemoryStore)
-import Elwood.Metrics (MetricsStore, newMetricsStore)
+import Elwood.Metrics (newMetricsStore)
 import Elwood.Permissions (pcApprovalTimeoutSeconds)
 import Elwood.Telegram.Client
   ( TelegramClient,
@@ -51,9 +51,25 @@ import Elwood.Tools.Attachment (mkQueueAttachmentTool)
 import Elwood.Tools.Command (mkRunCommandTool)
 import Elwood.Tools.Memory (mkSaveMemoryTool, mkSearchMemoryTool)
 import Elwood.Tools.Registry
-import Elwood.Tools.Types (AgentContext (..), ApprovalOutcome (..), Attachment)
+import Elwood.Tools.Types (AgentContext (..), ApprovalOutcome (..))
 import Elwood.Webhook.Server (runWebhookServer)
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.FilePath ((</>))
+
+-- | Load system prompt from SOUL.md file
+loadSystemPrompt :: FilePath -> IO (Maybe Text)
+loadSystemPrompt workspaceDir = do
+  let soulPath = workspaceDir </> "SOUL.md"
+  exists <- doesFileExist soulPath
+  if exists
+    then do
+      content <-
+        TIO.readFile soulPath
+          `catch` \(_ :: SomeException) -> pure ""
+      if T.null content
+        then pure Nothing
+        else pure (Just content)
+    else pure Nothing
 
 -- | Initialize and run the application
 runApp :: Config -> IO ()
@@ -95,7 +111,7 @@ runApp config = do
   logInfo logger "Approval coordinator initialized" [("timeout_seconds", T.pack (show timeoutSeconds))]
 
   -- Initialize attachment queue
-  attachmentQueue <- newIORef []
+  attachmentQueue <- newTVarIO []
 
   -- Construct tools with explicit dependencies
   let builtinRegistry =
@@ -123,16 +139,13 @@ runApp config = do
   metrics <- newMetricsStore
   logInfo logger "Metrics store initialized" []
 
-  -- Get compaction config from main config
-  let compactionConfig = cfgCompaction config
-
-  -- Dynamic tool loading config
-  let dynamicLoading = cfgDynamicToolLoading config
+  -- Dynamic tool loading config: convert to Maybe [Text]
+  let alwaysLoadTools = fmap dtlAlwaysLoad (cfgDynamicToolLoading config)
 
   logInfo
     logger
     "Dynamic tool loading"
-    [("enabled", T.pack (show (isJust dynamicLoading)))]
+    [("enabled", T.pack (show (isJust alwaysLoadTools)))]
 
   logInfo
     logger
@@ -162,9 +175,9 @@ runApp config = do
   -- Create callback handler for approval responses
   let callbackHandler = handleApprovalCallback logger telegram approvalCoordinator
 
-  -- Create webhook app environment
+  -- Create base app environment (shared by webhook and telegram handlers)
   let mcpServerCount = length mcpServers
-      webhookAppEnv =
+      appEnv =
         AppEnv
           { eeLogger = logger,
             eeTelegram = telegram,
@@ -172,18 +185,23 @@ runApp config = do
             eeConversations = conversations,
             eeRegistry = registry,
             eeAgentContext = baseAgentContext,
-            eeCompaction = compactionConfig,
+            eeCompaction = cfgCompaction config,
             eeSystemPrompt = systemPrompt,
             eeModel = cfgModel config,
             eeThinking = cfgThinking config,
             eeNotifyChatIds = cfgAllowedChatIds config,
             eeAttachmentQueue = attachmentQueue,
-            eeWorkspaceDir = cfgWorkspaceDir config,
             eeMaxIterations = cfgMaxIterations config,
             eeMetrics = metrics,
             eeMCPServerCount = mcpServerCount,
-            eeDynamicToolLoading = dynamicLoading
+            eeAlwaysLoadTools = alwaysLoadTools
           }
+
+  -- Telegram message handler: inject per-chat approval into AgentContext
+  let msgHandler msg =
+        let cid = chatId (chat msg)
+            envForChat = appEnv {eeAgentContext = mkAgentContextWithApproval cid}
+         in handleTelegramMessage envForChat msg
 
   -- Log webhook configuration
   let webhookConfig = cfgWebhook config
@@ -205,7 +223,7 @@ runApp config = do
           if wscEnabled webhookConfig
             then do
               logInfo logger "Starting webhook server" [("port", T.pack (show (wscPort webhookConfig)))]
-              Just <$> async (runWebhookServer webhookConfig webhookAppEnv)
+              Just <$> async (runWebhookServer webhookConfig appEnv)
             else pure Nothing
 
         -- Run Telegram polling
@@ -213,7 +231,7 @@ runApp config = do
           logger
           telegram
           (cfgAllowedChatIds config)
-          (claudeHandlerWithApproval logger claude telegram conversations registry mkAgentContextWithApproval compactionConfig systemPrompt (cfgModel config) (cfgThinking config) (cfgMaxIterations config) (cfgAllowedChatIds config) attachmentQueue (cfgWorkspaceDir config) metrics mcpServerCount dynamicLoading)
+          msgHandler
           callbackHandler
 
         -- Wait for webhook thread (this won't happen in normal operation)
@@ -223,33 +241,6 @@ runApp config = do
         logInfo logger "Shutting down MCP servers" []
         mapM_ stopMCPServer mcpServers
     )
-
--- | Claude handler that injects per-chat approval function into AgentContext
---   and sends queued attachments after the text reply
-claudeHandlerWithApproval ::
-  Logger ->
-  ClaudeClient ->
-  TelegramClient ->
-  ConversationStore ->
-  ToolRegistry ->
-  (Int64 -> AgentContext) ->
-  CompactionConfig ->
-  Maybe Text ->
-  Text ->
-  ThinkingLevel ->
-  Int ->
-  [Int64] ->
-  IORef [Attachment] ->
-  FilePath ->
-  MetricsStore ->
-  Int ->
-  Maybe DynamicToolLoadingConfig ->
-  Message ->
-  IO (Maybe Text)
-claudeHandlerWithApproval logger client telegram store registry mkCtx compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount dynamicLoading msg = do
-  let cid = chatId (chat msg)
-      ctxForChat = mkCtx cid
-  claudeHandler logger client telegram store registry ctxForChat compactionConfig systemPrompt model thinking maxIterations allowedChatIds attachmentQueue workspaceDir metrics mcpServerCount dynamicLoading msg
 
 -- | Request tool approval via Telegram inline keyboard
 requestToolApproval ::
@@ -328,9 +319,9 @@ handleApprovalCallback logger telegram coordinator cq = do
 
               -- Remove the inline keyboard from the message
               case cqMessage cq of
-                Just msg -> do
-                  let cid = chatId (chat msg)
-                  editMessageReplyMarkup telegram cid (messageId msg) Nothing
+                Just cbMsg -> do
+                  let cbCid = chatId (chat cbMsg)
+                  editMessageReplyMarkup telegram cbCid (messageId cbMsg) Nothing
                 Nothing -> pure ()
             else do
               logWarn logger "Approval request not found or already responded" [("request_id", UUID.toText requestId)]

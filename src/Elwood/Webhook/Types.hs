@@ -26,7 +26,7 @@ data WebhookConfig = WebhookConfig
     wcSecret :: Maybe Text,
     -- | Template with {{.field}} placeholders (mutually exclusive with wcPromptFile)
     wcPromptTemplate :: Maybe Text,
-    -- | File in workspace to read prompt from at runtime (mutually exclusive with wcPromptTemplate)
+    -- | Absolute path to prompt file (resolved from workspaceDir at config load time)
     wcPromptFile :: Maybe FilePath,
     -- | Session mode: isolated or named:<id>
     wcSession :: SessionConfig,

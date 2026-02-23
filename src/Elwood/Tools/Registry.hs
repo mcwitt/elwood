@@ -10,9 +10,6 @@ module Elwood.Tools.Registry
     toolSchemas,
 
     -- * Active Tool Set
-    ActiveToolSet,
-    newActiveToolSet,
-    activateTool,
     activeToolSchemas,
   )
 where
@@ -56,29 +53,14 @@ toolSchemas registry =
   | tool <- allTools registry
   ]
 
--- | Tracks which tools are active for the current turn.
-newtype ActiveToolSet = ActiveToolSet
-  { atsActive :: Set Text
-  }
-  deriving stock (Show, Eq)
-
--- | Create an empty active tool set
-newActiveToolSet :: ActiveToolSet
-newActiveToolSet = ActiveToolSet Set.empty
-
--- | Add a tool to the active set
-activateTool :: Text -> ActiveToolSet -> ActiveToolSet
-activateTool name (ActiveToolSet loaded) = ActiveToolSet (Set.insert name loaded)
-
--- | Generate tool schemas for only the active tools.
--- A tool is active if its name is in the 'ActiveToolSet'.
-activeToolSchemas :: ToolRegistry -> ActiveToolSet -> [ToolSchema]
-activeToolSchemas (ToolRegistry reg) (ActiveToolSet loaded) =
+-- | Generate tool schemas for only the named tools.
+activeToolSchemas :: ToolRegistry -> Set Text -> [ToolSchema]
+activeToolSchemas (ToolRegistry reg) active =
   [ ToolSchema
       { tsName = toolName tool,
         tsDescription = toolDescription tool,
         tsInputSchema = toolInputSchema tool
       }
   | (name, tool) <- Map.toList reg,
-    Set.member name loaded
+    Set.member name active
   ]
