@@ -31,6 +31,8 @@ data MCPServer = MCPServer
     stdin :: Handle,
     -- | Handle to read JSON-RPC responses
     stdout :: Handle,
+    -- | Handle to read diagnostic output (logged by background thread)
+    stderr :: Handle,
     -- | Counter for generating unique request IDs
     requestId :: IORef Int
   }

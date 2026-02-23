@@ -10,9 +10,9 @@ module Elwood.MCP.Client
   )
 where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Exception (SomeException, catch, try)
-import Control.Monad (when)
+import Control.Monad (forever, void, when)
 import Data.Aeson (Value (..), eitherDecode, encode, object, (.=))
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
@@ -21,11 +21,12 @@ import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Elwood.Config (MCPServerConfig (..))
-import Elwood.Logging (Logger, logDebug, logError, logInfo)
+import Elwood.Logging (Logger, logDebug, logError, logInfo, logWarn)
 import Elwood.MCP.Types
 import System.Environment (getEnvironment)
-import System.IO (BufferMode (..), hClose, hFlush, hGetContents, hSetBuffering)
+import System.IO (BufferMode (..), Handle, hClose, hFlush, hSetBuffering)
 import System.Process
   ( CreateProcess (..),
     StdStream (..),
@@ -78,8 +79,12 @@ spawnServer logger cfg = do
                 process = procHandle,
                 stdin = stdinH,
                 stdout = stdoutH,
+                stderr = stderrH,
                 requestId = requestIdRef
               }
+
+      -- Start background thread to log stderr output
+      void $ forkIO $ logStderr logger cfg.name stderrH
 
       -- Optional startup delay for slow-starting servers (e.g., npx)
       when (cfg.startupDelay > 0) $
@@ -89,29 +94,25 @@ spawnServer logger cfg = do
       exitCode <- getProcessExitCode procHandle
       case exitCode of
         Just code -> do
-          stderrContent <- hGetContents stderrH `catch` \(_ :: SomeException) -> pure ""
           logError
             logger
             "MCP server exited during startup"
             [ ("name", cfg.name),
-              ("exit_code", T.pack (show code)),
-              ("stderr", T.pack (take 500 stderrContent))
+              ("exit_code", T.pack (show code))
             ]
+          stopServer server
           pure $ Left $ MCPSpawnError $ "Server exited with code " <> T.pack (show code)
         Nothing -> do
           initResult <- initializeMCPServer logger server
           case initResult of
             Left err -> do
-              -- Capture stderr to help diagnose initialization failures
-              stderrContent <- hGetContents stderrH `catch` \(_ :: SomeException) -> pure ""
               logError
                 logger
                 "MCP server initialization failed"
                 [ ("name", cfg.name),
-                  ("error", T.pack (show err)),
-                  ("stderr", T.pack (take 1000 stderrContent))
+                  ("error", T.pack (show err))
                 ]
-              terminateProcess procHandle
+              stopServer server
               pure $ Left err
             Right () -> do
               logInfo logger "MCP server initialized" [("name", cfg.name)]
@@ -243,9 +244,20 @@ stopServer :: MCPServer -> IO ()
 stopServer server = do
   hClose server.stdin `catch` ignoreException
   hClose server.stdout `catch` ignoreException
+  hClose server.stderr `catch` ignoreException
   terminateProcess server.process
   _ <- waitForProcess server.process
   pure ()
   where
     ignoreException :: SomeException -> IO ()
     ignoreException _ = pure ()
+
+-- | Background thread that reads stderr from an MCP server and logs each line.
+-- Terminates when the handle is closed or the server process exits.
+logStderr :: Logger -> Text -> Handle -> IO ()
+logStderr logger serverName h =
+  forever readAndLog `catch` \(_ :: SomeException) -> pure ()
+  where
+    readAndLog = do
+      line <- BS.hGetLine h
+      logWarn logger "MCP server stderr" [("server", serverName), ("message", TE.decodeUtf8Lenient line)]
