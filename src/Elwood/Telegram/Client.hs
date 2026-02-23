@@ -131,7 +131,7 @@ sendMessage client chatId_ msgText = do
           SendMessageRequest
             { chatId = chatId_,
               text = msgText,
-              parseMode = Nothing
+              parseMode = Just "Markdown"
             }
       req' =
         req
