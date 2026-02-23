@@ -16,6 +16,7 @@ import Data.Aeson
 import Data.Text (Text)
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
+import Elwood.Prompt (PromptInput (..), PromptInputFile (..))
 import GHC.Generics (Generic)
 
 -- | Configuration for a single webhook endpoint
@@ -24,13 +25,13 @@ data WebhookConfig = WebhookConfig
     name :: Text,
     -- | Required secret (header: X-Webhook-Secret)
     secret :: Maybe Text,
-    -- | Template with {{.field}} placeholders
-    promptTemplate :: Maybe Text,
+    -- | Prompt inputs (assembled at request time)
+    prompt :: [PromptInput],
     -- | Session mode: isolated or named:<id>
     session :: SessionConfig,
     -- | Where to deliver responses
     delivery :: [DeliveryTarget],
-    -- | Suppress notification if response contains this string
+    -- | Suppress notification if response exactly equals this string
     suppressIfEquals :: Maybe Text,
     -- | Model override for this endpoint (Nothing = use global)
     model :: Maybe Text,
@@ -65,7 +66,7 @@ data WebhookServerConfigFile = WebhookServerConfigFile
 data WebhookConfigFile = WebhookConfigFile
   { name :: Text,
     secret :: Maybe Text,
-    promptTemplate :: Maybe Text,
+    prompt :: Maybe [PromptInputFile],
     session :: Maybe Text,
     deliver :: Maybe [DeliveryTargetFile],
     suppressIfEquals :: Maybe Text,
@@ -99,11 +100,11 @@ instance FromJSON WebhookServerConfigFile where
 
 instance FromJSON WebhookConfigFile where
   parseJSON = withObject "WebhookConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "promptTemplate", "session", "deliver", "suppressIfEquals", "model", "thinking"] v
+    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "prompt", "session", "deliver", "suppressIfEquals", "model", "thinking"] v
     WebhookConfigFile
       <$> v .: "name"
       <*> v .:? "secret"
-      <*> v .:? "promptTemplate"
+      <*> v .:? "prompt"
       <*> v .:? "session"
       <*> v .:? "deliver"
       <*> v .:? "suppressIfEquals"

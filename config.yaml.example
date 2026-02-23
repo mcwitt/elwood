@@ -46,6 +46,22 @@ maxIterations: 30
 #   {alwaysLoad: [tool1, tool2]}  - enabled with specified tools always available
 # dynamicToolLoading: false
 
+# System prompt configuration
+# A list of prompt inputs assembled into the system prompt.
+# Default (when omitted): [{ type: workspaceFile, path: SOUL.md }]
+#
+# Supported input types:
+#   - type: workspaceFile    # read file from workspaceDir
+#     path: SOUL.md
+#   - type: text             # inline text
+#     content: "Additional context"
+#
+# systemPrompt:
+#   - type: workspaceFile
+#     path: SOUL.md
+#   - type: text
+#     content: "Additional instructions"
+
 # Context compaction settings
 # When conversation history exceeds the token threshold, older messages
 # are summarized using a fast model to stay within context limits.
@@ -92,7 +108,9 @@ webhook:
   endpoints:
     - name: deploy              # route: POST /webhook/deploy (required)
       secret: "per-hook-key"    # per-endpoint secret override
-      promptTemplate: "Deploy event: {{.repo}} {{.branch}}"  # template with {{.field}} placeholders
+      prompt:                   # prompt inputs (assembled and rendered with {{.field}} placeholders)
+        - type: text
+          content: "Deploy event: {{.repo}} {{.branch}}"
       # session: "123456789"    # session name for persistent conversation (default: null = isolated)
       # model: claude-haiku-4-20250414    # per-endpoint model override (default: use global model)
       # thinking:                         # per-endpoint thinking override (default: use global thinking)

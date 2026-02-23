@@ -16,6 +16,10 @@ module Elwood.Config
     -- * Re-exports for webhook config
     WebhookServerConfig (..),
     WebhookConfig (..),
+
+    -- * Re-exports for prompt config
+    PromptInput (..),
+    PromptInputFile (..),
   )
 where
 
@@ -34,6 +38,7 @@ import Data.Yaml qualified as Yaml
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), ToolPolicy (..), defaultPermissionConfig)
+import Elwood.Prompt (PromptInput (..), PromptInputFile (..), resolvePromptInput)
 import Elwood.Webhook.Types
   ( DeliveryTargetFile (..),
     WebhookConfig (..),
@@ -121,7 +126,9 @@ data Config = Config
     -- | Maximum agent loop iterations per turn (prevents infinite tool-use loops)
     maxIterations :: Int,
     -- | Dynamic tool loading (Nothing = disabled, Just cfg = enabled)
-    dynamicToolLoading :: Maybe DynamicToolLoadingConfig
+    dynamicToolLoading :: Maybe DynamicToolLoadingConfig,
+    -- | System prompt inputs (assembled at startup)
+    systemPrompt :: [PromptInput]
   }
   deriving stock (Show, Generic)
 
@@ -161,7 +168,8 @@ data ConfigFile = ConfigFile
     webhook :: Maybe WebhookServerConfigFile,
     thinking :: Maybe Value,
     maxIterations :: Maybe Int,
-    dynamicToolLoading :: Maybe Value
+    dynamicToolLoading :: Maybe Value,
+    systemPrompt :: Maybe [PromptInputFile]
   }
   deriving stock (Show, Generic)
 
@@ -193,7 +201,7 @@ data MCPServerConfigFile = MCPServerConfigFile
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "permissions", "compaction", "mcpServers", "webhook", "thinking", "maxIterations", "dynamicToolLoading"] v
+    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "permissions", "compaction", "mcpServers", "webhook", "thinking", "maxIterations", "dynamicToolLoading", "systemPrompt"] v
     ConfigFile
       <$> v .:? "stateDir"
       <*> v .:? "workspaceDir"
@@ -206,6 +214,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "thinking"
       <*> v .:? "maxIterations"
       <*> v .:? "dynamicToolLoading"
+      <*> v .:? "systemPrompt"
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v -> do
@@ -337,7 +346,7 @@ loadConfig path = do
                   [ WebhookConfig
                       { name = ep.name,
                         secret = ep.secret,
-                        promptTemplate = ep.promptTemplate,
+                        prompt = maybe [] (mapMaybe resolvePromptInput) ep.prompt,
                         session = maybe Isolated Named ep.session,
                         delivery = case ep.deliver of
                           Nothing -> [TelegramBroadcast]
@@ -354,6 +363,10 @@ loadConfig path = do
                   ]
             }
 
+  let systemPrompt_ = case configFile.systemPrompt of
+        Nothing -> [WorkspaceFile "SOUL.md"]
+        Just spf -> mapMaybe resolvePromptInput spf
+
   pure
     Config
       { stateDir = fromMaybe "/var/lib/assistant" configFile.stateDir,
@@ -368,7 +381,8 @@ loadConfig path = do
         webhook = webhookCfg,
         thinking = maybe ThinkingOff parseThinkingLevel configFile.thinking,
         maxIterations = fromMaybe 30 configFile.maxIterations,
-        dynamicToolLoading = parseDynamicToolLoading =<< configFile.dynamicToolLoading
+        dynamicToolLoading = parseDynamicToolLoading =<< configFile.dynamicToolLoading,
+        systemPrompt = systemPrompt_
       }
 
 -- | Parse dynamic tool loading from a YAML value

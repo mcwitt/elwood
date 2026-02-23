@@ -43,6 +43,7 @@ library
     Elwood.Memory
     Elwood.Metrics
     Elwood.Permissions
+    Elwood.Prompt
     Elwood.Telegram
     Elwood.Telegram.Client
     Elwood.Telegram.Polling

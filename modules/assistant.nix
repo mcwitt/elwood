@@ -23,6 +23,19 @@ let
           session = dt.session;
         };
 
+      # Serialize a prompt input, stripping the NixOS-only defaultContent field
+      mkPromptInputYaml =
+        pi:
+        {
+          inherit (pi) type;
+        }
+        // lib.optionalAttrs (pi.path != null) {
+          inherit (pi) path;
+        }
+        // lib.optionalAttrs (pi.content != null) {
+          inherit (pi) content;
+        };
+
       allWebhookEndpoints =
         let
           # User-defined endpoints
@@ -30,7 +43,7 @@ let
             epName: epCfg:
             {
               name = epName;
-              promptTemplate = epCfg.promptTemplate;
+              prompt = map mkPromptInputYaml epCfg.prompt;
               session = epCfg.session;
               deliver = map mkDeliverTarget epCfg.deliver;
             }
@@ -53,7 +66,7 @@ let
             cronName: cronCfg:
             {
               name = "cron-${cronName}";
-              promptTemplate = cronCfg.prompt;
+              prompt = map mkPromptInputYaml cronCfg.prompt;
               session = cronCfg.session;
               deliver = map mkDeliverTarget cronCfg.deliver;
             }
@@ -97,6 +110,7 @@ let
         model = agentCfg.model;
         thinking = mkThinkingConfig agentCfg.thinking;
         maxIterations = agentCfg.maxIterations;
+        systemPrompt = map mkPromptInputYaml agentCfg.systemPrompt;
 
         # Heartbeat and cronJobs are now handled externally via systemd timers
         # The Haskell app no longer needs these config sections
@@ -138,6 +152,47 @@ let
       };
     in
     pkgs.writeText "assistant-${name}-config.yaml" (lib.generators.toYAML { } configContent);
+
+  # Collect all workspaceFile inputs with defaultContent from an agent config
+  collectDefaultContentFiles =
+    agentCfg:
+    let
+      fromInputs =
+        inputs:
+        lib.filter (pi: pi.type == "workspaceFile" && pi.path != null && pi.defaultContent != null) inputs;
+
+      systemPromptFiles = fromInputs agentCfg.systemPrompt;
+
+      webhookFiles = lib.concatMap (epCfg: fromInputs epCfg.prompt) (
+        lib.attrValues agentCfg.webhook.endpoints
+      );
+
+      cronFiles = lib.concatMap (cronCfg: fromInputs cronCfg.prompt) (lib.attrValues agentCfg.cronJobs);
+    in
+    systemPromptFiles ++ webhookFiles ++ cronFiles;
+
+  # Generate ExecStartPre script for creating default workspace files
+  mkDefaultContentScript =
+    agentCfg:
+    let
+      files = collectDefaultContentFiles agentCfg;
+      mkFileCheck =
+        pi:
+        let
+          fullPath = "${agentCfg.workspaceDir}/${pi.path}";
+        in
+        ''
+          if [ ! -f ${lib.escapeShellArg fullPath} ]; then
+            printf '%s' ${lib.escapeShellArg pi.defaultContent} > ${lib.escapeShellArg fullPath}
+          fi
+        '';
+    in
+    if files == [ ] then
+      null
+    else
+      pkgs.writeShellScript "assistant-default-content" (
+        lib.concatMapStrings mkFileCheck (lib.unique files)
+      );
 
   # Submodule for thinking configuration
   thinkingModule = lib.types.submodule {
@@ -209,6 +264,37 @@ let
     };
   };
 
+  # Submodule for prompt inputs
+  promptInputModule = lib.types.submodule {
+    options = {
+      type = lib.mkOption {
+        type = lib.types.enum [
+          "workspaceFile"
+          "text"
+        ];
+        description = "Prompt input type: workspaceFile reads from workspace directory, text is inline content.";
+      };
+
+      path = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "File path relative to workspaceDir (workspaceFile type only).";
+      };
+
+      content = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Inline text content (text type only).";
+      };
+
+      defaultContent = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Create file with this content if missing (NixOS-only, workspaceFile type only).";
+      };
+    };
+  };
+
   # Submodule for webhook endpoints
   webhookEndpointModule = lib.types.submodule {
     options = {
@@ -218,9 +304,9 @@ let
         description = "Secret for this endpoint (overrides global secret).";
       };
 
-      promptTemplate = lib.mkOption {
-        type = lib.types.str;
-        description = "Prompt template with {{.field}} placeholders.";
+      prompt = lib.mkOption {
+        type = lib.types.listOf promptInputModule;
+        description = "Prompt inputs for this endpoint. Text inputs support {{.field}} template placeholders.";
       };
 
       session = lib.mkOption {
@@ -238,7 +324,7 @@ let
       suppressIfEquals = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Suppress notification if response contains this string.";
+        description = "Suppress notification if response exactly equals this string.";
         example = "HEARTBEAT_OK";
       };
 
@@ -261,8 +347,8 @@ let
   cronJobModule = lib.types.submodule {
     options = {
       prompt = lib.mkOption {
-        type = lib.types.str;
-        description = "Prompt to send to the agent.";
+        type = lib.types.listOf promptInputModule;
+        description = "Prompt inputs for this cron job.";
       };
 
       session = lib.mkOption {
@@ -294,7 +380,7 @@ let
       suppressIfEquals = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Suppress notification if response contains this string.";
+        description = "Suppress notification if response exactly equals this string.";
         example = "HEARTBEAT_OK";
       };
 
@@ -400,6 +486,17 @@ let
           type = lib.types.int;
           default = 30;
           description = "Maximum agent loop iterations per turn (prevents infinite tool-use loops).";
+        };
+
+        systemPrompt = lib.mkOption {
+          type = lib.types.listOf promptInputModule;
+          default = [
+            {
+              type = "workspaceFile";
+              path = "SOUL.md";
+            }
+          ];
+          description = "System prompt inputs. Assembled in order to form the system prompt.";
         };
 
         dynamicToolLoading = {
@@ -661,6 +758,9 @@ in
       # Main agent services
       (lib.mapAttrs' (
         name: agentCfg:
+        let
+          defaultContentScript = mkDefaultContentScript agentCfg;
+        in
         lib.nameValuePair "assistant-${name}" {
           description = "Elwood Assistant (${name})";
           wantedBy = [ "multi-user.target" ];
@@ -703,10 +803,16 @@ in
             MemoryDenyWriteExecute = false;
             RestrictRealtime = true;
             RestrictSUIDSGID = true;
-            ReadWritePaths = [ agentCfg.stateDir ];
+            ReadWritePaths = lib.unique [
+              agentCfg.stateDir
+              agentCfg.workspaceDir
+            ];
             StandardOutput = "journal";
             StandardError = "journal";
             SyslogIdentifier = "assistant-${name}";
+          }
+          // lib.optionalAttrs (defaultContentScript != null) {
+            ExecStartPre = "+${defaultContentScript}";
           };
         }
       ) enabledAgents)

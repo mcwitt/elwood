@@ -5,13 +5,12 @@ where
 
 import Control.Concurrent.Async (async, wait)
 import Control.Concurrent.STM (newTVarIO)
-import Control.Exception (SomeException, catch, finally)
+import Control.Exception (finally)
 import Data.Foldable (for_)
 import Data.Int (Int64)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.IO qualified as TIO
 import Data.UUID qualified as UUID
 import Elwood.Approval
   ( ApprovalCoordinator,
@@ -29,26 +28,11 @@ import Elwood.Logging
 import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
 import Elwood.Metrics (newMetricsStore)
+import Elwood.Prompt (assemblePrompt)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
 import Elwood.Webhook qualified as Webhook
-import System.Directory (createDirectoryIfMissing, doesFileExist)
-import System.FilePath ((</>))
-
--- | Load system prompt from SOUL.md file
-loadSystemPrompt :: FilePath -> IO (Maybe Text)
-loadSystemPrompt dir = do
-  let soulPath = dir </> "SOUL.md"
-  exists <- doesFileExist soulPath
-  if exists
-    then do
-      c <-
-        TIO.readFile soulPath
-          `catch` \(_ :: SomeException) -> pure ""
-      if T.null c
-        then pure Nothing
-        else pure (Just c)
-    else pure Nothing
+import System.Directory (createDirectoryIfMissing)
 
 -- | Initialize and run the application
 runApp :: Config -> IO ()
@@ -74,11 +58,11 @@ runApp config = do
   convs <- Claude.newConversationStore config.stateDir
   logInfo logger "Conversation store initialized" []
 
-  -- Load system prompt
-  sysPrompt <- loadSystemPrompt config.workspaceDir
+  -- Assemble system prompt from configured inputs
+  sysPrompt <- assemblePrompt config.workspaceDir config.systemPrompt
   case sysPrompt of
-    Just _ -> logInfo logger "System prompt loaded from SOUL.md" []
-    Nothing -> logWarn logger "No SOUL.md found, running without system prompt" []
+    Just _ -> logInfo logger "System prompt loaded" []
+    Nothing -> logWarn logger "No system prompt content found, running without system prompt" []
 
   -- Initialize memory store
   memoryStore <- newMemoryStore config.stateDir
@@ -168,6 +152,7 @@ runApp config = do
             agentContext = baseAgentContext,
             compaction = config.compaction,
             systemPrompt = sysPrompt,
+            workspaceDir = config.workspaceDir,
             model = config.model,
             thinking = config.thinking,
             notifyChatIds = config.allowedChatIds,

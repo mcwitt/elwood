@@ -85,6 +85,8 @@ data AppEnv = AppEnv
     agentContext :: Tools.AgentContext,
     compaction :: CompactionConfig,
     systemPrompt :: Maybe Text,
+    -- | Directory containing workspace files
+    workspaceDir :: FilePath,
     model :: Text,
     -- | Extended thinking level
     thinking :: ThinkingLevel,

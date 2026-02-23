@@ -2,6 +2,7 @@ module Test.Elwood.Webhook (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
+import Elwood.Prompt (PromptInput (..))
 import Elwood.Webhook.Server (renderTemplate)
 import Elwood.Webhook.Types
   ( WebhookConfig (..),
@@ -90,12 +91,12 @@ webhookConfigTests :: TestTree
 webhookConfigTests =
   testGroup
     "WebhookConfig"
-    [ testCase "can create config with promptTemplate" $ do
+    [ testCase "can create config with prompt" $ do
         let config =
               WebhookConfig
                 { name = "test-hook",
                   secret = Nothing,
-                  promptTemplate = Just "Hello",
+                  prompt = [InlineText "Hello"],
                   session = Isolated,
                   delivery = [LogOnly],
                   suppressIfEquals = Nothing,
@@ -103,14 +104,14 @@ webhookConfigTests =
                   thinking = Nothing
                 }
         config.name @?= "test-hook"
-        config.promptTemplate @?= Just "Hello"
+        config.prompt @?= [InlineText "Hello"]
         config.session @?= Isolated,
       testCase "can create config with secret" $ do
         let config =
               WebhookConfig
                 { name = "secure-hook",
                   secret = Just "my-secret",
-                  promptTemplate = Just "Hello",
+                  prompt = [InlineText "Hello"],
                   session = Named "session",
                   delivery = [TelegramBroadcast],
                   suppressIfEquals = Nothing,
@@ -124,7 +125,7 @@ webhookConfigTests =
               WebhookConfig
                 { name = "multi-target",
                   secret = Nothing,
-                  promptTemplate = Just "Test",
+                  prompt = [InlineText "Test"],
                   session = Isolated,
                   delivery = [TelegramBroadcast, TelegramDelivery "123", LogOnly],
                   suppressIfEquals = Nothing,
@@ -137,14 +138,27 @@ webhookConfigTests =
               WebhookConfig
                 { name = "heartbeat",
                   secret = Nothing,
-                  promptTemplate = Just "Check system health",
+                  prompt = [InlineText "Check system health"],
                   session = Isolated,
                   delivery = [TelegramBroadcast],
                   suppressIfEquals = Just "HEARTBEAT_OK",
                   model = Nothing,
                   thinking = Nothing
                 }
-        config.suppressIfEquals @?= Just "HEARTBEAT_OK"
+        config.suppressIfEquals @?= Just "HEARTBEAT_OK",
+      testCase "can have empty prompt" $ do
+        let config =
+              WebhookConfig
+                { name = "empty-prompt",
+                  secret = Nothing,
+                  prompt = [],
+                  session = Isolated,
+                  delivery = [LogOnly],
+                  suppressIfEquals = Nothing,
+                  model = Nothing,
+                  thinking = Nothing
+                }
+        config.prompt @?= []
     ]
 
 webhookServerConfigTests :: TestTree
@@ -166,7 +180,7 @@ webhookServerConfigTests =
               WebhookConfig
                 { name = "hook1",
                   secret = Nothing,
-                  promptTemplate = Just "Test",
+                  prompt = [InlineText "Test"],
                   session = Isolated,
                   delivery = [LogOnly],
                   suppressIfEquals = Nothing,

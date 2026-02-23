@@ -108,9 +108,11 @@ webhook:
   globalSecret: "your-webhook-secret"
   endpoints:
     - name: doorbell
-      promptTemplate: |
-        Motion detected at front door at {{.timestamp}}.
-        Please describe what you see.
+      prompt:
+        - type: text
+          content: |
+            Motion detected at front door at {{.timestamp}}.
+            Please describe what you see.
       deliver:
         - type: telegram
 
@@ -135,9 +137,9 @@ export WEBHOOK_SECRET="your-webhook-secret"   # optional, overrides config file
 
 Place these files in your `workspaceDir`:
 
-- **SOUL.md** — Personality, tone, behavioral guidelines (system prompt)
+- **SOUL.md** — Personality, tone, behavioral guidelines (system prompt, loaded by default)
 
-Webhook endpoints and cron jobs use inline prompt templates with `{{.field}}` placeholders for dynamic content.
+The system prompt, webhook prompts, and cron job prompts are all configured as lists of prompt inputs. Each input is either a `workspaceFile` (read from `workspaceDir`) or inline `text`. Webhook text inputs support `{{.field}}` template placeholders for dynamic content from the JSON payload.
 
 ## NixOS Deployment
 
@@ -163,14 +165,14 @@ Add the flake to your NixOS configuration:
               port = 8080;
               globalSecret = "your-secret";
               endpoints."doorbell" = {
-                promptTemplate = "Motion detected at {{.timestamp}}";
+                prompt = [ { type = "text"; content = "Motion detected at {{.timestamp}}"; } ];
                 deliver = [ { type = "telegram"; } ];
               };
             };
 
             # Cron jobs are systemd timers that POST to auto-generated webhook endpoints
             cronJobs.heartbeat = {
-              prompt = "Check system health. Reply HEARTBEAT_OK if all is well.";
+              prompt = [ { type = "text"; content = "Check system health. Reply HEARTBEAT_OK if all is well."; } ];
               schedule = "*-*-* *:00/30";  # every 30 minutes
               session = "123456789";       # share conversation with Telegram chat
               deliver = [ { type = "telegram"; session = "123456789"; } ];
@@ -178,7 +180,7 @@ Add the flake to your NixOS configuration:
             };
 
             cronJobs.daily-summary = {
-              prompt = "Generate my daily summary";
+              prompt = [ { type = "text"; content = "Generate my daily summary"; } ];
               schedule = "*-*-* 08:00";
               deliver = [ { type = "telegram"; } ];  # broadcast (default)
               # session = null (default); each run is isolated

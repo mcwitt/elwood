@@ -26,6 +26,7 @@ import Elwood.Config (parseThinkingLevel)
 import Elwood.Event (AppEnv (..), DeliveryTarget (..), Event (..), EventSource (..), deliverToTargets, handleEvent)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (renderMetrics)
+import Elwood.Prompt (assemblePrompt)
 import Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..))
 import Network.HTTP.Types
   ( HeaderName,
@@ -123,12 +124,15 @@ handleWebhookRequest lgr webhookCfg env request respond = do
       -- Apply per-endpoint model/thinking overrides
       let envWithOverrides = applyOverrides env webhookCfg
 
-      case webhookCfg.promptTemplate of
+      -- Assemble prompt from configured inputs
+      promptResult <- assemblePrompt envWithOverrides.workspaceDir webhookCfg.prompt
+
+      case promptResult of
         Nothing -> do
-          logError lgr "No promptTemplate configured" [("name", webhookCfg.name)]
-          respond $ jsonResponse status500 $ errorJson "No promptTemplate configured"
-        Just template -> do
-          let promptText = renderTemplate template payloadVal
+          logError lgr "No prompt content resolved" [("name", webhookCfg.name)]
+          respond $ jsonResponse status500 $ errorJson "No prompt content resolved"
+        Just assembled -> do
+          let promptText = renderTemplate assembled payloadVal
           -- Create event with LogOnly delivery - we handle notification manually
           -- to support conditional suppression
           now <- getCurrentTime
@@ -175,6 +179,7 @@ applyOverrides env wc =
       agentContext = env.agentContext,
       compaction = env.compaction,
       systemPrompt = env.systemPrompt,
+      workspaceDir = env.workspaceDir,
       model = fromMaybe env.model wc.model,
       thinking = maybe env.thinking parseThinkingLevel wc.thinking,
       notifyChatIds = env.notifyChatIds,
