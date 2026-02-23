@@ -98,7 +98,7 @@ webhookConfigTests =
                   promptTemplate = Just "Hello",
                   session = Isolated,
                   delivery = [LogOnly],
-                  suppressIfContains = Nothing,
+                  suppressIfEquals = Nothing,
                   model = Nothing,
                   thinking = Nothing
                 }
@@ -113,7 +113,7 @@ webhookConfigTests =
                   promptTemplate = Just "Hello",
                   session = Named "session",
                   delivery = [TelegramBroadcast],
-                  suppressIfContains = Nothing,
+                  suppressIfEquals = Nothing,
                   model = Nothing,
                   thinking = Nothing
                 }
@@ -127,12 +127,12 @@ webhookConfigTests =
                   promptTemplate = Just "Test",
                   session = Isolated,
                   delivery = [TelegramBroadcast, TelegramDelivery "123", LogOnly],
-                  suppressIfContains = Nothing,
+                  suppressIfEquals = Nothing,
                   model = Nothing,
                   thinking = Nothing
                 }
         length config.delivery @?= 3,
-      testCase "can have suppressIfContains" $ do
+      testCase "can have suppressIfEquals" $ do
         let config =
               WebhookConfig
                 { name = "heartbeat",
@@ -140,11 +140,11 @@ webhookConfigTests =
                   promptTemplate = Just "Check system health",
                   session = Isolated,
                   delivery = [TelegramBroadcast],
-                  suppressIfContains = Just "HEARTBEAT_OK",
+                  suppressIfEquals = Just "HEARTBEAT_OK",
                   model = Nothing,
                   thinking = Nothing
                 }
-        config.suppressIfContains @?= Just "HEARTBEAT_OK"
+        config.suppressIfEquals @?= Just "HEARTBEAT_OK"
     ]
 
 webhookServerConfigTests :: TestTree
@@ -169,7 +169,7 @@ webhookServerConfigTests =
                   promptTemplate = Just "Test",
                   session = Isolated,
                   delivery = [LogOnly],
-                  suppressIfContains = Nothing,
+                  suppressIfEquals = Nothing,
                   model = Nothing,
                   thinking = Nothing
                 }

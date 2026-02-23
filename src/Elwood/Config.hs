@@ -346,7 +346,7 @@ loadConfig path = do
                              in if null parsed
                                   then [TelegramBroadcast]
                                   else parsed,
-                        suppressIfContains = ep.suppressIfContains,
+                        suppressIfEquals = ep.suppressIfEquals,
                         model = ep.model,
                         thinking = ep.thinking
                       }

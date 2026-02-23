@@ -31,7 +31,7 @@ data WebhookConfig = WebhookConfig
     -- | Where to deliver responses
     delivery :: [DeliveryTarget],
     -- | Suppress notification if response contains this string
-    suppressIfContains :: Maybe Text,
+    suppressIfEquals :: Maybe Text,
     -- | Model override for this endpoint (Nothing = use global)
     model :: Maybe Text,
     -- | Thinking level override for this endpoint (Nothing = use global)
@@ -68,7 +68,7 @@ data WebhookConfigFile = WebhookConfigFile
     promptTemplate :: Maybe Text,
     session :: Maybe Text,
     deliver :: Maybe [DeliveryTargetFile],
-    suppressIfContains :: Maybe Text,
+    suppressIfEquals :: Maybe Text,
     model :: Maybe Text,
     thinking :: Maybe Value
   }
@@ -99,13 +99,13 @@ instance FromJSON WebhookServerConfigFile where
 
 instance FromJSON WebhookConfigFile where
   parseJSON = withObject "WebhookConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "promptTemplate", "session", "deliver", "suppressIfContains", "model", "thinking"] v
+    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "promptTemplate", "session", "deliver", "suppressIfEquals", "model", "thinking"] v
     WebhookConfigFile
       <$> v .: "name"
       <*> v .:? "secret"
       <*> v .:? "promptTemplate"
       <*> v .:? "session"
       <*> v .:? "deliver"
-      <*> v .:? "suppressIfContains"
+      <*> v .:? "suppressIfEquals"
       <*> v .:? "model"
       <*> v .:? "thinking"

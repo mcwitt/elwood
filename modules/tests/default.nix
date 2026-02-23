@@ -173,7 +173,7 @@ in
     '';
   };
 
-  # Test suppressIfContains for conditional notification
+  # Test suppressIfEquals for conditional notification
   suppress-if-contains = pkgs.testers.runNixOSTest {
     name = "assistant-suppress-if-contains";
 
@@ -193,11 +193,11 @@ in
             port = 8080;
           };
 
-          # Heartbeat is now just a regular cron with suppressIfContains
+          # Heartbeat is now just a regular cron with suppressIfEquals
           cronJobs.heartbeat = {
             prompt = "Check system health. Reply HEARTBEAT_OK if all is well.";
             schedule = "*:0/30";
-            suppressIfContains = "HEARTBEAT_OK";
+            suppressIfEquals = "HEARTBEAT_OK";
           };
         };
       };
@@ -209,12 +209,12 @@ in
       # Check cron timer was created
       machine.succeed("systemctl list-timers | grep assistant-cron-suppress-test-heartbeat")
 
-      # Check the config includes suppressIfContains
+      # Check the config includes suppressIfEquals
       config_path = machine.succeed(
         "systemctl show assistant-suppress-test.service -p Environment | grep -oP 'ELWOOD_CONFIG=\\K[^\\s]+'"
       ).strip()
       config = machine.succeed(f"cat {config_path}")
-      assert "suppressIfContains" in config, f"suppressIfContains not in config: {config}"
+      assert "suppressIfEquals" in config, f"suppressIfEquals not in config: {config}"
       assert "HEARTBEAT_OK" in config, f"HEARTBEAT_OK pattern not in config: {config}"
     '';
   };

@@ -37,8 +37,8 @@ let
             // lib.optionalAttrs (epCfg.secret != null) {
               secret = epCfg.secret;
             }
-            // lib.optionalAttrs (epCfg.suppressIfContains != null) {
-              suppressIfContains = epCfg.suppressIfContains;
+            // lib.optionalAttrs (epCfg.suppressIfEquals != null) {
+              suppressIfEquals = epCfg.suppressIfEquals;
             }
             // lib.optionalAttrs (epCfg.model != null) {
               model = epCfg.model;
@@ -60,8 +60,8 @@ let
             // lib.optionalAttrs (cronCfg.webhookSecret != null) {
               secret = cronCfg.webhookSecret;
             }
-            // lib.optionalAttrs (cronCfg.suppressIfContains != null) {
-              suppressIfContains = cronCfg.suppressIfContains;
+            // lib.optionalAttrs (cronCfg.suppressIfEquals != null) {
+              suppressIfEquals = cronCfg.suppressIfEquals;
             }
             // lib.optionalAttrs (cronCfg.model != null) {
               model = cronCfg.model;
@@ -235,7 +235,7 @@ let
         description = "Delivery targets.";
       };
 
-      suppressIfContains = lib.mkOption {
+      suppressIfEquals = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Suppress notification if response contains this string.";
@@ -291,7 +291,7 @@ let
         description = "Secret for the auto-generated webhook endpoint. Falls back to global webhook secret.";
       };
 
-      suppressIfContains = lib.mkOption {
+      suppressIfEquals = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Suppress notification if response contains this string.";

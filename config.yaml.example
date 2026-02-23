@@ -103,7 +103,7 @@ webhook:
         # - type: telegram
         #   session: "123456789"  # send to specific chat
         - type: log             # log only, no notification
-      suppressIfContains: "no action needed"  # suppress notification if response contains this
+      suppressIfEquals: "no action needed"  # suppress notification if response exactly matches this
 
 # Environment variables (not set in this file):
 #   TELEGRAM_BOT_TOKEN   - Telegram bot token (required)
