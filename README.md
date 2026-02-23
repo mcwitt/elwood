@@ -94,13 +94,11 @@ permissions:
   toolPolicies:
     run_command: ask
     write_file: ask
-  safeCommands:
-    - ls
-    - cat
-    - git status
   dangerousPatterns:
-    - "rm -rf"
-    - "sudo"
+    - "\\brm\\b"
+    - "\\bsudo\\b"
+  safePatterns:
+    - "^rm -i\\b"
 
 webhook:
   enabled: true
@@ -192,8 +190,8 @@ Add the flake to your NixOS configuration:
             };
 
             permissions = {
-              safeCommands = [ "ls" "cat" "git status" ];
               dangerousPatterns = [ "\\brm\\b" "\\bsudo\\b" ];
+              safePatterns = [ "^rm -i\\b" ];
               defaultPolicy = "ask";
             };
           };

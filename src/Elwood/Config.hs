@@ -175,7 +175,7 @@ data ConfigFile = ConfigFile
 
 -- | Permission configuration from YAML file
 data PermissionConfigFile = PermissionConfigFile
-  { safeCommands :: Maybe [Text],
+  { safePatterns :: Maybe [Text],
     dangerousPatterns :: Maybe [Text],
     toolPolicies :: Maybe (Map Text Text),
     defaultPolicy :: Maybe Text,
@@ -218,9 +218,9 @@ instance FromJSON ConfigFile where
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v -> do
-    rejectUnknownKeys "PermissionConfigFile" ["safeCommands", "dangerousPatterns", "toolPolicies", "defaultPolicy", "approvalTimeoutSeconds"] v
+    rejectUnknownKeys "PermissionConfigFile" ["safePatterns", "dangerousPatterns", "toolPolicies", "defaultPolicy", "approvalTimeoutSeconds"] v
     PermissionConfigFile
-      <$> v .:? "safeCommands"
+      <$> v .:? "safePatterns"
       <*> v .:? "dangerousPatterns"
       <*> v .:? "toolPolicies"
       <*> v .:? "defaultPolicy"
@@ -287,7 +287,7 @@ loadConfig path = do
         Nothing -> defaultPermissionConfig
         Just pcf ->
           PermissionConfig
-            { safeCommands = fromMaybe defaultPermissionConfig.safeCommands pcf.safeCommands,
+            { safePatterns = fromMaybe defaultPermissionConfig.safePatterns pcf.safePatterns,
               dangerousPatterns = fromMaybe defaultPermissionConfig.dangerousPatterns pcf.dangerousPatterns,
               toolPolicies = maybe Map.empty (Map.mapMaybe parseToolPolicy) pcf.toolPolicies,
               defaultPolicy = maybe defaultPermissionConfig.defaultPolicy parseToolPolicyOrDefault pcf.defaultPolicy,

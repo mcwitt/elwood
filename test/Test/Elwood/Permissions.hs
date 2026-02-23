@@ -1,5 +1,6 @@
 module Test.Elwood.Permissions (tests) where
 
+import Data.Map.Strict qualified as Map
 import Elwood.Permissions
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -14,11 +15,11 @@ commandPermissionTests :: TestTree
 commandPermissionTests =
   testGroup
     "checkCommandPermission"
-    [ testCase "allows safe command: ls" $
+    [ testCase "allows safe pattern: ls" $
         checkCommandPermission defaultPermissionConfig "ls -la" @?= Allowed,
-      testCase "allows safe command: git status" $
+      testCase "allows safe pattern: git status" $
         checkCommandPermission defaultPermissionConfig "git status" @?= Allowed,
-      testCase "allows safe command: echo" $
+      testCase "allows safe pattern: echo" $
         checkCommandPermission defaultPermissionConfig "echo hello" @?= Allowed,
       testCase "blocks dangerous: rm" $
         assertDenied $
@@ -41,7 +42,23 @@ commandPermissionTests =
       testCase "allows unknown command by default" $
         checkCommandPermission defaultPermissionConfig "myunknowncommand" @?= Allowed,
       testCase "strips whitespace" $
-        checkCommandPermission defaultPermissionConfig "  ls -la  " @?= Allowed
+        checkCommandPermission defaultPermissionConfig "  ls -la  " @?= Allowed,
+      testCase "safe pattern overrides dangerous pattern" $
+        let cfg =
+              defaultPermissionConfig
+                { dangerousPatterns = ["\\brm\\b"],
+                  safePatterns = ["^rm -i\\b"],
+                  toolPolicies = Map.empty
+                }
+         in checkCommandPermission cfg "rm -i temp.txt" @?= Allowed,
+      testCase "dangerous pattern still blocks when no safe override" $
+        let cfg =
+              defaultPermissionConfig
+                { dangerousPatterns = ["\\brm\\b"],
+                  safePatterns = ["^rm -i\\b"],
+                  toolPolicies = Map.empty
+                }
+         in assertDenied $ checkCommandPermission cfg "rm -rf /"
     ]
 
 -- | Assert a PermissionResult is Denied

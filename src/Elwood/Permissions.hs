@@ -35,8 +35,8 @@ data ToolPolicy
 
 -- | Configuration for permissions
 data PermissionConfig = PermissionConfig
-  { -- | Commands that are always allowed (prefix match)
-    safeCommands :: [Text],
+  { -- | Regex patterns that override dangerousPatterns (always allowed)
+    safePatterns :: [Text],
     -- | Regex patterns that are always blocked
     dangerousPatterns :: [Text],
     -- | Per-tool policies (tool name -> policy)
@@ -52,21 +52,21 @@ data PermissionConfig = PermissionConfig
 defaultPermissionConfig :: PermissionConfig
 defaultPermissionConfig =
   PermissionConfig
-    { safeCommands =
-        [ "ls",
-          "cat",
-          "head",
-          "tail",
-          "date",
-          "whoami",
-          "pwd",
-          "git status",
-          "git log",
-          "git diff",
-          "echo",
-          "wc",
-          "find",
-          "grep"
+    { safePatterns =
+        [ "^ls\\b",
+          "^cat\\b",
+          "^head\\b",
+          "^tail\\b",
+          "^date\\b",
+          "^whoami\\b",
+          "^pwd\\b",
+          "^git status\\b",
+          "^git log\\b",
+          "^git diff\\b",
+          "^echo\\b",
+          "^wc\\b",
+          "^find\\b",
+          "^grep\\b"
         ],
       dangerousPatterns =
         [ "\\brm\\b",
@@ -101,14 +101,14 @@ checkCommandPermission config cmd
   | otherwise = Allowed
   where
     cmdText = T.strip cmd
+    cmdStr = T.unpack cmdText
 
-    -- Check if command starts with a safe command
-    isSafeCommand = any (`T.isPrefixOf` cmdText) config.safeCommands
+    -- Check if command matches a safe pattern
+    isSafeCommand = any (\p -> cmdStr =~ T.unpack p) config.safePatterns
 
     -- Check if command matches any dangerous pattern
     matchesDangerous =
       let patterns = config.dangerousPatterns
-          cmdStr = T.unpack cmdText
        in case filter (\p -> cmdStr =~ T.unpack p) patterns of
             (p : _) -> Just p
             [] -> Nothing

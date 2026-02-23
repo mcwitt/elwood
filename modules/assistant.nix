@@ -116,7 +116,7 @@ let
         # The Haskell app no longer needs these config sections
 
         permissions = {
-          safeCommands = agentCfg.permissions.safeCommands;
+          safePatterns = agentCfg.permissions.safePatterns;
           dangerousPatterns = agentCfg.permissions.dangerousPatterns;
           toolPolicies = agentCfg.permissions.toolPolicies;
           defaultPolicy = agentCfg.permissions.defaultPolicy;
@@ -509,10 +509,10 @@ let
         };
 
         permissions = {
-          safeCommands = lib.mkOption {
+          safePatterns = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [ ];
-            description = "Commands that are always allowed (prefix match).";
+            description = "Regex patterns that override dangerousPatterns (always allowed).";
           };
 
           dangerousPatterns = lib.mkOption {

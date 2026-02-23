@@ -75,14 +75,11 @@ permissions:
   approvalTimeoutSeconds: 120   # seconds to wait for user approval (default: 120)
   toolPolicies:                 # per-tool overrides
     run_command: ask
-  safeCommands:                 # shell commands that bypass approval
-    - ls
-    - cat
-    - git status
-    - git log
-  dangerousPatterns:            # shell patterns that are always denied
-    - "rm -rf"
-    - "sudo"
+  dangerousPatterns:            # regex patterns — matched commands are denied
+    - "\\brm\\b"               # block rm, but...
+    - "\\bsudo\\b"
+  safePatterns:                 # regex patterns — override dangerousPatterns
+    - "^rm -i\\b"              # ...allow interactive rm
 
 # MCP (Model Context Protocol) server configurations
 # Each key becomes the server name used to namespace its tools.

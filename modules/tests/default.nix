@@ -256,11 +256,11 @@ in
           };
 
           permissions = {
-            safeCommands = [
-              "ls"
-              "cat"
+            safePatterns = [
+              "^ls\\b"
+              "^cat\\b"
             ];
-            dangerousPatterns = [ "rm -rf" ];
+            dangerousPatterns = [ "\\brm\\b" ];
             defaultPolicy = "ask";
             approvalTimeoutSeconds = 600;
           };
