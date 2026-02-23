@@ -81,6 +81,10 @@ workspaceDir: /var/lib/assistant/workspace
 allowedChatIds:
   - 123456789
 
+systemPrompt:
+  - type: workspaceFile
+    path: SOUL.md
+
 model: claude-sonnet-4-20250514
 thinking: off  # off | {type: adaptive, effort: medium} | {type: fixed, budgetTokens: 4096}
 
@@ -157,6 +161,18 @@ Add the flake to your NixOS configuration:
             allowedChatIds = [ 123456789 ];
             environmentFile = "/run/secrets/elwood-env";
             workspaceDir = "/var/lib/assistant/elwood/workspace";
+
+            systemPrompt = [
+              {
+                type = "workspaceFile";
+                path = soulFile;
+                defaultContent = ''You are Elwood, a personal AI assistant'';
+              }
+              {
+                type = "text";
+                content = ''<additional content, not editable by the agent>'';
+              }
+            ];
 
             webhook = {
               enable = true;
