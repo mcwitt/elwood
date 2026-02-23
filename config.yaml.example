@@ -93,7 +93,6 @@ webhook:
     - name: deploy              # route: POST /webhook/deploy (required)
       secret: "per-hook-key"    # per-endpoint secret override
       promptTemplate: "Deploy event: {{.repo}} {{.branch}}"  # template with {{.field}} placeholders
-      # promptFile: prompts/deploy.md  # alternative: read prompt from file in workspace
       # session: "123456789"    # session name for persistent conversation (default: null = isolated)
       # model: claude-haiku-4-20250414    # per-endpoint model override (default: use global model)
       # thinking:                         # per-endpoint thinking override (default: use global thinking)

@@ -286,55 +286,6 @@ in
     '';
   };
 
-  # Test promptFile option for cron jobs
-  prompt-file = pkgs.testers.runNixOSTest {
-    name = "assistant-prompt-file";
-
-    nodes.machine =
-      { ... }:
-      {
-        imports = [ self.nixosModules.default ];
-
-        services.assistant.package = mockElwood;
-
-        services.assistant.agents.prompt-file-test = {
-          enable = true;
-          allowedChatIds = [ 123456789 ];
-
-          webhook = {
-            enable = true;
-            port = 8080;
-          };
-
-          # Use promptFile instead of prompt
-          cronJobs.heartbeat = {
-            promptFile = "HEARTBEAT.md";
-            schedule = "*:0/30";
-            suppressIfContains = "HEARTBEAT_OK";
-          };
-        };
-      };
-
-    testScript = ''
-      machine.start()
-      machine.wait_for_unit("assistant-prompt-file-test.service")
-
-      # Check cron timer was created
-      machine.succeed("systemctl list-timers | grep assistant-cron-prompt-file-test-heartbeat")
-
-      # Check the config includes promptFile (not promptTemplate)
-      config_path = machine.succeed(
-        "systemctl show assistant-prompt-file-test.service -p Environment | grep -oP 'ELWOOD_CONFIG=\\K[^\\s]+'"
-      ).strip()
-      config = machine.succeed(f"cat {config_path}")
-      assert "promptFile" in config, f"promptFile not in config: {config}"
-      assert "HEARTBEAT.md" in config, f"HEARTBEAT.md not in config: {config}"
-      # Ensure promptTemplate is NOT present for this endpoint
-      assert '"promptTemplate"' not in config or '"promptFile":"HEARTBEAT.md"' in config, \
-        f"Config should have promptFile, not promptTemplate for cron-heartbeat: {config}"
-    '';
-  };
-
   # Test firewall integration
   firewall = pkgs.testers.runNixOSTest {
     name = "assistant-firewall";

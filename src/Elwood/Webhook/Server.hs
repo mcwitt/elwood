@@ -21,7 +21,6 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
 import Elwood.Config (parseThinkingLevel)
 import Elwood.Event (AppEnv (..), DeliveryTarget (..), Event (..), EventSource (..), deliverToTargets, handleEvent)
@@ -124,17 +123,12 @@ handleWebhookRequest lgr webhookCfg env request respond = do
       -- Apply per-endpoint model/thinking overrides
       let envWithOverrides = applyOverrides env webhookCfg
 
-      -- Get prompt: either from template or from file
-      promptResult <- case (webhookCfg.promptTemplate, webhookCfg.promptFile) of
-        (Just template, _) -> pure $ Right $ renderTemplate template payloadVal
-        (Nothing, Just fp) -> readPromptFile fp
-        (Nothing, Nothing) -> pure $ Left "No prompt or promptFile configured"
-
-      case promptResult of
-        Left err -> do
-          logError lgr "Failed to get prompt" [("error", T.pack err)]
-          respond $ jsonResponse status500 $ errorJson (T.pack err)
-        Right promptText -> do
+      case webhookCfg.promptTemplate of
+        Nothing -> do
+          logError lgr "No promptTemplate configured" [("name", webhookCfg.name)]
+          respond $ jsonResponse status500 $ errorJson "No promptTemplate configured"
+        Just template -> do
+          let promptText = renderTemplate template payloadVal
           -- Create event with LogOnly delivery - we handle notification manually
           -- to support conditional suppression
           now <- getCurrentTime
@@ -196,19 +190,6 @@ applyOverrides env wc =
       mcpServerCount = env.mcpServerCount,
       alwaysLoadTools = env.alwaysLoadTools
     }
-
--- | Read prompt from a file
-readPromptFile :: FilePath -> IO (Either String Text)
-readPromptFile path = do
-  result <-
-    (Right <$> TIO.readFile path)
-      `catch` \(e :: SomeException) ->
-        pure $ Left $ "Failed to read " <> path <> ": " <> show e
-  pure $ case result of
-    Left err -> Left err
-    Right c
-      | T.null c -> Left $ "Empty prompt file: " <> path
-      | otherwise -> Right c
 
 -- | status400 for bad request
 status400 :: Status

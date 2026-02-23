@@ -24,10 +24,8 @@ data WebhookConfig = WebhookConfig
     name :: Text,
     -- | Required secret (header: X-Webhook-Secret)
     secret :: Maybe Text,
-    -- | Template with {{.field}} placeholders (mutually exclusive with promptFile)
+    -- | Template with {{.field}} placeholders
     promptTemplate :: Maybe Text,
-    -- | Absolute path to prompt file (resolved from workspaceDir at config load time)
-    promptFile :: Maybe FilePath,
     -- | Session mode: isolated or named:<id>
     session :: SessionConfig,
     -- | Where to deliver responses
@@ -68,7 +66,6 @@ data WebhookConfigFile = WebhookConfigFile
   { name :: Text,
     secret :: Maybe Text,
     promptTemplate :: Maybe Text,
-    promptFile :: Maybe FilePath,
     session :: Maybe Text,
     deliver :: Maybe [DeliveryTargetFile],
     suppressIfContains :: Maybe Text,
@@ -102,12 +99,11 @@ instance FromJSON WebhookServerConfigFile where
 
 instance FromJSON WebhookConfigFile where
   parseJSON = withObject "WebhookConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "promptTemplate", "promptFile", "session", "deliver", "suppressIfContains", "model", "thinking"] v
+    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "promptTemplate", "session", "deliver", "suppressIfContains", "model", "thinking"] v
     WebhookConfigFile
       <$> v .: "name"
       <*> v .:? "secret"
       <*> v .:? "promptTemplate"
-      <*> v .:? "promptFile"
       <*> v .:? "session"
       <*> v .:? "deliver"
       <*> v .:? "suppressIfContains"

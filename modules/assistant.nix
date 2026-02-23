@@ -53,14 +53,9 @@ let
             cronName: cronCfg:
             {
               name = "cron-${cronName}";
+              promptTemplate = cronCfg.prompt;
               session = cronCfg.session;
               deliver = map mkDeliverTarget cronCfg.deliver;
-            }
-            // lib.optionalAttrs (cronCfg.prompt != null) {
-              promptTemplate = cronCfg.prompt;
-            }
-            // lib.optionalAttrs (cronCfg.promptFile != null) {
-              promptFile = cronCfg.promptFile;
             }
             // lib.optionalAttrs (cronCfg.webhookSecret != null) {
               secret = cronCfg.webhookSecret;
@@ -266,16 +261,8 @@ let
   cronJobModule = lib.types.submodule {
     options = {
       prompt = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Prompt to send to the agent. Mutually exclusive with promptFile.";
-      };
-
-      promptFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "File in workspaceDir to read prompt from at runtime. Mutually exclusive with prompt.";
-        example = "HEARTBEAT.md";
+        type = lib.types.str;
+        description = "Prompt to send to the agent.";
       };
 
       session = lib.mkOption {
@@ -606,19 +593,7 @@ in
             '';
           }) agentsNeedingWebhook;
 
-        # Cron jobs must have exactly one of prompt or promptFile
-        cronAssertions = lib.concatLists (
-          lib.mapAttrsToList (
-            agentName: agentCfg:
-            lib.mapAttrsToList (cronName: cronCfg: {
-              assertion = (cronCfg.prompt != null) != (cronCfg.promptFile != null);
-              message = ''
-                Cron job '${cronName}' in agent '${agentName}' must have exactly one
-                of 'prompt' or 'promptFile' set, not both or neither.
-              '';
-            }) agentCfg.cronJobs
-          ) enabledAgents
-        );
+        cronAssertions = [ ];
       in
       webhookAssertions ++ cronAssertions;
 

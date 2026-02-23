@@ -137,7 +137,7 @@ Place these files in your `workspaceDir`:
 
 - **SOUL.md** — Personality, tone, behavioral guidelines (system prompt)
 
-Webhook endpoints and cron jobs can reference additional workspace files via `promptFile` (e.g. a checklist for periodic monitoring tasks).
+Webhook endpoints and cron jobs use inline prompt templates with `{{.field}}` placeholders for dynamic content.
 
 ## NixOS Deployment
 
@@ -170,7 +170,7 @@ Add the flake to your NixOS configuration:
 
             # Cron jobs are systemd timers that POST to auto-generated webhook endpoints
             cronJobs.heartbeat = {
-              promptFile = "HEARTBEAT.md";
+              prompt = "Check system health. Reply HEARTBEAT_OK if all is well.";
               schedule = "*-*-* *:00/30";  # every 30 minutes
               session = "123456789";       # share conversation with Telegram chat
               deliver = [ { type = "telegram"; session = "123456789"; } ];

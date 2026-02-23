@@ -43,7 +43,6 @@ import Elwood.Webhook.Types
   )
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
-import System.FilePath ((</>))
 
 -- | Extended thinking level for Claude
 data ThinkingLevel
@@ -339,7 +338,6 @@ loadConfig path = do
                       { name = ep.name,
                         secret = ep.secret,
                         promptTemplate = ep.promptTemplate,
-                        promptFile = fmap (workspaceDir_ </>) ep.promptFile,
                         session = maybe Isolated Named ep.session,
                         delivery = case ep.deliver of
                           Nothing -> [TelegramBroadcast]

@@ -96,7 +96,6 @@ webhookConfigTests =
                 { name = "test-hook",
                   secret = Nothing,
                   promptTemplate = Just "Hello",
-                  promptFile = Nothing,
                   session = Isolated,
                   delivery = [LogOnly],
                   suppressIfContains = Nothing,
@@ -106,27 +105,12 @@ webhookConfigTests =
         config.name @?= "test-hook"
         config.promptTemplate @?= Just "Hello"
         config.session @?= Isolated,
-      testCase "can create config with promptFile" $ do
-        let config =
-              WebhookConfig
-                { name = "file-hook",
-                  secret = Nothing,
-                  promptTemplate = Nothing,
-                  promptFile = Just "HEARTBEAT.md",
-                  session = Isolated,
-                  delivery = [TelegramBroadcast],
-                  suppressIfContains = Nothing,
-                  model = Nothing,
-                  thinking = Nothing
-                }
-        config.promptFile @?= Just "HEARTBEAT.md",
       testCase "can create config with secret" $ do
         let config =
               WebhookConfig
                 { name = "secure-hook",
                   secret = Just "my-secret",
                   promptTemplate = Just "Hello",
-                  promptFile = Nothing,
                   session = Named "session",
                   delivery = [TelegramBroadcast],
                   suppressIfContains = Nothing,
@@ -141,7 +125,6 @@ webhookConfigTests =
                 { name = "multi-target",
                   secret = Nothing,
                   promptTemplate = Just "Test",
-                  promptFile = Nothing,
                   session = Isolated,
                   delivery = [TelegramBroadcast, TelegramDelivery "123", LogOnly],
                   suppressIfContains = Nothing,
@@ -154,8 +137,7 @@ webhookConfigTests =
               WebhookConfig
                 { name = "heartbeat",
                   secret = Nothing,
-                  promptTemplate = Nothing,
-                  promptFile = Just "HEARTBEAT.md",
+                  promptTemplate = Just "Check system health",
                   session = Isolated,
                   delivery = [TelegramBroadcast],
                   suppressIfContains = Just "HEARTBEAT_OK",
@@ -185,7 +167,6 @@ webhookServerConfigTests =
                 { name = "hook1",
                   secret = Nothing,
                   promptTemplate = Just "Test",
-                  promptFile = Nothing,
                   session = Isolated,
                   delivery = [LogOnly],
                   suppressIfContains = Nothing,
