@@ -89,4 +89,4 @@ getAndUpdateHorizon (PruneHorizons tvar) sessionId msgCount cacheExpired =
       then do
         writeTVar tvar (Map.insert sessionId msgCount m)
         pure msgCount
-      else pure current
+      else pure (min current msgCount)

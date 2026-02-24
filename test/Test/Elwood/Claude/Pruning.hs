@@ -1,7 +1,7 @@
 module Test.Elwood.Claude.Pruning (tests) where
 
 import Data.Aeson qualified as Aeson
-import Elwood.Claude.Pruning (pruneToolResults, prunedPlaceholder)
+import Elwood.Claude.Pruning (getAndUpdateHorizon, newPruneHorizons, pruneToolResults, prunedPlaceholder)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..))
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -19,7 +19,8 @@ tests =
       horizonZero,
       emptyMessages,
       idempotent,
-      preservesCountAndOrder
+      preservesCountAndOrder,
+      horizonClampedAfterCompaction
     ]
 
 -- | Tool results before the horizon are replaced with placeholders
@@ -159,3 +160,15 @@ preservesCountAndOrder =
         result = pruneToolResults 3 msgs
     length result @?= length msgs
     map (.role) result @?= map (.role) msgs
+
+-- | Stale horizon from before compaction is clamped to actual message count
+horizonClampedAfterCompaction :: TestTree
+horizonClampedAfterCompaction =
+  testCase "getAndUpdateHorizon clamps stale horizon after compaction" $ do
+    horizons <- newPruneHorizons
+    -- Simulate: cache expires with 100 messages, storing horizon = 100
+    h1 <- getAndUpdateHorizon horizons "sess1" 100 True
+    h1 @?= 100
+    -- Simulate: compaction shrinks history to 50, cache not expired
+    h2 <- getAndUpdateHorizon horizons "sess1" 50 False
+    h2 @?= 50 -- must be clamped, not 100

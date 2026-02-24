@@ -105,9 +105,10 @@ runAgentTurn ::
 runAgentTurn cfg history userMessage = do
   -- Compact history if needed before adding new message
   compactedHistory <- compactIfNeeded cfg.logger cfg.client cfg.compaction cfg.metrics cfg.source history
-  let msgs = compactedHistory ++ [userMessage]
+  let adjustedHorizon = min cfg.pruneHorizon (length compactedHistory)
+      msgs = compactedHistory ++ [userMessage]
 
-  agentLoop cfg msgs 0
+  agentLoop cfg {pruneHorizon = adjustedHorizon} msgs 0
 
 -- | The main agent loop
 agentLoop ::
