@@ -158,7 +158,7 @@ instance ToJSON ContentBlock where
       ]
   toJSON (ToolSearchResultBlock tid sr) =
     object
-      [ "type" .= ("tool_search_result" :: Text),
+      [ "type" .= ("tool_search_tool_result" :: Text),
         "tool_use_id" .= tid,
         "content" .= sr
       ]
@@ -195,7 +195,7 @@ instance FromJSON ContentBlock where
           <$> v .: "id"
           <*> v .: "name"
           <*> v .: "input"
-      "tool_search_result" ->
+      "tool_search_tool_result" ->
         ToolSearchResultBlock
           <$> v .: "tool_use_id"
           <*> v .: "content"
