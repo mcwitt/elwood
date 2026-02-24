@@ -43,13 +43,12 @@ searchTools registry query =
         then ("No tools found matching your query. Try different keywords.", Set.empty)
         else
           let names = Set.fromList (map (.name) shown)
-              formatTool ts = ts.name <> " — " <> ts.description
               header
                 | totalCount > maxResults =
-                    "Showing "
+                    "Loaded "
                       <> T.pack (show maxResults)
                       <> " of "
                       <> T.pack (show totalCount)
-                      <> " matches. Try a more specific query to find other tools.\n"
+                      <> " matching tools. Try a more specific query to find other tools.\n"
                 | otherwise = ""
-           in (header <> T.unlines (map formatTool shown), names)
+           in (header <> T.unlines (map (.name) shown), names)
