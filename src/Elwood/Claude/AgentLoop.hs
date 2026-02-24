@@ -20,6 +20,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
+import Elwood.Claude.Pruning (pruneToolResults)
 import Elwood.Claude.Types
   ( ClaudeError (..),
     ClaudeMessage (..),
@@ -80,7 +81,9 @@ data AgentConfig = AgentConfig
     -- | Optional callback for intermediate text produced during tool-use turns
     onText :: Maybe TextCallback,
     -- | Always-loaded tools (Nothing = all tools, Just = dynamic loading with these tools)
-    alwaysLoadTools :: Maybe [Text]
+    alwaysLoadTools :: Maybe [Text],
+    -- | Prune horizon: tool results before this index are replaced with placeholders
+    pruneHorizon :: Int
   }
 
 -- | Convert a thinking level to the API thinking config
@@ -147,7 +150,7 @@ agentLoop cfg msgs iteration mActiveTools
               { model = mdl,
                 maxTokens = thinkingMaxTokens thk,
                 system = cfg.systemPrompt,
-                messages = msgs,
+                messages = pruneToolResults cfg.pruneHorizon msgs,
                 tools = schemas,
                 thinking = thinkingToConfig thk,
                 cacheControl = True

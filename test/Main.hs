@@ -3,6 +3,7 @@ module Main (main) where
 import Test.Elwood.Attachment qualified
 import Test.Elwood.Claude.Client qualified
 import Test.Elwood.Claude.Compaction qualified
+import Test.Elwood.Claude.Pruning qualified
 import Test.Elwood.Claude.Types qualified
 import Test.Elwood.Config qualified
 import Test.Elwood.Event qualified
@@ -27,6 +28,7 @@ tests =
       Test.Elwood.Config.tests,
       Test.Elwood.Claude.Types.tests,
       Test.Elwood.Claude.Compaction.tests,
+      Test.Elwood.Claude.Pruning.tests,
       Test.Elwood.Claude.Client.tests,
       Test.Elwood.MCP.tests,
       Test.Elwood.Event.tests,

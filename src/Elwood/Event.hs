@@ -41,8 +41,9 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Time (UTCTime, getCurrentTime)
+import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Elwood.Claude qualified as Claude
+import Elwood.Claude.Pruning (PruneHorizons, anthropicCacheTtl, getAndUpdateHorizon)
 import Elwood.Config (CompactionConfig, ThinkingLevel)
 import Elwood.Event.Types
   ( DeliveryTarget (..),
@@ -101,7 +102,9 @@ data AppEnv = AppEnv
     -- | Number of active MCP servers
     mcpServerCount :: Int,
     -- | Always-loaded tools for dynamic loading (Nothing = disabled, Just = enabled)
-    alwaysLoadTools :: Maybe [Text]
+    alwaysLoadTools :: Maybe [Text],
+    -- | Per-session prune horizons for tool result pruning
+    pruneHorizons :: PruneHorizons
   }
 
 -- | Handle any event through the agent pipeline
@@ -123,10 +126,15 @@ handleEvent env event = do
   -- Determine conversation ID from session config
   let mConversationId = sessionToConversationId event.session
 
-  -- Get existing conversation history (empty for Isolated)
-  history <- case mConversationId of
-    Nothing -> pure []
-    Just cid -> (.messages) <$> Claude.getConversation env.conversations cid
+  -- Get existing conversation (empty for Isolated)
+  now <- getCurrentTime
+  (history, pruneHorizon) <- case mConversationId of
+    Nothing -> pure ([], 0)
+    Just cid -> do
+      conv <- Claude.getConversation env.conversations cid
+      let cacheExpired = diffUTCTime now conv.lastUpdated > anthropicCacheTtl
+      h <- getAndUpdateHorizon env.pruneHorizons cid (length conv.messages) cacheExpired
+      pure (conv.messages, h)
 
   -- Build user message with optional image
   let contentBlocks = case event.image of
@@ -152,7 +160,8 @@ handleEvent env event = do
             source = metricsSource src,
             onRateLimit = Just (mkRateLimitCallback env event),
             onText = Just (mkTextCallback env event),
-            alwaysLoadTools = env.alwaysLoadTools
+            alwaysLoadTools = env.alwaysLoadTools,
+            pruneHorizon = pruneHorizon
           }
 
   -- Run the agent turn

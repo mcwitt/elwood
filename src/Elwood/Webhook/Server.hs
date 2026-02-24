@@ -193,7 +193,8 @@ applyOverrides env wc =
       maxIterations = env.maxIterations,
       metrics = env.metrics,
       mcpServerCount = env.mcpServerCount,
-      alwaysLoadTools = env.alwaysLoadTools
+      alwaysLoadTools = env.alwaysLoadTools,
+      pruneHorizons = env.pruneHorizons
     }
 
 -- | status400 for bad request

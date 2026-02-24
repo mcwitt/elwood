@@ -22,6 +22,7 @@ import Elwood.Approval
     respondToApproval,
   )
 import Elwood.Claude qualified as Claude
+import Elwood.Claude.Pruning (newPruneHorizons)
 import Elwood.Config
 import Elwood.Event (AppEnv (..), handleTelegramMessage)
 import Elwood.Logging
@@ -76,6 +77,9 @@ runApp config = do
 
   -- Initialize attachment queue
   attachmentQueue_ <- newTVarIO []
+
+  -- Initialize prune horizons
+  pruneHorizons_ <- newPruneHorizons
 
   -- Construct tools with explicit dependencies
   let builtinRegistry =
@@ -160,7 +164,8 @@ runApp config = do
             maxIterations = config.maxIterations,
             metrics = mets,
             mcpServerCount = mcpServerCount_,
-            alwaysLoadTools = alwaysLoad
+            alwaysLoadTools = alwaysLoad,
+            pruneHorizons = pruneHorizons_
           }
 
   -- Telegram message handler: inject per-chat approval into AgentContext
