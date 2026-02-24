@@ -99,7 +99,7 @@ webhookConfigTests =
                   prompt = [InlineText "Hello"],
                   session = Isolated,
                   delivery = [LogOnly],
-                  suppressIfEquals = Nothing,
+                  suppressIfContains = Nothing,
                   model = Nothing,
                   thinking = Nothing
                 }
@@ -114,7 +114,7 @@ webhookConfigTests =
                   prompt = [InlineText "Hello"],
                   session = Named "session",
                   delivery = [TelegramBroadcast],
-                  suppressIfEquals = Nothing,
+                  suppressIfContains = Nothing,
                   model = Nothing,
                   thinking = Nothing
                 }
@@ -128,12 +128,12 @@ webhookConfigTests =
                   prompt = [InlineText "Test"],
                   session = Isolated,
                   delivery = [TelegramBroadcast, TelegramDelivery "123", LogOnly],
-                  suppressIfEquals = Nothing,
+                  suppressIfContains = Nothing,
                   model = Nothing,
                   thinking = Nothing
                 }
         length config.delivery @?= 3,
-      testCase "can have suppressIfEquals" $ do
+      testCase "can have suppressIfContains" $ do
         let config =
               WebhookConfig
                 { name = "heartbeat",
@@ -141,11 +141,11 @@ webhookConfigTests =
                   prompt = [InlineText "Check system health"],
                   session = Isolated,
                   delivery = [TelegramBroadcast],
-                  suppressIfEquals = Just "HEARTBEAT_OK",
+                  suppressIfContains = Just "HEARTBEAT_OK",
                   model = Nothing,
                   thinking = Nothing
                 }
-        config.suppressIfEquals @?= Just "HEARTBEAT_OK",
+        config.suppressIfContains @?= Just "HEARTBEAT_OK",
       testCase "can have empty prompt" $ do
         let config =
               WebhookConfig
@@ -154,7 +154,7 @@ webhookConfigTests =
                   prompt = [],
                   session = Isolated,
                   delivery = [LogOnly],
-                  suppressIfEquals = Nothing,
+                  suppressIfContains = Nothing,
                   model = Nothing,
                   thinking = Nothing
                 }
@@ -183,7 +183,7 @@ webhookServerConfigTests =
                   prompt = [InlineText "Test"],
                   session = Isolated,
                   delivery = [LogOnly],
-                  suppressIfEquals = Nothing,
+                  suppressIfContains = Nothing,
                   model = Nothing,
                   thinking = Nothing
                 }

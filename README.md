@@ -190,7 +190,7 @@ Add the flake to your NixOS configuration:
               schedule = "*-*-* *:00/30";  # every 30 minutes
               session = "123456789";       # share conversation with Telegram chat
               deliver = [ { type = "telegram"; session = "123456789"; } ];
-              suppressIfEquals = "HEARTBEAT_OK";
+              suppressIfContains = "HEARTBEAT_OK";
             };
 
             cronJobs.daily-summary = {

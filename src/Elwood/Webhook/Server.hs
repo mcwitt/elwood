@@ -153,16 +153,22 @@ handleWebhookRequest lgr webhookCfg env request respond = do
           case result of
             Right responseText -> do
               -- Check if we should suppress notification
-              let shouldSuppress = webhookCfg.suppressIfEquals == Just responseText
+              let shouldSuppress = case webhookCfg.suppressIfContains of
+                    Just suppressPattern -> suppressPattern `T.isInfixOf` responseText
+                    Nothing -> False
 
               if shouldSuppress
-                then
-                  logInfo lgr "Webhook response suppressed" [("name", webhookCfg.name)]
+                then do
+                  logInfo
+                    lgr
+                    "Webhook response suppressed"
+                    [("name", webhookCfg.name), ("pattern", fromMaybe "" webhookCfg.suppressIfContains)]
+                  respond $ jsonResponse status200 $ successJson responseText
                 else do
+                  -- Deliver to configured targets
                   deliverToTargets envWithOverrides webhookCfg.delivery responseText
                   logInfo lgr "Webhook processed successfully" [("name", webhookCfg.name)]
-
-              respond $ jsonResponse status200 $ successJson responseText
+                  respond $ jsonResponse status200 $ successJson responseText
             Left err -> do
               logError lgr "Webhook processing failed" [("name", webhookCfg.name), ("error", err)]
               respond $ jsonResponse status500 $ errorJson err
