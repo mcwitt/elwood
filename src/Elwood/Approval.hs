@@ -4,6 +4,7 @@ module Elwood.Approval
   ( -- * Types
     ApprovalResult (..),
     ApprovalCoordinator (..),
+    Decision (..),
 
     -- * Coordinator Operations
     newApprovalCoordinator,
@@ -101,31 +102,35 @@ respondToApproval coordinator requestId_ result = atomically $ do
       pure success
     Nothing -> pure False
 
--- | Format a tool use request for display in Telegram (MarkdownV2)
+-- | Format a tool use request for display in Telegram
+--
+-- Emits standard markdown; the downstream @sendMessageWithKeyboard@ handles
+-- conversion to Telegram HTML.
 formatApprovalRequest :: Text -> Text -> Text
 formatApprovalRequest toolName_ inputSummary =
   T.unlines
-    [ "🔐 *Tool Approval Required*",
+    [ "**Tool Approval Required**",
       "",
-      "*Tool:* `" <> escapeCodeSpan toolName_ <> "`",
-      "*Input:*",
+      "**Tool:** `" <> toolName_ <> "`",
+      "**Input:**",
       "```",
-      escapeCodeBlock inputSummary,
+      inputSummary,
       "```",
       "Do you want to allow this action?"
     ]
-  where
-    -- In MarkdownV2, only backtick and backslash need escaping inside code spans
-    escapeCodeSpan = T.replace "\\" "\\\\" . T.replace "`" "\\`"
-    -- Escape triple backticks inside pre blocks
-    escapeCodeBlock = T.replace "```" "\\`\\`\\`"
+
+-- | User's decision on a tool approval request
+data Decision
+  = Approve
+  | Deny
+  deriving stock (Show, Eq)
 
 -- | Parse callback data to extract approval decision and request ID
 --
 -- Callback data format: "approve:<uuid>" or "deny:<uuid>"
-parseCallbackData :: Text -> Maybe (Bool, UUID)
+parseCallbackData :: Text -> Maybe (Decision, UUID)
 parseCallbackData callbackData =
   case T.splitOn ":" callbackData of
-    ["approve", uuidText] -> (True,) <$> UUID.fromText uuidText
-    ["deny", uuidText] -> (False,) <$> UUID.fromText uuidText
+    ["approve", uuidText] -> (Approve,) <$> UUID.fromText uuidText
+    ["deny", uuidText] -> (Deny,) <$> UUID.fromText uuidText
     _ -> Nothing

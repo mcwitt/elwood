@@ -26,7 +26,8 @@ import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Elwood.Logging (Logger, logInfo)
+import Elwood.Logging (Logger, logInfo, logWarn)
+import Elwood.Telegram.Markdown (markdownToTelegramHtml)
 import Elwood.Telegram.Types
   ( AnswerCallbackQueryRequest (..),
     EditMessageReplyMarkupRequest (..),
@@ -41,6 +42,20 @@ import Elwood.Telegram.Types
     Update,
   )
 import Network.HTTP.Client
+  ( Manager,
+    Request,
+    RequestBody (RequestBodyLBS),
+    httpLbs,
+    method,
+    newManager,
+    parseRequest,
+    requestBody,
+    requestHeaders,
+    responseBody,
+    responseStatus,
+    responseTimeout,
+    responseTimeoutMicro,
+  )
 import Network.HTTP.Client.MultipartFormData (formDataBody, partBS, partFileSource)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Status (statusCode)
@@ -52,7 +67,9 @@ data TelegramClient = TelegramClient
     -- | Bot token
     tcToken :: Text,
     -- | Base URL for API calls
-    tcBaseUrl :: String
+    tcBaseUrl :: String,
+    -- | Logger for warnings/diagnostics
+    tcLogger :: Logger
   }
 
 -- | Errors from Telegram API calls
@@ -65,14 +82,15 @@ data TelegramError
 instance Exception TelegramError
 
 -- | Create a new Telegram client
-newClient :: Text -> IO TelegramClient
-newClient token = do
+newClient :: Logger -> Text -> IO TelegramClient
+newClient logger token = do
   mgr <- newManager tlsManagerSettings
   pure
     TelegramClient
       { tcManager = mgr,
         tcToken = token,
-        tcBaseUrl = "https://api.telegram.org/bot" <> T.unpack token
+        tcBaseUrl = "https://api.telegram.org/bot" <> T.unpack token,
+        tcLogger = logger
       }
 
 -- | Build a request for a Telegram API method
@@ -125,27 +143,29 @@ getUpdatesAllowed client offset allowedUpdates = do
 
 -- | Send a message to a chat
 --
--- Sends with MarkdownV2 parse mode. If Telegram rejects the message due to
--- entity parsing errors, retries without formatting (plain text) so the
--- message is never silently lost.
+-- Converts the message text from markdown to Telegram HTML, then sends with
+-- HTML parse mode. If Telegram rejects the HTML, falls back to sending the
+-- original markdown as plain text so the message is never silently lost.
 sendMessage :: TelegramClient -> Int64 -> Text -> IO ()
 sendMessage client chatId_ msgText = do
-  let msgReq =
+  let htmlText = markdownToTelegramHtml msgText
+      msgReq =
         SendMessageRequest
           { chatId = chatId_,
-            text = msgText,
-            parseMode = Just "MarkdownV2"
+            text = htmlText,
+            parseMode = Just "HTML"
           }
   sendMessageRaw client msgReq >>= \case
     Right () -> pure ()
     Left (status, body)
       | status == 400,
-        isParseEntityError body ->
-          -- Retry without formatting
+        isParseEntityError body -> do
+          logWarn client.tcLogger "HTML parse failed, falling back to plain text" []
+          -- Retry with original markdown as plain text (not the HTML)
           let plainReq =
                 SendMessageRequest
                   { chatId = msgReq.chatId,
-                    text = msgReq.text,
+                    text = msgText,
                     parseMode = Nothing
                   }
            in sendMessageRaw client plainReq >>= \case
@@ -179,16 +199,17 @@ isParseEntityError body =
 
 -- | Send a message with an inline keyboard
 --
--- Uses MarkdownV2 with plain-text fallback (same as sendMessage).
+-- Converts markdown to Telegram HTML with plain-text fallback (same as sendMessage).
 sendMessageWithKeyboard :: TelegramClient -> Int64 -> Text -> InlineKeyboardMarkup -> IO Int
 sendMessageWithKeyboard client chatIdVal msgText keyboard = do
-  let send pm = do
+  let htmlText = markdownToTelegramHtml msgText
+      send txt pm = do
         req <- buildRequest client "sendMessage"
         let body =
               encode
                 SendMessageWithKeyboardRequest
                   { chatId = chatIdVal,
-                    text = msgText,
+                    text = txt,
                     parseMode = pm,
                     replyMarkup = keyboard
                   }
@@ -201,10 +222,12 @@ sendMessageWithKeyboard client chatIdVal msgText keyboard = do
         let status = statusCode $ responseStatus response
         pure (status, responseBody response)
 
-  (status, body) <- send (Just "MarkdownV2")
+  (status, body) <- send htmlText (Just "HTML")
   (finalStatus, finalBody) <-
     if status == 400 && isParseEntityError body
-      then send Nothing
+      then do
+        logWarn client.tcLogger "HTML parse failed for keyboard message, falling back to plain text" []
+        send msgText Nothing
       else pure (status, body)
 
   if finalStatus /= 200

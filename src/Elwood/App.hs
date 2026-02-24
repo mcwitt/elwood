@@ -16,6 +16,7 @@ import Data.UUID qualified as UUID
 import Elwood.Approval
   ( ApprovalCoordinator,
     ApprovalResult (..),
+    Decision (..),
     formatApprovalRequest,
     newApprovalCoordinator,
     parseCallbackData,
@@ -49,7 +50,7 @@ runApp config = do
   createDirectoryIfMissing True config.stateDir
 
   -- Initialize Telegram client
-  tg <- Telegram.newClient config.telegramToken
+  tg <- Telegram.newClient logger config.telegramToken
   logInfo logger "Telegram client initialized" []
 
   -- Initialize Claude client
@@ -272,18 +273,22 @@ handleApprovalCallback logger tg coordinator cq = do
         Nothing -> do
           logWarn logger "Failed to parse callback data" [("data", callbackData)]
           Telegram.answerCallbackQuery tg cq.id_ (Just "Invalid callback data")
-        Just (isApproved, requestId_) -> do
-          let result = if isApproved then Approved else Denied
+        Just (decision, requestId_) -> do
+          let result = case decision of
+                Approve -> Approved
+                Deny -> Denied
           success <- respondToApproval coordinator requestId_ result
 
           if success
             then do
-              let responseText = if isApproved then "✅ Approved" else "❌ Denied"
+              let responseText = case decision of
+                    Approve -> "✅ Approved"
+                    Deny -> "❌ Denied"
               logInfo
                 logger
                 "Approval response received"
                 [ ("request_id", UUID.toText requestId_),
-                  ("approved", T.pack (show isApproved))
+                  ("decision", T.pack (show decision))
                 ]
 
               -- Acknowledge the callback
