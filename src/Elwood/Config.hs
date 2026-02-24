@@ -373,7 +373,7 @@ loadConfig path = do
         mcpServers = servers,
         webhook = webhookCfg,
         thinking = maybe ThinkingOff parseThinkingLevel configFile.thinking,
-        maxIterations = fromMaybe 30 configFile.maxIterations,
+        maxIterations = fromMaybe 20 configFile.maxIterations,
         toolSearch = parseToolSearch =<< configFile.toolSearch,
         systemPrompt = systemPrompt_
       }

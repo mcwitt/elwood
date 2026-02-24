@@ -215,11 +215,10 @@ classifyResponse stopReason content_ msgs =
         StopReasonOther _ -> Complete responseText allMessages
 
 -- | Build the user message for the next iteration from tool results.
-buildToolResultMessage :: [ContentBlock] -> [ToolResult] -> Int -> Int -> ClaudeMessage
-buildToolResultMessage toolUses toolResults nextIteration maxIter =
+buildToolResultMessage :: [ContentBlock] -> [ToolResult] -> ClaudeMessage
+buildToolResultMessage toolUses toolResults =
   let resultBlocks = zipWith makeResultBlock toolUses toolResults
-      turnInfo = TextBlock $ formatTurnInfo nextIteration maxIter
-   in ClaudeMessage User (resultBlocks ++ [turnInfo])
+   in ClaudeMessage User resultBlocks
 
 -- | Handle Claude's response (thin IO wrapper around pure classification)
 handleResponse ::
@@ -255,7 +254,7 @@ handleResponse cfg msgs response iteration =
 
       -- Build messages for next iteration (pure)
       let nextIteration = iteration + 1
-          userMsg = buildToolResultMessage toolUses toolResults nextIteration cfg.maxIterations
+          userMsg = buildToolResultMessage toolUses toolResults
           newMessages = allMessages ++ [userMsg]
 
       -- Continue the loop
@@ -345,20 +344,6 @@ makeResultBlock (ToolUseBlock tid _ _) result =
       ToolResultBlock tid err True
 makeResultBlock _ _ =
   ToolResultBlock "" "Invalid tool use" True
-
--- | Format turn info with adaptive messaging based on proximity to limit.
---
--- Uses a @\<harness\>@ XML tag to distinguish from user content.
--- Escalates urgency as the turn limit approaches.
-formatTurnInfo :: Int -> Int -> Text
-formatTurnInfo turn maxTurn =
-  let remaining = maxTurn - turn
-      prefix = "Turn " <> T.pack (show turn) <> " of " <> T.pack (show maxTurn) <> "."
-      body
-        | remaining <= 2 = prefix <> " Final turns — respond now, do not make further tool calls."
-        | remaining <= 5 = prefix <> " Approaching limit — wrap up soon."
-        | otherwise = prefix
-   in "<harness>" <> body <> "</harness>"
 
 -- | Format an error for user display
 formatError :: ClaudeError -> Text

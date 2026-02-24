@@ -480,7 +480,7 @@ let
 
         maxIterations = lib.mkOption {
           type = lib.types.int;
-          default = 30;
+          default = 20;
           description = "Maximum agent loop iterations per turn (prevents infinite tool-use loops).";
         };
 

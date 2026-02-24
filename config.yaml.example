@@ -36,7 +36,7 @@ thinking: off
 
 # Maximum agent loop iterations per turn (prevents infinite tool-use loops)
 # Default: 30
-maxIterations: 30
+maxIterations: 20
 
 # Tool search: null | [] | [tool1, ...]
 # Uses Anthropic's server-side tool search for on-demand tool discovery.
