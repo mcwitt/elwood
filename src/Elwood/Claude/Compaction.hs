@@ -138,7 +138,8 @@ summarizeMessages client config metrics source msgs = do
             messages = [summaryRequest],
             tools = [],
             thinking = Nothing,
-            cacheControl = False
+            cacheControl = False,
+            toolSearch = Nothing
           }
 
   result <- sendMessages client request

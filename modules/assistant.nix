@@ -128,12 +128,8 @@ let
           compactionModel = agentCfg.compaction.model;
         };
       }
-      // lib.optionalAttrs agentCfg.dynamicToolLoading.enable {
-        dynamicToolLoading =
-          if agentCfg.dynamicToolLoading.alwaysLoad == [ ] then
-            true
-          else
-            { alwaysLoad = agentCfg.dynamicToolLoading.alwaysLoad; };
+      // lib.optionalAttrs agentCfg.toolSearch.enable {
+        toolSearch = agentCfg.toolSearch.neverDefer;
       }
       // lib.optionalAttrs (mcpServersList != { }) {
         mcpServers = mcpServersList;
@@ -499,12 +495,12 @@ let
           description = "System prompt inputs. Assembled in order to form the system prompt.";
         };
 
-        dynamicToolLoading = {
-          enable = lib.mkEnableOption "dynamic tool loading";
-          alwaysLoad = lib.mkOption {
+        toolSearch = {
+          enable = lib.mkEnableOption "server-side tool search";
+          neverDefer = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [ ];
-            description = "Tool names to always load at the start of each turn.";
+            description = "Tool names that are never deferred (always available without search).";
           };
         };
 

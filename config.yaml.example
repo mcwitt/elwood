@@ -38,13 +38,17 @@ thinking: off
 # Default: 30
 maxIterations: 30
 
-# Dynamic tool loading: false | true | {alwaysLoad: [...]}
-# When enabled, only pre-loaded tools are sent in each API request.
-# The model uses find_tools to search for and load additional tools on demand.
-#   false/omitted  - disabled (all tool schemas sent in every request)
-#   true           - enabled (only find_tools pre-loaded)
-#   {alwaysLoad: [tool1, tool2]}  - enabled with specified tools always available
-# dynamicToolLoading: false
+# Tool search: null | [] | [tool1, ...]
+# Uses Anthropic's server-side tool search for on-demand tool discovery.
+# All tools are sent in every request (enabling prompt caching), with most
+# marked for deferred loading. The model searches and activates tools as needed.
+#   null/omitted    - disabled (all tool schemas sent non-deferred)
+#   []              - enabled (all tools deferred, model searches for them)
+#   [tool1, tool2]  - enabled, but listed tools are never deferred
+#
+# The list is optional. It provides a minor latency optimization for
+# frequently-used tools (avoids the server-side search round-trip).
+# toolSearch: null
 
 # System prompt configuration
 # A list of prompt inputs assembled into the system prompt.

@@ -8,16 +8,11 @@ module Elwood.Tools.Registry
     lookupTool,
     allTools,
     toolSchemas,
-
-    -- * Active Tool Set
-    activeToolSchemas,
   )
 where
 
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Set (Set)
-import Data.Set qualified as Set
 import Data.Text (Text)
 import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Tools.Types (Tool (..))
@@ -51,16 +46,4 @@ toolSchemas registry =
         inputSchema = tool.inputSchema
       }
   | tool <- allTools registry
-  ]
-
--- | Generate tool schemas for only the named tools.
-activeToolSchemas :: ToolRegistry -> Set Text -> [ToolSchema]
-activeToolSchemas (ToolRegistry reg) active =
-  [ ToolSchema
-      { name = tool.name,
-        description = tool.description,
-        inputSchema = tool.inputSchema
-      }
-  | (n, tool) <- Map.toList reg,
-    Set.member n active
   ]

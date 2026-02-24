@@ -38,6 +38,7 @@ import Data.Int (Int64)
 import Data.List (sortOn)
 import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Ord (Down (..))
+import Data.Set (Set)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -101,8 +102,8 @@ data AppEnv = AppEnv
     metrics :: MetricsStore,
     -- | Number of active MCP servers
     mcpServerCount :: Int,
-    -- | Always-loaded tools for dynamic loading (Nothing = disabled, Just = enabled)
-    alwaysLoadTools :: Maybe [Text],
+    -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
+    toolSearch :: Maybe (Set Text),
     -- | Per-session prune horizons for tool result pruning
     pruneHorizons :: PruneHorizons
   }
@@ -160,7 +161,7 @@ handleEvent env event = do
             source = metricsSource src,
             onRateLimit = Just (mkRateLimitCallback env event),
             onText = Just (mkTextCallback env event),
-            alwaysLoadTools = env.alwaysLoadTools,
+            toolSearch = env.toolSearch,
             pruneHorizon = pruneHorizon
           }
 

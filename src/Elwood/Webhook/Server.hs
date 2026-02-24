@@ -193,7 +193,7 @@ applyOverrides env wc =
       maxIterations = env.maxIterations,
       metrics = env.metrics,
       mcpServerCount = env.mcpServerCount,
-      alwaysLoadTools = env.alwaysLoadTools,
+      toolSearch = env.toolSearch,
       pruneHorizons = env.pruneHorizons
     }
 

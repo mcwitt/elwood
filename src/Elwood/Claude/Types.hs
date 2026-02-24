@@ -31,6 +31,8 @@ where
 import Control.Exception (Exception)
 import Data.Aeson
 import Data.Aeson.Types (Pair)
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Time (UTCTime)
 import Elwood.Config (ThinkingEffort (..))
@@ -93,6 +95,17 @@ data ContentBlock
       { -- | Opaque data for redacted thinking
         data_ :: Text
       }
+  | -- | Server-side tool use (e.g., tool_search_tool_bm25) — preserved in history
+    ServerToolUseBlock
+      { id_ :: Text,
+        name :: Text,
+        input :: Value
+      }
+  | -- | Result from server-side tool search — preserved in history
+    ToolSearchResultBlock
+      { toolUseId :: Text,
+        searchResult :: Value
+      }
   deriving stock (Show, Eq, Generic)
 
 instance ToJSON ContentBlock where
@@ -136,6 +149,19 @@ instance ToJSON ContentBlock where
       [ "type" .= ("redacted_thinking" :: Text),
         "data" .= d
       ]
+  toJSON (ServerToolUseBlock tid n inp) =
+    object
+      [ "type" .= ("server_tool_use" :: Text),
+        "id" .= tid,
+        "name" .= n,
+        "input" .= inp
+      ]
+  toJSON (ToolSearchResultBlock tid sr) =
+    object
+      [ "type" .= ("tool_search_result" :: Text),
+        "tool_use_id" .= tid,
+        "content" .= sr
+      ]
 
 instance FromJSON ContentBlock where
   parseJSON = withObject "ContentBlock" $ \v -> do
@@ -164,6 +190,15 @@ instance FromJSON ContentBlock where
       "redacted_thinking" ->
         RedactedThinkingBlock
           <$> v .: "data"
+      "server_tool_use" ->
+        ServerToolUseBlock
+          <$> v .: "id"
+          <*> v .: "name"
+          <*> v .: "input"
+      "tool_search_result" ->
+        ToolSearchResultBlock
+          <$> v .: "tool_use_id"
+          <*> v .: "content"
       other -> fail $ "Unknown content block type: " <> show other
 
 -- | A message in a Claude conversation
@@ -272,7 +307,9 @@ data MessagesRequest = MessagesRequest
     -- | Extended thinking configuration (optional)
     thinking :: Maybe ThinkingConfig,
     -- | Enable automatic prompt caching
-    cacheControl :: Bool
+    cacheControl :: Bool,
+    -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
+    toolSearch :: Maybe (Set Text)
   }
   deriving stock (Show, Generic)
 
@@ -284,10 +321,32 @@ instance ToJSON MessagesRequest where
         "messages" .= req.messages
       ]
         ++ maybe [] (\s -> ["system" .= s]) req.system
-        ++ ["tools" .= req.tools | not (null req.tools)]
+        ++ toolsField
         ++ maybe [] thinkingFields req.thinking
         ++ ["cache_control" .= object ["type" .= ("ephemeral" :: Text)] | req.cacheControl]
     where
+      toolsField :: [Pair]
+      toolsField
+        | null req.tools = []
+        | otherwise = case req.toolSearch of
+            Nothing ->
+              ["tools" .= req.tools]
+            Just neverDefer ->
+              let searchTool =
+                    object
+                      [ "type" .= ("tool_search_tool_bm25_20251119" :: Text),
+                        "name" .= ("tool_search_tool_bm25" :: Text)
+                      ]
+                  addDefer ts =
+                    object
+                      [ "name" .= ts.name,
+                        "description" .= ts.description,
+                        "input_schema" .= ts.inputSchema,
+                        "defer_loading" .= not (Set.member ts.name neverDefer)
+                      ]
+                  toolValues = map addDefer req.tools
+               in ["tools" .= (searchTool : toolValues)]
+
       effortToText :: ThinkingEffort -> Text
       effortToText EffortLow = "low"
       effortToText EffortMedium = "medium"

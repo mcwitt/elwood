@@ -6,11 +6,10 @@ module Elwood.Config
     MCPServerConfig (..),
     ThinkingLevel (..),
     ThinkingEffort (..),
-    DynamicToolLoadingConfig (..),
     PermissionConfig (..),
     PermissionConfigFile (..),
     loadConfig,
-    parseDynamicToolLoading,
+    parseToolSearch,
     parseThinkingLevel,
 
     -- * Re-exports for webhook config
@@ -60,12 +59,6 @@ data ThinkingLevel
 -- | Effort level for adaptive thinking
 data ThinkingEffort = EffortLow | EffortMedium | EffortHigh
   deriving stock (Show, Eq, Generic)
-
--- | Configuration for dynamic tool loading
-newtype DynamicToolLoadingConfig = DynamicToolLoadingConfig
-  { alwaysLoad :: [Text]
-  }
-  deriving stock (Show, Eq)
 
 -- | Parse a thinking level from a YAML value
 --
@@ -125,8 +118,8 @@ data Config = Config
     thinking :: ThinkingLevel,
     -- | Maximum agent loop iterations per turn (prevents infinite tool-use loops)
     maxIterations :: Int,
-    -- | Dynamic tool loading (Nothing = disabled, Just cfg = enabled)
-    dynamicToolLoading :: Maybe DynamicToolLoadingConfig,
+    -- | Tool search (Nothing = disabled, Just neverDefer = enabled)
+    toolSearch :: Maybe [Text],
     -- | System prompt inputs (assembled at startup)
     systemPrompt :: [PromptInput]
   }
@@ -168,7 +161,7 @@ data ConfigFile = ConfigFile
     webhook :: Maybe WebhookServerConfigFile,
     thinking :: Maybe Value,
     maxIterations :: Maybe Int,
-    dynamicToolLoading :: Maybe Value,
+    toolSearch :: Maybe Value,
     systemPrompt :: Maybe [PromptInputFile]
   }
   deriving stock (Show, Generic)
@@ -201,7 +194,7 @@ data MCPServerConfigFile = MCPServerConfigFile
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "permissions", "compaction", "mcpServers", "webhook", "thinking", "maxIterations", "dynamicToolLoading", "systemPrompt"] v
+    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "permissions", "compaction", "mcpServers", "webhook", "thinking", "maxIterations", "toolSearch", "dynamicToolLoading", "systemPrompt"] v
     ConfigFile
       <$> v .:? "stateDir"
       <*> v .:? "workspaceDir"
@@ -213,7 +206,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "webhook"
       <*> v .:? "thinking"
       <*> v .:? "maxIterations"
-      <*> v .:? "dynamicToolLoading"
+      <*> (v .:? "toolSearch" <|> v .:? "dynamicToolLoading")
       <*> v .:? "systemPrompt"
 
 instance FromJSON PermissionConfigFile where
@@ -381,22 +374,24 @@ loadConfig path = do
         webhook = webhookCfg,
         thinking = maybe ThinkingOff parseThinkingLevel configFile.thinking,
         maxIterations = fromMaybe 30 configFile.maxIterations,
-        dynamicToolLoading = parseDynamicToolLoading =<< configFile.dynamicToolLoading,
+        toolSearch = parseToolSearch =<< configFile.toolSearch,
         systemPrompt = systemPrompt_
       }
 
--- | Parse dynamic tool loading from a YAML value
+-- | Parse tool search configuration from a YAML value
 --
 -- Supported formats:
---   false / absent     -> Nothing (disabled)
---   true               -> Just (DynamicToolLoadingConfig [])
---   {alwaysLoad: [...]} -> Just (DynamicToolLoadingConfig [...])
-parseDynamicToolLoading :: Value -> Maybe DynamicToolLoadingConfig
-parseDynamicToolLoading (Bool False) = Nothing
-parseDynamicToolLoading (Bool True) = Just (DynamicToolLoadingConfig [])
-parseDynamicToolLoading (Object obj) =
+--   false / absent         -> Nothing (disabled)
+--   true / []              -> Just [] (enabled, all tools deferred)
+--   [tool1, tool2]         -> Just [tool1, tool2] (enabled, listed tools never deferred)
+--   {alwaysLoad: [...]}    -> Just [...] (backward compat with old dynamicToolLoading format)
+parseToolSearch :: Value -> Maybe [Text]
+parseToolSearch (Bool False) = Nothing
+parseToolSearch (Bool True) = Just []
+parseToolSearch (Array arr) = Just [t | String t <- V.toList arr]
+parseToolSearch (Object obj) =
   let names = case KM.lookup (Key.fromText "alwaysLoad") obj of
         Just (Array arr) -> [t | String t <- V.toList arr]
         _ -> []
-   in Just (DynamicToolLoadingConfig names)
-parseDynamicToolLoading _ = Nothing
+   in Just names
+parseToolSearch _ = Nothing

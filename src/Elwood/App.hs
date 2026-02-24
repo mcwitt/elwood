@@ -9,6 +9,7 @@ import Control.Exception (finally)
 import Data.Foldable (for_)
 import Data.Int (Int64)
 import Data.Maybe (isJust)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
@@ -107,13 +108,13 @@ runApp config = do
   mets <- newMetricsStore
   logInfo logger "Metrics store initialized" []
 
-  -- Dynamic tool loading config: convert to Maybe [Text]
-  let alwaysLoad = fmap (.alwaysLoad) config.dynamicToolLoading
+  -- Tool search config: convert to Maybe (Set Text)
+  let toolSearch_ = fmap Set.fromList config.toolSearch
 
   logInfo
     logger
-    "Dynamic tool loading"
-    [("enabled", T.pack (show (isJust alwaysLoad)))]
+    "Tool search"
+    [("enabled", T.pack (show (isJust toolSearch_)))]
 
   logInfo
     logger
@@ -164,7 +165,7 @@ runApp config = do
             maxIterations = config.maxIterations,
             metrics = mets,
             mcpServerCount = mcpServerCount_,
-            alwaysLoadTools = alwaysLoad,
+            toolSearch = toolSearch_,
             pruneHorizons = pruneHorizons_
           }
 

@@ -2,17 +2,17 @@ module Test.Elwood.Config (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
 import Data.Text (Text)
+import Data.Vector qualified as V
 import Elwood.Config
   ( CompactionConfig (..),
     Config (..),
-    DynamicToolLoadingConfig (..),
     ThinkingEffort (..),
     ThinkingLevel (..),
     WebhookConfig (..),
     WebhookServerConfig (..),
     loadConfig,
-    parseDynamicToolLoading,
     parseThinkingLevel,
+    parseToolSearch,
   )
 import Elwood.Event.Types (DeliveryTarget (..))
 import Paths_elwood (getDataFileName)
@@ -26,7 +26,7 @@ tests =
     "Config"
     [ compactionConfigTests,
       thinkingLevelTests,
-      dynamicToolLoadingTests,
+      toolSearchTests,
       exampleConfigTests
     ]
 
@@ -99,23 +99,28 @@ thinkingLevelTests =
           @?= ThinkingOff
     ]
 
-dynamicToolLoadingTests :: TestTree
-dynamicToolLoadingTests =
+toolSearchTests :: TestTree
+toolSearchTests =
   testGroup
-    "DynamicToolLoading"
+    "ToolSearch"
     [ testCase "false returns Nothing" $ do
-        parseDynamicToolLoading (Bool False) @?= Nothing,
-      testCase "true returns empty alwaysLoad" $ do
-        parseDynamicToolLoading (Bool True) @?= Just (DynamicToolLoadingConfig []),
-      testCase "object with alwaysLoad parses tool names" $ do
+        parseToolSearch (Bool False) @?= Nothing,
+      testCase "true returns empty list" $ do
+        parseToolSearch (Bool True) @?= Just [],
+      testCase "empty array returns empty list" $ do
+        parseToolSearch (Array V.empty) @?= Just [],
+      testCase "array with tool names parses correctly" $ do
+        let val = Array (V.fromList [String "run_command", String "save_memory"])
+        parseToolSearch val @?= Just ["run_command", "save_memory"],
+      testCase "object with alwaysLoad parses (backward compat)" $ do
         let val = object ["alwaysLoad" .= (["run_command", "save_memory"] :: [Text])]
-        parseDynamicToolLoading val @?= Just (DynamicToolLoadingConfig ["run_command", "save_memory"]),
+        parseToolSearch val @?= Just ["run_command", "save_memory"],
       testCase "object without alwaysLoad returns empty list" $ do
-        parseDynamicToolLoading (object []) @?= Just (DynamicToolLoadingConfig []),
+        parseToolSearch (object []) @?= Just [],
       testCase "null returns Nothing" $ do
-        parseDynamicToolLoading Null @?= Nothing,
+        parseToolSearch Null @?= Nothing,
       testCase "string returns Nothing" $ do
-        parseDynamicToolLoading (String "true") @?= Nothing
+        parseToolSearch (String "true") @?= Nothing
     ]
 
 exampleConfigTests :: TestTree

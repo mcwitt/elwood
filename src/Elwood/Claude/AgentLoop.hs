@@ -9,12 +9,9 @@ module Elwood.Claude.AgentLoop
   )
 where
 
-import Data.Aeson (Value (..), encode, object, (.=))
-import Data.Aeson.Key qualified as Key
-import Data.Aeson.KeyMap qualified as KM
+import Data.Aeson (Value (..), encode)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Set (Set)
-import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
@@ -30,7 +27,6 @@ import Elwood.Claude.Types
     Role (..),
     StopReason (..),
     ThinkingConfig (..),
-    ToolSchema (..),
     Usage (..),
     stopReasonToText,
   )
@@ -38,10 +34,8 @@ import Elwood.Config (ThinkingEffort (..), ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, recordApiResponse, recordToolCall)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
-import Elwood.Tools.Meta (searchTools)
 import Elwood.Tools.Registry
   ( ToolRegistry,
-    activeToolSchemas,
     lookupTool,
     toolSchemas,
   )
@@ -80,8 +74,8 @@ data AgentConfig = AgentConfig
     onRateLimit :: Maybe RateLimitCallback,
     -- | Optional callback for intermediate text produced during tool-use turns
     onText :: Maybe TextCallback,
-    -- | Always-loaded tools (Nothing = all tools, Just = dynamic loading with these tools)
-    alwaysLoadTools :: Maybe [Text],
+    -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
+    toolSearch :: Maybe (Set Text),
     -- | Prune horizon: tool results before this index are replaced with placeholders
     pruneHorizon :: Int
   }
@@ -113,22 +107,15 @@ runAgentTurn cfg history userMessage = do
   compactedHistory <- compactIfNeeded cfg.logger cfg.client cfg.compaction cfg.metrics cfg.source history
   let msgs = compactedHistory ++ [userMessage]
 
-  -- Initialize the active tool set
-  let activeTools = case cfg.alwaysLoadTools of
-        Nothing -> Nothing -- disabled: send all tools
-        Just alwaysLoad -> Just $ Set.fromList ("find_tools" : alwaysLoad)
-
-  agentLoop cfg msgs 0 activeTools
+  agentLoop cfg msgs 0
 
 -- | The main agent loop
 agentLoop ::
   AgentConfig ->
   [ClaudeMessage] ->
   Int ->
-  -- | Active tool set (Nothing = send all tools, Just = dynamic loading)
-  Maybe (Set Text) ->
   IO AgentResult
-agentLoop cfg msgs iteration mActiveTools
+agentLoop cfg msgs iteration
   | iteration >= cfg.maxIterations = do
       logError cfg.logger "Agent loop exceeded max iterations" []
       pure $ AgentError "(Agent loop exceeded max iterations)"
@@ -138,11 +125,8 @@ agentLoop cfg msgs iteration mActiveTools
           mdl = cfg.model
           thk = cfg.thinking
 
-      -- Determine which tool schemas to send
-      let schemas = case mActiveTools of
-            Nothing -> toolSchemas reg
-            Just active ->
-              findToolsSchema : activeToolSchemas reg active
+      -- Always send all tool schemas (tool search handles filtering server-side)
+      let schemas = toolSchemas reg
 
       -- Build and send request
       let request =
@@ -153,7 +137,8 @@ agentLoop cfg msgs iteration mActiveTools
                 messages = pruneToolResults cfg.pruneHorizon msgs,
                 tools = schemas,
                 thinking = thinkingToConfig thk,
-                cacheControl = True
+                cacheControl = True,
+                toolSearch = cfg.toolSearch
               }
 
       logInfo
@@ -204,7 +189,7 @@ agentLoop cfg msgs iteration mActiveTools
           -- Record API metrics
           recordApiResponse cfg.metrics mdl src response.stopReason response.usage
 
-          handleResponse cfg msgs response iteration mActiveTools
+          handleResponse cfg msgs response iteration
 
 -- | Classification of a Claude response into a pure action
 data AgentAction
@@ -242,9 +227,8 @@ handleResponse ::
   [ClaudeMessage] ->
   MessagesResponse ->
   Int ->
-  Maybe (Set Text) ->
   IO AgentResult
-handleResponse cfg msgs response iteration mActiveTools =
+handleResponse cfg msgs response iteration =
   case classifyResponse response.stopReason response.content msgs of
     Complete responseText allMessages ->
       pure $ AgentSuccess responseText allMessages
@@ -266,58 +250,25 @@ handleResponse cfg msgs response iteration mActiveTools =
       -- Record tool call metrics
       mapM_ (\case ToolUseBlock _ n _ -> recordToolCall mets n; _ -> pure ()) toolUses
 
-      -- Execute all tool uses, handling find_tools as a built-in
-      (toolResults, updatedActiveTools) <- executeToolUses lgr reg cfg.context mActiveTools toolUses
+      -- Execute all tool uses
+      toolResults <- executeToolUses lgr reg cfg.context toolUses
 
       -- Build messages for next iteration (pure)
       let nextIteration = iteration + 1
           userMsg = buildToolResultMessage toolUses toolResults nextIteration cfg.maxIterations
           newMessages = allMessages ++ [userMsg]
 
-      -- Continue the loop with possibly updated active tools
-      agentLoop cfg newMessages nextIteration updatedActiveTools
+      -- Continue the loop
+      agentLoop cfg newMessages nextIteration
 
--- | Execute all tool uses, handling find_tools as a built-in.
--- Returns the results and the (possibly updated) active tool set.
+-- | Execute all tool uses and return their results.
 executeToolUses ::
   Logger ->
   ToolRegistry ->
   AgentContext ->
-  Maybe (Set Text) ->
   [ContentBlock] ->
-  IO ([ToolResult], Maybe (Set Text))
-executeToolUses lgr reg ctx mActiveTools toolUses = do
-  go mActiveTools toolUses []
-  where
-    go active [] acc = pure (reverse acc, active)
-    go active (tu : rest) acc = do
-      case tu of
-        ToolUseBlock _ "find_tools" input | Just _ <- active -> do
-          -- Handle find_tools as built-in
-          let result = handleFindTools reg input
-              newActive = case result of
-                ToolSuccess _ ->
-                  -- Extract the query and activate matching tools
-                  case extractQuery input of
-                    Just query ->
-                      let (_text, names) = searchTools reg query
-                       in fmap (`Set.union` names) active
-                    Nothing -> active
-                ToolError _ -> active
-          logInfo lgr "Executing tool" [("tool", "find_tools")]
-          go newActive rest (result : acc)
-        _ -> do
-          result <- executeToolUse lgr reg ctx tu
-          go active rest (result : acc)
-
--- | Handle find_tools as a built-in (pure search, no IORef)
-handleFindTools :: ToolRegistry -> Value -> ToolResult
-handleFindTools reg input =
-  case extractQuery input of
-    Nothing -> ToolError "Missing required parameter: query"
-    Just query ->
-      let (txt, _names) = searchTools reg query
-       in ToolSuccess txt
+  IO [ToolResult]
+executeToolUses lgr reg ctx = mapM (executeToolUse lgr reg ctx)
 
 -- | Extract text content from content blocks
 extractTextContent :: [ContentBlock] -> Text
@@ -408,37 +359,6 @@ formatTurnInfo turn maxTurn =
         | remaining <= 5 = prefix <> " Approaching limit — wrap up soon."
         | otherwise = prefix
    in "<harness>" <> body <> "</harness>"
-
--- | Schema for the built-in find_tools tool
-findToolsSchema :: ToolSchema
-findToolsSchema =
-  ToolSchema
-    { name = "find_tools",
-      description =
-        "Search for available tools by keyword (multi-word queries use AND matching). "
-          <> "Returns matching tool names and descriptions, and makes them available for use. "
-          <> "Use when you need a tool that isn't already available.",
-      inputSchema =
-        object
-          [ "type" .= ("object" :: Text),
-            "properties"
-              .= object
-                [ "query"
-                    .= object
-                      [ "type" .= ("string" :: Text),
-                        "description" .= ("Keyword to search for in tool names and descriptions" :: Text)
-                      ]
-                ],
-            "required" .= (["query"] :: [Text])
-          ]
-    }
-
--- | Extract query from find_tools input
-extractQuery :: Value -> Maybe Text
-extractQuery (Object obj) = case KM.lookup (Key.fromText "query") obj of
-  Just (String q) -> Just q
-  _ -> Nothing
-extractQuery _ = Nothing
 
 -- | Format an error for user display
 formatError :: ClaudeError -> Text

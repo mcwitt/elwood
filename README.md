@@ -20,7 +20,7 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Image support** — Send photos and Claude can see them
 - **Extended thinking** — Configurable reasoning budget for complex tasks
 - **Context compaction** — Automatic summarization for long conversations
-- **Dynamic tool loading** — On-demand tool discovery via `find_tools` to reduce per-request token usage
+- **Server-side tool search** — On-demand tool discovery via Anthropic's tool search with deferred loading
 - **Prometheus metrics** — Token usage, API requests, tool calls, and conversation gauges
 - **NixOS module** — Multi-agent support with systemd hardening
 
