@@ -103,8 +103,6 @@ data AppEnv = AppEnv
     maxIterations :: Int,
     -- | Metrics store for Prometheus counters
     metrics :: MetricsStore,
-    -- | Number of active MCP servers
-    mcpServerCount :: Int,
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
     toolSearch :: Maybe (Set Text),
     -- | Per-session prune horizons for tool result pruning

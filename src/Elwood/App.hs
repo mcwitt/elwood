@@ -30,7 +30,7 @@ import Elwood.Event (AppEnv (..), handleTelegramMessage)
 import Elwood.Logging
 import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
-import Elwood.Metrics (newMetricsStore)
+import Elwood.Metrics (newMetricsStore, setMCPServerCount)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
 import Elwood.Webhook qualified as Webhook
@@ -139,9 +139,11 @@ runApp config = do
   -- Create callback handler for approval responses
   let callbackHandler = handleApprovalCallback logger tg approvalCoordinator
 
+  -- Record MCP server count in metrics
+  setMCPServerCount mets (length mcpServers)
+
   -- Create base app environment (shared by webhook and telegram handlers)
-  let mcpServerCount_ = length mcpServers
-      appEnv =
+  let appEnv =
         AppEnv
           { logger = logger,
             telegram = tg,
@@ -158,7 +160,6 @@ runApp config = do
             attachmentQueue = attachmentQueue_,
             maxIterations = config.maxIterations,
             metrics = mets,
-            mcpServerCount = mcpServerCount_,
             toolSearch = toolSearch_,
             pruneHorizons = pruneHorizons_
           }

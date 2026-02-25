@@ -13,6 +13,7 @@ import Elwood.Metrics
     recordCompaction,
     recordToolCall,
     renderMetrics,
+    setMCPServerCount,
   )
 import Elwood.Tools.Registry (newToolRegistry)
 import System.Directory (removeDirectoryRecursive)
@@ -48,7 +49,7 @@ recordingTests =
         let usage = Usage 100 50 10 20
         recordApiResponse store "claude-3" "telegram" EndTurn usage
         withTempConvStore $ \convStore -> do
-          output <- renderMetrics store convStore newToolRegistry 0
+          output <- renderMetrics store convStore newToolRegistry
           let s = LBS8.unpack output
           assertBool "contains input tokens" ("elwood_input_tokens_total{model=\"claude-3\",source=\"telegram\"} 100" `isIn` s)
           assertBool "contains output tokens" ("elwood_output_tokens_total{model=\"claude-3\",source=\"telegram\"} 50" `isIn` s)
@@ -61,7 +62,7 @@ recordingTests =
         recordToolCall store "run_command"
         recordToolCall store "save_memory"
         withTempConvStore $ \convStore -> do
-          output <- renderMetrics store convStore newToolRegistry 0
+          output <- renderMetrics store convStore newToolRegistry
           let s = LBS8.unpack output
           assertBool "run_command count is 2" ("elwood_tool_calls_total{tool=\"run_command\"} 2" `isIn` s)
           assertBool "save_memory count is 1" ("elwood_tool_calls_total{tool=\"save_memory\"} 1" `isIn` s),
@@ -71,7 +72,7 @@ recordingTests =
         recordCompaction store
         recordCompaction store
         withTempConvStore $ \convStore -> do
-          output <- renderMetrics store convStore newToolRegistry 0
+          output <- renderMetrics store convStore newToolRegistry
           let s = LBS8.unpack output
           assertBool "compaction count is 3" ("elwood_compactions_total 3" `isIn` s),
       testCase "multiple API responses accumulate" $ do
@@ -81,7 +82,7 @@ recordingTests =
         recordApiResponse store "claude-3" "telegram" EndTurn usage1
         recordApiResponse store "claude-3" "telegram" EndTurn usage2
         withTempConvStore $ \convStore -> do
-          output <- renderMetrics store convStore newToolRegistry 0
+          output <- renderMetrics store convStore newToolRegistry
           let s = LBS8.unpack output
           assertBool "input tokens accumulated" ("elwood_input_tokens_total{model=\"claude-3\",source=\"telegram\"} 300" `isIn` s)
           assertBool "output tokens accumulated" ("elwood_output_tokens_total{model=\"claude-3\",source=\"telegram\"} 150" `isIn` s)
@@ -94,7 +95,7 @@ renderingTests =
     [ testCase "empty store renders valid output" $ do
         store <- newMetricsStore
         withTempConvStore $ \convStore -> do
-          output <- renderMetrics store convStore newToolRegistry 0
+          output <- renderMetrics store convStore newToolRegistry
           -- Should still have gauge metrics
           let s = LBS8.unpack output
           assertBool "contains tools_registered" ("elwood_tools_registered" `isIn` s)
@@ -103,20 +104,21 @@ renderingTests =
         store <- newMetricsStore
         recordToolCall store "test_tool"
         withTempConvStore $ \convStore -> do
-          output <- renderMetrics store convStore newToolRegistry 0
+          output <- renderMetrics store convStore newToolRegistry
           let s = LBS8.unpack output
           assertBool "has HELP line" ("# HELP elwood_tool_calls_total" `isIn` s)
           assertBool "has TYPE line" ("# TYPE elwood_tool_calls_total counter" `isIn` s),
       testCase "MCP server count is rendered" $ do
         store <- newMetricsStore
+        setMCPServerCount store 3
         withTempConvStore $ \convStore -> do
-          output <- renderMetrics store convStore newToolRegistry 3
+          output <- renderMetrics store convStore newToolRegistry
           let s = LBS8.unpack output
           assertBool "mcp count is 3" ("elwood_mcp_servers_active 3" `isIn` s),
       testCase "no trailing content after last newline" $ do
         store <- newMetricsStore
         withTempConvStore $ \convStore -> do
-          output <- renderMetrics store convStore newToolRegistry 0
+          output <- renderMetrics store convStore newToolRegistry
           assertBool "ends with newline" (LBS8.last output == '\n' || LBS.null output)
     ]
 

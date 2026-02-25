@@ -9,6 +9,7 @@ module Elwood.Metrics
     recordApiResponse,
     recordToolCall,
     recordCompaction,
+    setMCPServerCount,
 
     -- * Source Labels
     metricsSource,
@@ -21,7 +22,7 @@ where
 import Data.Aeson (encode)
 import Data.ByteString.Builder qualified as B
 import Data.ByteString.Lazy qualified as LBS
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.List (find, nub)
 import Data.Map.Strict (Map)
@@ -49,13 +50,14 @@ data CounterKey
   deriving stock (Eq, Ord, Show)
 
 -- | Thread-safe metrics store
-newtype MetricsStore = MetricsStore
-  { counters :: IORef (Map CounterKey Int64)
+data MetricsStore = MetricsStore
+  { counters :: IORef (Map CounterKey Int64),
+    mcpServerCount :: IORef Int
   }
 
 -- | Create an empty metrics store
 newMetricsStore :: IO MetricsStore
-newMetricsStore = MetricsStore <$> newIORef Map.empty
+newMetricsStore = MetricsStore <$> newIORef Map.empty <*> newIORef 0
 
 -- | Increment a counter by a given amount
 incrementCounter :: MetricsStore -> CounterKey -> Int64 -> IO ()
@@ -83,6 +85,10 @@ recordCompaction :: MetricsStore -> IO ()
 recordCompaction store =
   incrementCounter store CkCompactions 1
 
+-- | Set the number of active MCP servers
+setMCPServerCount :: MetricsStore -> Int -> IO ()
+setMCPServerCount store n = writeIORef store.mcpServerCount n
+
 -- | Normalize an EventSource to a metrics label
 metricsSource :: EventSource -> Text
 metricsSource (TelegramSource _) = "telegram"
@@ -90,16 +96,17 @@ metricsSource (WebhookSource n) = "webhook:" <> n
 metricsSource (CronSource n) = "cron:" <> n
 
 -- | Render all metrics in Prometheus text exposition format
-renderMetrics :: MetricsStore -> Claude.ConversationStore -> Tools.ToolRegistry -> Int -> IO LBS.ByteString
-renderMetrics store convStore registry mcpServerCount = do
+renderMetrics :: MetricsStore -> Claude.ConversationStore -> Tools.ToolRegistry -> IO LBS.ByteString
+renderMetrics store convStore registry = do
   cs <- readIORef store.counters
+  mcpCount <- readIORef store.mcpServerCount
   convs <- Claude.allConversations convStore
   let ts = Tools.allTools registry
       builder =
         renderCounters cs
           <> renderConversationGauges convs
           <> renderToolGauge ts
-          <> renderMCPGauge mcpServerCount
+          <> renderMCPGauge mcpCount
   pure $ B.toLazyByteString builder
 
 -- | Render all counter metrics

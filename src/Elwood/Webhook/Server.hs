@@ -96,7 +96,7 @@ webhookApp config env request respond = do
       respond $ jsonResponse status200 "{\"status\": \"ok\"}"
     ["metrics"] -> do
       -- Prometheus metrics endpoint
-      body <- renderMetrics env.metrics env.conversations env.registry env.mcpServerCount
+      body <- renderMetrics env.metrics env.conversations env.registry
       respond $ responseLBS status200 [("Content-Type", "text/plain; version=0.0.4; charset=utf-8")] body
     _ -> do
       logWarn lgr "Unknown path" [("path", T.intercalate "/" path)]
@@ -191,7 +191,6 @@ applyOverrides env wc =
       attachmentQueue = env.attachmentQueue,
       maxIterations = env.maxIterations,
       metrics = env.metrics,
-      mcpServerCount = env.mcpServerCount,
       toolSearch = env.toolSearch,
       pruneHorizons = env.pruneHorizons
     }
