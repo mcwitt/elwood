@@ -17,6 +17,7 @@ module Elwood.Permissions
   )
 where
 
+import Data.Aeson (FromJSON (..), withText)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -32,6 +33,14 @@ data ToolPolicy
   | -- | Tool is not allowed to be executed
     PolicyDeny
   deriving stock (Show, Eq)
+
+instance FromJSON ToolPolicy where
+  parseJSON = withText "ToolPolicy" $ \t ->
+    case T.toLower t of
+      "allow" -> pure PolicyAllow
+      "ask" -> pure PolicyAsk
+      "deny" -> pure PolicyDeny
+      other -> fail $ "Unknown tool policy: " <> T.unpack other
 
 -- | Configuration for permissions
 data PermissionConfig = PermissionConfig

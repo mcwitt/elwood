@@ -170,8 +170,8 @@ data ConfigFile = ConfigFile
 data PermissionConfigFile = PermissionConfigFile
   { safePatterns :: Maybe [Text],
     dangerousPatterns :: Maybe [Text],
-    toolPolicies :: Maybe (Map Text Text),
-    defaultPolicy :: Maybe Text,
+    toolPolicies :: Maybe (Map Text ToolPolicy),
+    defaultPolicy :: Maybe ToolPolicy,
     approvalTimeoutSeconds :: Maybe Int
   }
   deriving stock (Show, Generic)
@@ -265,25 +265,14 @@ loadConfig path = do
   webhookSecretEnv <- fmap T.pack <$> lookupEnv "WEBHOOK_SECRET"
 
   -- Build final config with defaults
-  -- Helper to parse tool policy from string
-  let parseToolPolicy :: Text -> Maybe ToolPolicy
-      parseToolPolicy t = case T.toLower t of
-        "allow" -> Just PolicyAllow
-        "ask" -> Just PolicyAsk
-        "deny" -> Just PolicyDeny
-        _ -> Nothing
-
-      parseToolPolicyOrDefault :: Text -> ToolPolicy
-      parseToolPolicyOrDefault t = fromMaybe PolicyAllow (parseToolPolicy t)
-
   let perms = case configFile.permissions of
         Nothing -> defaultPermissionConfig
         Just pcf ->
           PermissionConfig
             { safePatterns = fromMaybe defaultPermissionConfig.safePatterns pcf.safePatterns,
               dangerousPatterns = fromMaybe defaultPermissionConfig.dangerousPatterns pcf.dangerousPatterns,
-              toolPolicies = maybe Map.empty (Map.mapMaybe parseToolPolicy) pcf.toolPolicies,
-              defaultPolicy = maybe defaultPermissionConfig.defaultPolicy parseToolPolicyOrDefault pcf.defaultPolicy,
+              toolPolicies = fromMaybe Map.empty pcf.toolPolicies,
+              defaultPolicy = fromMaybe defaultPermissionConfig.defaultPolicy pcf.defaultPolicy,
               approvalTimeoutSeconds = fromMaybe defaultPermissionConfig.approvalTimeoutSeconds pcf.approvalTimeoutSeconds
             }
 
