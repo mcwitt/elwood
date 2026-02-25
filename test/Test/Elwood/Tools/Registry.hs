@@ -2,24 +2,25 @@ module Test.Elwood.Tools.Registry (tests) where
 
 import Data.Aeson (object, (.=))
 import Data.Text (Text)
-import Elwood.Claude.Types (ToolSchema (..))
+import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
 import Elwood.Tools.Registry
 import Elwood.Tools.Types (Tool (..), ToolResult (..))
 import Test.Tasty
 import Test.Tasty.HUnit
 
 -- | A simple no-op tool for testing
-mkTestTool :: Text -> Tool
+mkTestTool :: ToolName -> Tool
 mkTestTool n =
-  Tool
-    { schema =
-        ToolSchema
-          { name = n,
-            description = "Test tool: " <> n,
-            inputSchema = object ["type" .= ("object" :: Text)]
-          },
-      execute = \_ -> pure (ToolSuccess "ok")
-    }
+  let ToolName nt = n
+   in Tool
+        { schema =
+            ToolSchema
+              { name = n,
+                description = "Test tool: " <> nt,
+                inputSchema = object ["type" .= ("object" :: Text)]
+              },
+          execute = \_ -> pure (ToolSuccess "ok")
+        }
 
 tests :: TestTree
 tests =

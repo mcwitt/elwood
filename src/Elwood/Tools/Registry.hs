@@ -13,12 +13,11 @@ where
 
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Text (Text)
-import Elwood.Claude.Types (ToolSchema (..))
+import Elwood.Claude.Types (ToolName, ToolSchema (..))
 import Elwood.Tools.Types (Tool (..))
 
 -- | Registry of available tools
-newtype ToolRegistry = ToolRegistry (Map Text Tool)
+newtype ToolRegistry = ToolRegistry (Map ToolName Tool)
 
 -- | Create an empty tool registry
 newToolRegistry :: ToolRegistry
@@ -30,7 +29,7 @@ registerTool tool (ToolRegistry reg) =
   ToolRegistry $ Map.insert tool.schema.name tool reg
 
 -- | Look up a tool by name
-lookupTool :: Text -> ToolRegistry -> Maybe Tool
+lookupTool :: ToolName -> ToolRegistry -> Maybe Tool
 lookupTool n (ToolRegistry reg) = Map.lookup n reg
 
 -- | Get all registered tools

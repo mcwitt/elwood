@@ -19,7 +19,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
-import Elwood.Claude.Types (ToolSchema (..))
+import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
 import Elwood.Config (MCPServerConfig (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.MCP.Client (sendRequest, spawnServer, stopServer)
@@ -59,7 +59,7 @@ toTool serverName server mcpTool =
   Tool
     { schema =
         ToolSchema
-          { name = "mcp_" <> serverName <> "_" <> mcpTool.name,
+          { name = ToolName ("mcp_" <> serverName <> "_" <> mcpTool.name),
             description = fromMaybe "(MCP tool)" mcpTool.description,
             inputSchema = ensureTypeObject mcpTool.inputSchema
           },

@@ -27,6 +27,8 @@ import Elwood.Claude.Types
     Role (..),
     StopReason (..),
     ThinkingConfig (..),
+    ToolName (..),
+    ToolUseId (..),
     Usage (..),
     stopReasonToText,
   )
@@ -76,7 +78,7 @@ data AgentConfig = AgentConfig
     -- | Optional callback for intermediate text produced during tool-use turns
     onText :: Maybe TextCallback,
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
-    toolSearch :: Maybe (Set Text),
+    toolSearch :: Maybe (Set ToolName),
     -- | Prune horizon: tool results before this index are replaced with placeholders
     pruneHorizon :: Int
   }
@@ -219,7 +221,8 @@ classifyResponse stopReason content_ msgs =
 -- | Build the user message for the next iteration from tool results.
 buildToolResultMessage :: [ContentBlock] -> [ToolResult] -> ClaudeMessage
 buildToolResultMessage toolUses toolResults =
-  let resultBlocks = zipWith makeResultBlock toolUses toolResults
+  let ids = map extractToolUseId toolUses
+      resultBlocks = zipWith makeResultBlock ids toolResults
    in ClaudeMessage User resultBlocks
 
 -- | Handle Claude's response (thin IO wrapper around pure classification)
@@ -249,7 +252,7 @@ handleResponse cfg msgs response iteration =
         _ -> pure ()
 
       -- Record tool call metrics
-      mapM_ (\case ToolUseBlock _ n _ -> recordToolCall mets n; _ -> pure ()) toolUses
+      mapM_ (\case ToolUseBlock _ (ToolName tn) _ -> recordToolCall mets tn; _ -> pure ()) toolUses
 
       -- Execute all tool uses
       toolResults <- executeToolUses lgr reg cfg.context toolUses
@@ -286,42 +289,44 @@ extractToolUses = filter isToolUse
 -- | Execute a single tool use with policy checking
 executeToolUse :: Logger -> ToolRegistry -> AgentContext -> ContentBlock -> IO ToolResult
 executeToolUse lgr reg ctx (ToolUseBlock tid n input) = do
-  logInfo lgr "Executing tool" [("tool", n), ("id", tid)]
+  let ToolName tn = n
+      ToolUseId ti = tid
+  logInfo lgr "Executing tool" [("tool", tn), ("id", ti)]
 
   case lookupTool n reg of
     Nothing -> do
-      logWarn lgr "Unknown tool" [("tool", n)]
-      pure $ ToolError $ "Unknown tool: " <> n
+      logWarn lgr "Unknown tool" [("tool", tn)]
+      pure $ ToolError $ "Unknown tool: " <> tn
     Just tool -> do
       -- Check tool policy before execution
       let policy = getToolPolicy ctx.permissionConfig n
 
       case policy of
         PolicyDeny -> do
-          logWarn lgr "Tool denied by policy" [("tool", n)]
-          pure $ ToolError $ "Tool '" <> n <> "' is not allowed by policy"
+          logWarn lgr "Tool denied by policy" [("tool", tn)]
+          pure $ ToolError $ "Tool '" <> tn <> "' is not allowed by policy"
         PolicyAllow -> do
-          executeToolWithLogging lgr tool n input
+          executeToolWithLogging lgr tool tn input
         PolicyAsk -> do
           -- Request approval before execution
           case ctx.requestApproval of
             Nothing -> do
               -- No approval mechanism configured, fall back to allow
-              logWarn lgr "No approval mechanism, allowing tool" [("tool", n)]
-              executeToolWithLogging lgr tool n input
+              logWarn lgr "No approval mechanism, allowing tool" [("tool", tn)]
+              executeToolWithLogging lgr tool tn input
             Just reqApproval -> do
-              logInfo lgr "Requesting approval for tool" [("tool", n)]
+              logInfo lgr "Requesting approval for tool" [("tool", tn)]
               let inputSummary = T.take 200 (decodeUtf8 (LBS.toStrict (encode input)))
               outcome <- reqApproval n inputSummary
               case outcome of
                 ApprovalGranted -> do
-                  logInfo lgr "Tool approved by user" [("tool", n)]
-                  executeToolWithLogging lgr tool n input
+                  logInfo lgr "Tool approved by user" [("tool", tn)]
+                  executeToolWithLogging lgr tool tn input
                 ApprovalDenied -> do
-                  logInfo lgr "Tool denied by user" [("tool", n)]
+                  logInfo lgr "Tool denied by user" [("tool", tn)]
                   pure $ ToolError "Action denied by user"
                 ApprovalTimeout -> do
-                  logWarn lgr "Tool approval timed out" [("tool", n)]
+                  logWarn lgr "Tool approval timed out" [("tool", tn)]
                   pure $ ToolError "Approval request timed out"
 executeToolUse _ _ _ _ = pure $ ToolError "Invalid tool use block"
 
@@ -336,16 +341,15 @@ executeToolWithLogging lgr tool n input = do
       logWarn lgr "Tool failed" [("tool", n), ("error", err)]
   pure result
 
--- | Make a tool result block from a tool use and its result
-makeResultBlock :: ContentBlock -> ToolResult -> ContentBlock
-makeResultBlock (ToolUseBlock tid _ _) result =
-  case result of
-    ToolSuccess output ->
-      ToolResultBlock tid output False
-    ToolError err ->
-      ToolResultBlock tid err True
-makeResultBlock _ _ =
-  ToolResultBlock "" "Invalid tool use" True
+-- | Extract the tool use ID from a ToolUseBlock
+extractToolUseId :: ContentBlock -> ToolUseId
+extractToolUseId (ToolUseBlock tid _ _) = tid
+extractToolUseId _ = ToolUseId "unknown"
+
+-- | Make a tool result block from a tool use ID and its result
+makeResultBlock :: ToolUseId -> ToolResult -> ContentBlock
+makeResultBlock tid (ToolSuccess output) = ToolResultBlock tid output False
+makeResultBlock tid (ToolError err) = ToolResultBlock tid err True
 
 -- | Format an error for user display using the notify format
 formatError :: ClaudeError -> Text

@@ -27,6 +27,7 @@ import Data.Text qualified as T
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Data.UUID.V4 qualified as UUID
+import Elwood.Claude.Types (ToolName (..))
 
 -- | Result of an approval request
 data ApprovalResult
@@ -106,8 +107,8 @@ respondToApproval coordinator requestId_ result = atomically $ do
 --
 -- Emits standard markdown; the downstream @sendMessageWithKeyboard@ handles
 -- conversion to Telegram HTML.
-formatApprovalRequest :: Text -> Text -> Text
-formatApprovalRequest toolName_ inputSummary =
+formatApprovalRequest :: ToolName -> Text -> Text
+formatApprovalRequest (ToolName toolName_) inputSummary =
   T.unlines
     [ "**Tool Approval Required**",
       "",

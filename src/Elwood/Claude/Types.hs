@@ -10,6 +10,10 @@ module Elwood.Claude.Types
     -- * Content Blocks
     ContentBlock (..),
 
+    -- * Newtypes
+    ToolName (..),
+    ToolUseId (..),
+
     -- * Thinking
     ThinkingConfig (..),
 
@@ -33,10 +37,21 @@ import Data.Aeson
 import Data.Aeson.Types (Pair)
 import Data.Set (Set)
 import Data.Set qualified as Set
+import Data.String (IsString)
 import Data.Text (Text)
 import Data.Time (UTCTime)
 import Elwood.Thinking (ThinkingEffort (..))
 import GHC.Generics (Generic)
+
+-- | Newtype for tool names, providing type safety
+newtype ToolName = ToolName {unToolName :: Text}
+  deriving stock (Show, Eq, Ord)
+  deriving newtype (FromJSON, ToJSON, FromJSONKey, ToJSONKey, IsString)
+
+-- | Newtype for tool use IDs, providing type safety
+newtype ToolUseId = ToolUseId {unToolUseId :: Text}
+  deriving stock (Show, Eq, Ord)
+  deriving newtype (FromJSON, ToJSON)
 
 -- | Role in a conversation
 data Role = User | Assistant
@@ -71,15 +86,15 @@ data ContentBlock
       }
   | ToolUseBlock
       { -- | Tool use ID (e.g., "toolu_...")
-        id_ :: Text,
+        id_ :: ToolUseId,
         -- | Tool name
-        name :: Text,
+        name :: ToolName,
         -- | JSON arguments
         input :: Value
       }
   | ToolResultBlock
       { -- | ID of the tool use this is a result for
-        toolUseId :: Text,
+        toolUseId :: ToolUseId,
         -- | Result content
         content :: Text,
         -- | Whether this is an error result
@@ -97,13 +112,13 @@ data ContentBlock
       }
   | -- | Server-side tool use (e.g., tool_search_tool_bm25) — preserved in history
     ServerToolUseBlock
-      { id_ :: Text,
-        name :: Text,
+      { id_ :: ToolUseId,
+        name :: ToolName,
         input :: Value
       }
   | -- | Result from server-side tool search — preserved in history
     ToolSearchResultBlock
-      { toolUseId :: Text,
+      { toolUseId :: ToolUseId,
         searchResult :: Value
       }
   deriving stock (Show, Eq, Generic)
@@ -276,7 +291,7 @@ parseStopReason other = StopReasonOther other
 -- | Tool schema for API requests
 data ToolSchema = ToolSchema
   { -- | Tool name
-    name :: Text,
+    name :: ToolName,
     -- | Tool description
     description :: Text,
     -- | JSON Schema for input parameters
@@ -309,7 +324,7 @@ data MessagesRequest = MessagesRequest
     -- | Enable automatic prompt caching
     cacheControl :: Bool,
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
-    toolSearch :: Maybe (Set Text)
+    toolSearch :: Maybe (Set ToolName)
   }
   deriving stock (Show, Generic)
 

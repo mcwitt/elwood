@@ -102,8 +102,8 @@ runApp config = do
   mets <- newMetricsStore
   logInfo logger "Metrics store initialized" []
 
-  -- Tool search config: convert to Maybe (Set Text)
-  let toolSearch_ = fmap Set.fromList config.toolSearch
+  -- Tool search config: convert to Maybe (Set ToolName)
+  let toolSearch_ = fmap (Set.fromList . map Claude.ToolName) config.toolSearch
 
   logInfo
     logger
@@ -215,7 +215,7 @@ requestToolApproval ::
   Telegram.TelegramClient ->
   ApprovalCoordinator ->
   Int64 ->
-  Text ->
+  Claude.ToolName ->
   Text ->
   IO Tools.ApprovalOutcome
 requestToolApproval logger tg coordinator cid toolName_ inputSummary = do
@@ -236,7 +236,7 @@ requestToolApproval logger tg coordinator cid toolName_ inputSummary = do
   logInfo
     logger
     "Sent approval request"
-    [ ("tool", toolName_),
+    [ ("tool", let Claude.ToolName tn = toolName_ in tn),
       ("request_id", UUID.toText requestId_),
       ("message_id", T.pack (show msgId))
     ]

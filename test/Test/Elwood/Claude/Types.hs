@@ -46,17 +46,17 @@ contentBlockTests =
           Just obj -> obj @?= block
           Nothing -> assertFailure "Failed to decode TextBlock",
       testCase "ToolUseBlock encodes correctly" $ do
-        let block = ToolUseBlock "toolu_123" "read_file" (Aeson.object ["path" Aeson..= ("test.txt" :: String)])
+        let block = ToolUseBlock (ToolUseId "toolu_123") "read_file" (Aeson.object ["path" Aeson..= ("test.txt" :: String)])
         case decode (encode block) of
           Just decoded -> decoded @?= block
           Nothing -> assertFailure "Failed to decode ToolUseBlock",
       testCase "ToolResultBlock encodes correctly" $ do
-        let block = ToolResultBlock "toolu_123" "file contents here" False
+        let block = ToolResultBlock (ToolUseId "toolu_123") "file contents here" False
         case decode (encode block) of
           Just decoded -> decoded @?= block
           Nothing -> assertFailure "Failed to decode ToolResultBlock",
       testCase "ToolResultBlock with error encodes is_error" $ do
-        let block = ToolResultBlock "toolu_123" "Error: file not found" True
+        let block = ToolResultBlock (ToolUseId "toolu_123") "Error: file not found" True
             json = encode block
         -- Check that is_error is present in the JSON by decoding and checking
         case decode json :: Maybe Value of
@@ -78,7 +78,7 @@ claudeMessageTests =
               ClaudeMessage
                 Assistant
                 [ TextBlock "Let me help",
-                  ToolUseBlock "toolu_1" "read_file" (Aeson.object [])
+                  ToolUseBlock (ToolUseId "toolu_1") "read_file" (Aeson.object [])
                 ]
         case decode (encode msg) of
           Just decoded -> decoded @?= msg

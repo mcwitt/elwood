@@ -22,6 +22,7 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
+import Elwood.Claude.Types (ToolName)
 import Text.Regex.TDFA ((=~))
 
 -- | Policy for tool execution
@@ -49,7 +50,7 @@ data PermissionConfig = PermissionConfig
     -- | Regex patterns that are always blocked
     dangerousPatterns :: [Text],
     -- | Per-tool policies (tool name -> policy)
-    toolPolicies :: Map Text ToolPolicy,
+    toolPolicies :: Map ToolName ToolPolicy,
     -- | Default policy for tools not in toolPolicies
     defaultPolicy :: ToolPolicy,
     -- | Timeout in seconds for approval requests
@@ -125,6 +126,6 @@ checkCommandPermission config cmd
 -- | Get the policy for a specific tool
 --
 -- Looks up the tool in toolPolicies, falls back to defaultPolicy
-getToolPolicy :: PermissionConfig -> Text -> ToolPolicy
+getToolPolicy :: PermissionConfig -> ToolName -> ToolPolicy
 getToolPolicy config toolName_ =
   Map.findWithDefault config.defaultPolicy toolName_ config.toolPolicies

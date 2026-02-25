@@ -104,7 +104,7 @@ data AppEnv = AppEnv
     -- | Metrics store for Prometheus counters
     metrics :: MetricsStore,
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
-    toolSearch :: Maybe (Set Text),
+    toolSearch :: Maybe (Set Claude.ToolName),
     -- | Per-session prune horizons for tool result pruning
     pruneHorizons :: PruneHorizons
   }

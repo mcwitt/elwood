@@ -35,7 +35,7 @@ data AgentContext = AgentContext
   { -- | Permission configuration for tool policy
     permissionConfig :: PermissionConfig,
     -- | Approval request function (sends Telegram message, returns result)
-    requestApproval :: Maybe (Text -> Text -> IO ApprovalOutcome)
+    requestApproval :: Maybe (Claude.ToolName -> Text -> IO ApprovalOutcome)
   }
 
 -- | Outcome of an approval request

@@ -3,7 +3,7 @@ module Test.Elwood.Claude.Compaction (tests) where
 import Data.Aeson qualified as Aeson
 import Data.Text qualified as T
 import Elwood.Claude.Compaction (estimateTokens, extractText, formatMessagesForSummary, safeSplit)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..))
+import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolUseId (..))
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
@@ -57,14 +57,14 @@ extractTextTests =
       testCase "ignores ToolUseBlock" $ do
         let blocks =
               [ TextBlock "Before",
-                ToolUseBlock "id" "tool" (Aeson.object []),
+                ToolUseBlock (ToolUseId "id") "tool" (Aeson.object []),
                 TextBlock "After"
               ]
         extractText blocks @?= "Before\nAfter",
       testCase "ignores ToolResultBlock" $ do
         let blocks =
               [ TextBlock "Start",
-                ToolResultBlock "id" "result" False,
+                ToolResultBlock (ToolUseId "id") "result" False,
                 TextBlock "End"
               ]
         extractText blocks @?= "Start\nEnd",
@@ -122,8 +122,8 @@ safeSplitTests =
       testCase "adjusts split when tool_result at boundary" $ do
         let msgs =
               [ ClaudeMessage User [TextBlock "Hello"],
-                ClaudeMessage Assistant [ToolUseBlock "tool-1" "some_tool" (Aeson.object [])],
-                ClaudeMessage User [ToolResultBlock "tool-1" "result" False],
+                ClaudeMessage Assistant [ToolUseBlock (ToolUseId "tool-1") "some_tool" (Aeson.object [])],
+                ClaudeMessage User [ToolResultBlock (ToolUseId "tool-1") "result" False],
                 ClaudeMessage Assistant [TextBlock "Done"]
               ]
             -- Naive split at 2 would put tool_result in recent without its tool_use
@@ -134,10 +134,10 @@ safeSplitTests =
       testCase "handles multiple tool_use/tool_result pairs" $ do
         let msgs =
               [ ClaudeMessage User [TextBlock "Do two things"],
-                ClaudeMessage Assistant [ToolUseBlock "tool-1" "first_tool" (Aeson.object [])],
-                ClaudeMessage User [ToolResultBlock "tool-1" "result1" False],
-                ClaudeMessage Assistant [ToolUseBlock "tool-2" "second_tool" (Aeson.object [])],
-                ClaudeMessage User [ToolResultBlock "tool-2" "result2" False],
+                ClaudeMessage Assistant [ToolUseBlock (ToolUseId "tool-1") "first_tool" (Aeson.object [])],
+                ClaudeMessage User [ToolResultBlock (ToolUseId "tool-1") "result1" False],
+                ClaudeMessage Assistant [ToolUseBlock (ToolUseId "tool-2") "second_tool" (Aeson.object [])],
+                ClaudeMessage User [ToolResultBlock (ToolUseId "tool-2") "result2" False],
                 ClaudeMessage Assistant [TextBlock "Both done"]
               ]
             -- Split at 4 would put tool_result at start of recent
@@ -161,8 +161,8 @@ safeSplitTests =
         recent @?= [],
       testCase "no adjustment needed when recent starts with text" $ do
         let msgs =
-              [ ClaudeMessage Assistant [ToolUseBlock "tool-1" "some_tool" (Aeson.object [])],
-                ClaudeMessage User [ToolResultBlock "tool-1" "result" False],
+              [ ClaudeMessage Assistant [ToolUseBlock (ToolUseId "tool-1") "some_tool" (Aeson.object [])],
+                ClaudeMessage User [ToolResultBlock (ToolUseId "tool-1") "result" False],
                 ClaudeMessage User [TextBlock "Thanks"],
                 ClaudeMessage Assistant [TextBlock "You're welcome"]
               ]

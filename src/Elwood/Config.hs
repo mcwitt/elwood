@@ -33,6 +33,7 @@ import Data.Text qualified as T
 import Data.Vector qualified as V
 import Data.Yaml qualified as Yaml
 import Elwood.Aeson (rejectUnknownKeys)
+import Elwood.Claude.Types (ToolName)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), ToolPolicy (..), defaultPermissionConfig)
 import Elwood.Prompt (PromptInput (..), PromptInputFile (..), resolvePromptInput)
@@ -125,7 +126,7 @@ data ConfigFile = ConfigFile
 data PermissionConfigFile = PermissionConfigFile
   { safePatterns :: Maybe [Text],
     dangerousPatterns :: Maybe [Text],
-    toolPolicies :: Maybe (Map Text ToolPolicy),
+    toolPolicies :: Maybe (Map ToolName ToolPolicy),
     defaultPolicy :: Maybe ToolPolicy,
     approvalTimeoutSeconds :: Maybe Int
   }

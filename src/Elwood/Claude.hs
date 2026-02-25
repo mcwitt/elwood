@@ -30,6 +30,8 @@ module Elwood.Claude
     ContentBlock (..),
     Conversation (..),
     Role (..),
+    ToolName (..),
+    ToolUseId (..),
     ToolSchema (..),
     MessagesRequest (..),
     MessagesResponse (..),
