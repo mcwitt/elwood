@@ -16,7 +16,7 @@ import Data.Text qualified as T
 import Elwood.Logging
 import Elwood.Notify qualified as Notify
 import Elwood.Telegram.Client (TelegramClient, getUpdatesAllowed, sendMessage)
-import Elwood.Telegram.Types (CallbackQuery (..), Chat (..), Message (..), Update (..), User (..))
+import Elwood.Telegram.Types (CallbackQuery (..), Chat (..), Message (..), Update (..), UpdatePayload (..), User (..))
 
 -- | Handler for incoming messages
 -- Returns Just reply to send a response, Nothing to skip
@@ -61,13 +61,12 @@ runPolling logger client allowedChats handler callbackHandler = do
         let newOffset = update.id_ + 1
         writeIORef offsetRef newOffset
 
-        -- Process message if present (forked to avoid blocking callback processing)
-        for_ update.message $ \msg -> do
-          _ <- forkIO $ processMessage msg
-          pure ()
-
-        -- Process callback query if present
-        for_ update.callbackQuery processCallback
+        case update.payload of
+          UpdateMessage msg -> do
+            _ <- forkIO $ processMessage msg
+            pure ()
+          UpdateCallbackQuery cq -> processCallback cq
+          UpdateIgnored -> pure ()
 
       -- Continue polling
       loop offsetRef

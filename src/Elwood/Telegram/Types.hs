@@ -2,6 +2,7 @@
 
 module Elwood.Telegram.Types
   ( Update (..),
+    UpdatePayload (..),
     Message (..),
     Chat (..),
     ChatType (..),
@@ -25,28 +26,36 @@ module Elwood.Telegram.Types
   )
 where
 
+import Control.Applicative ((<|>))
 import Data.Aeson
 import Data.Int (Int64)
 import Data.Text (Text)
 import GHC.Generics (Generic)
 
+-- | Payload of an incoming Telegram update
+data UpdatePayload
+  = UpdateMessage Message
+  | UpdateCallbackQuery CallbackQuery
+  | UpdateIgnored
+  deriving stock (Show, Generic)
+
 -- | Incoming update from Telegram's getUpdates API
 data Update = Update
   { -- | Unique update identifier
     id_ :: Int,
-    -- | New incoming message (if any)
-    message :: Maybe Message,
-    -- | Callback query from inline keyboard button press
-    callbackQuery :: Maybe CallbackQuery
+    -- | Update payload
+    payload :: UpdatePayload
   }
   deriving stock (Show, Generic)
 
 instance FromJSON Update where
-  parseJSON = withObject "Update" $ \v ->
-    Update
-      <$> v .: "update_id"
-      <*> v .:? "message"
-      <*> v .:? "callback_query"
+  parseJSON = withObject "Update" $ \v -> do
+    uid <- v .: "update_id"
+    p <-
+      (UpdateMessage <$> v .: "message")
+        <|> (UpdateCallbackQuery <$> v .: "callback_query")
+        <|> pure UpdateIgnored
+    pure $ Update uid p
 
 -- | A photo size variant (Telegram sends multiple sizes)
 data PhotoSize = PhotoSize
