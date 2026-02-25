@@ -29,7 +29,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
@@ -309,11 +309,9 @@ loadConfig path = do
           ]
 
   -- Helper to resolve delivery targets from file objects
-  let resolveDeliveryTarget :: DeliveryTargetFile -> Maybe DeliveryTarget
-      resolveDeliveryTarget dtf = case T.toLower dtf.type_ of
-        "telegram" -> Just $ maybe TelegramBroadcast TelegramDelivery dtf.session
-        "log" -> Just LogOnly
-        _ -> Nothing
+  let resolveDeliveryTarget :: DeliveryTargetFile -> DeliveryTarget
+      resolveDeliveryTarget (DeliveryTargetFileTelegram s) = maybe TelegramBroadcast TelegramDelivery s
+      resolveDeliveryTarget DeliveryTargetFileLog = LogOnly
 
   let workspaceDir_ = fromMaybe "/var/lib/assistant/workspace" configFile.workspaceDir
 
@@ -344,7 +342,7 @@ loadConfig path = do
                         delivery = case ep.deliver of
                           Nothing -> [TelegramBroadcast]
                           Just targets ->
-                            let parsed = mapMaybe resolveDeliveryTarget targets
+                            let parsed = map resolveDeliveryTarget targets
                              in if null parsed
                                   then [TelegramBroadcast]
                                   else parsed,

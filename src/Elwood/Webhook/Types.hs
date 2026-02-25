@@ -13,7 +13,9 @@ module Elwood.Webhook.Types
 where
 
 import Data.Aeson
+import Data.Aeson.Types (Parser)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Prompt (PromptInput (..), PromptInputFile (..))
@@ -76,18 +78,19 @@ data WebhookConfigFile = WebhookConfigFile
   deriving stock (Show, Generic)
 
 -- | YAML file configuration for a delivery target
-data DeliveryTargetFile = DeliveryTargetFile
-  { type_ :: Text,
-    session :: Maybe Text
-  }
+data DeliveryTargetFile
+  = DeliveryTargetFileTelegram (Maybe Text)
+  | DeliveryTargetFileLog
   deriving stock (Show, Generic)
 
 instance FromJSON DeliveryTargetFile where
   parseJSON = withObject "DeliveryTargetFile" $ \v -> do
     rejectUnknownKeys "DeliveryTargetFile" ["type", "session"] v
-    DeliveryTargetFile
-      <$> v .: "type"
-      <*> v .:? "session"
+    t <- v .: "type" :: Parser Text
+    case T.toLower t of
+      "telegram" -> DeliveryTargetFileTelegram <$> v .:? "session"
+      "log" -> pure DeliveryTargetFileLog
+      other -> fail $ "Unknown delivery target type: " <> T.unpack other
 
 instance FromJSON WebhookServerConfigFile where
   parseJSON = withObject "WebhookServerConfigFile" $ \v -> do
