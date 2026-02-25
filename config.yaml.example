@@ -70,8 +70,8 @@ maxIterations: 20
 # When conversation history exceeds the token threshold, older messages
 # are summarized using a fast model to stay within context limits.
 compaction:
-  tokenThreshold: 50000                       # default: 50000
-  compactionModel: claude-3-5-haiku-20241022  # default: claude-3-5-haiku-20241022
+  tokenThreshold: 50000             # default: 50000
+  model: claude-3-5-haiku-20241022  # default: claude-3-5-haiku-20241022
 
 # Tool permission settings
 permissions:

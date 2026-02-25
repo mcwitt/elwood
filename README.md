@@ -90,7 +90,7 @@ thinking: off  # off | {type: adaptive, effort: medium} | {type: fixed, budgetTo
 
 compaction:
   tokenThreshold: 50000
-  compactionModel: claude-3-5-haiku-20241022
+  model: claude-3-5-haiku-20241022
 
 permissions:
   defaultPolicy: allow  # allow | ask | deny

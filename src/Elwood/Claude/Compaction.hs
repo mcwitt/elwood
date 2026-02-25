@@ -132,7 +132,7 @@ summarizeMessages client config metrics source msgs = do
           }
       request =
         MessagesRequest
-          { model = config.compactionModel,
+          { model = config.model,
             maxTokens = 2048,
             system = Just "You are a helpful assistant that summarizes conversations concisely.",
             messages = [summaryRequest],
@@ -147,7 +147,7 @@ summarizeMessages client config metrics source msgs = do
   case result of
     Left err -> pure $ Left $ T.pack (show err)
     Right response -> do
-      recordApiResponse metrics config.compactionModel source response.stopReason response.usage
+      recordApiResponse metrics config.model source response.stopReason response.usage
       let txt = extractText response.content
        in if T.null txt
             then pure $ Left "Empty summary response"

@@ -125,7 +125,7 @@ let
 
         compaction = {
           tokenThreshold = agentCfg.compaction.tokenThreshold;
-          compactionModel = agentCfg.compaction.model;
+          model = agentCfg.compaction.model;
         };
       }
       // lib.optionalAttrs agentCfg.toolSearch.enable {

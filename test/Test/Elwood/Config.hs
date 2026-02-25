@@ -38,10 +38,10 @@ compactionConfigTests =
         let cc =
               CompactionConfig
                 { tokenThreshold = 50000,
-                  compactionModel = "claude-3-5-haiku-20241022"
+                  model = "claude-3-5-haiku-20241022"
                 }
         cc.tokenThreshold @?= 50000
-        cc.compactionModel @?= "claude-3-5-haiku-20241022",
+        cc.model @?= "claude-3-5-haiku-20241022",
       testCase "threshold is reasonable" $ do
         let cc = CompactionConfig 30000 "model"
         -- Threshold should be positive and reasonable

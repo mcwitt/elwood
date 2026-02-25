@@ -86,7 +86,7 @@ data CompactionConfig = CompactionConfig
   { -- | Compact when estimated tokens exceed this
     tokenThreshold :: Int,
     -- | Model to use for summarization (e.g., "claude-3-5-haiku-20241022")
-    compactionModel :: Text
+    model :: Text
   }
   deriving stock (Show, Generic)
 
@@ -135,7 +135,7 @@ data PermissionConfigFile = PermissionConfigFile
 -- | Compaction configuration from YAML file
 data CompactionConfigFile = CompactionConfigFile
   { tokenThreshold :: Maybe Int,
-    compactionModel :: Maybe Text
+    model :: Maybe Text
   }
   deriving stock (Show, Generic)
 
@@ -177,10 +177,10 @@ instance FromJSON PermissionConfigFile where
 
 instance FromJSON CompactionConfigFile where
   parseJSON = withObject "CompactionConfigFile" $ \v -> do
-    rejectUnknownKeys "CompactionConfigFile" ["tokenThreshold", "compactionModel"] v
+    rejectUnknownKeys "CompactionConfigFile" ["tokenThreshold", "model"] v
     CompactionConfigFile
       <$> v .:? "tokenThreshold"
-      <*> v .:? "compactionModel"
+      <*> v .:? "model"
 
 instance FromJSON MCPServerConfigFile where
   parseJSON = withObject "MCPServerConfigFile" $ \v -> do
@@ -196,7 +196,7 @@ defaultCompaction :: CompactionConfig
 defaultCompaction =
   CompactionConfig
     { tokenThreshold = 50000,
-      compactionModel = "claude-3-5-haiku-20241022"
+      model = "claude-3-5-haiku-20241022"
     }
 
 -- | Load configuration from a YAML file and environment variables
@@ -237,7 +237,7 @@ loadConfig path = do
         Just ccf ->
           CompactionConfig
             { tokenThreshold = fromMaybe defaultCompaction.tokenThreshold ccf.tokenThreshold,
-              compactionModel = fromMaybe defaultCompaction.compactionModel ccf.compactionModel
+              model = fromMaybe defaultCompaction.model ccf.model
             }
 
   let servers = case configFile.mcpServers of
