@@ -4,6 +4,7 @@ module Elwood.Telegram.Types
   ( Update (..),
     Message (..),
     Chat (..),
+    ChatType (..),
     User (..),
     PhotoSize (..),
     TelegramFile (..),
@@ -98,12 +99,24 @@ instance FromJSON Message where
       <*> v .:? "photo"
       <*> v .:? "caption"
 
+-- | Type of a Telegram chat
+data ChatType = Private | Group | Supergroup | Channel
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON ChatType where
+  parseJSON = withText "ChatType" $ \case
+    "private" -> pure Private
+    "group" -> pure Group
+    "supergroup" -> pure Supergroup
+    "channel" -> pure Channel
+    other -> fail $ "Unknown chat type: " <> show other
+
 -- | A Telegram chat
 data Chat = Chat
   { -- | Unique chat identifier
     id_ :: Int64,
-    -- | Type of chat: "private", "group", "supergroup", or "channel"
-    type_ :: Text
+    -- | Type of chat
+    type_ :: ChatType
   }
   deriving stock (Show, Generic)
 
