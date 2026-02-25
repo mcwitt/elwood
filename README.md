@@ -16,7 +16,7 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **MCP support** — Extend capabilities with Model Context Protocol servers
 - **Persistent memory** — Cross-session knowledge store
 - **Scheduled tasks** — Cron jobs via systemd timers that call webhooks
-- **Tool approval flow** — Approve sensitive operations via inline keyboard
+- **Tool approval flow** — Approve sensitive operations via inline keyboard (Telegram only; webhook-triggered runs deny `ask` tools)
 - **Image support** — Send photos and Claude can see them
 - **Extended thinking** — Configurable reasoning budget for complex tasks
 - **Context compaction** — Automatic summarization for long conversations
@@ -74,7 +74,7 @@ permissions:
   defaultPolicy: allow  # allow | ask | deny
   approvalTimeoutSeconds: 120
   toolPolicies:
-    run_command: ask
+    run_command: ask  # Telegram prompts for approval; webhooks deny (use "allow" for webhook-safe tools)
   dangerousPatterns:
     - "\\brm\\b"
     - "\\bsudo\\b"
@@ -188,7 +188,7 @@ Add the flake to your NixOS configuration:
             permissions = {
               dangerousPatterns = [ "\\brm\\b" "\\bsudo\\b" ];
               safePatterns = [ "^rm -i\\b" ];
-              defaultPolicy = "ask";
+              defaultPolicy = "ask";  # Telegram prompts; webhooks deny (use "allow" for webhook-safe tools)
             };
           };
 

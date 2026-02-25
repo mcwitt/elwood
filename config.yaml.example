@@ -78,7 +78,10 @@ permissions:
   defaultPolicy: allow          # allow | ask | deny (default: allow)
   approvalTimeoutSeconds: 120   # seconds to wait for user approval (default: 120)
   toolPolicies:                 # per-tool overrides
-    run_command: ask
+    run_command: ask            # NOTE: "ask" requires an interactive approval
+                                # channel (Telegram). Webhook-triggered runs
+                                # deny "ask" tools — use "allow" for tools
+                                # that webhooks need.
   dangerousPatterns:            # regex patterns — matched commands are denied
     - "\\brm\\b"               # block rm, but...
     - "\\bsudo\\b"

@@ -316,9 +316,9 @@ executeToolUse lgr reg ctx (ToolUseBlock tid n input) = do
           -- Request approval before execution
           case ctx.requestApproval of
             Nothing -> do
-              -- No approval mechanism configured, fall back to allow
-              logWarn lgr "No approval mechanism, allowing tool" [("tool", tn)]
-              executeToolWithLogging lgr tool tn input
+              -- No approval channel (e.g. webhook-triggered), deny
+              logWarn lgr "No approval mechanism, denying tool" [("tool", tn)]
+              pure $ ToolError $ "Tool '" <> tn <> "' requires approval but no approval channel is available"
             Just reqApproval -> do
               logInfo lgr "Requesting approval for tool" [("tool", tn)]
               let inputSummary = T.take 200 (decodeUtf8 (LBS.toStrict (encode input)))
