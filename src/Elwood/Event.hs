@@ -53,6 +53,7 @@ import Elwood.Event.Types
   )
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, metricsSource)
+import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Prompt (PromptInput, assemblePrompt)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
@@ -175,7 +176,7 @@ handleEvent env event = do
     Claude.runAgentTurn agentConfig history userMsg
       `catch` \(e :: SomeException) -> do
         logError lgr "Event handler agent error" [("error", T.pack (show e))]
-        pure $ Claude.AgentError $ "Agent error: " <> T.pack (show e)
+        pure $ Claude.AgentError $ formatNotify Error $ "**Agent error:** `" <> sanitizeBackticks (T.pack (show e)) <> "`"
 
   case result of
     Claude.AgentSuccess responseText allMessages -> do
@@ -283,7 +284,7 @@ mkTextCallback env event = deliverToTargets env event.delivery
 -- | Create rate limit notification callback based on event delivery targets
 mkRateLimitCallback :: AppEnv -> Event -> Claude.RateLimitCallback
 mkRateLimitCallback env event attemptNum waitSecs = do
-  let msg = "rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s)"
+  let msg = formatNotify Warn $ "Rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s"
   -- Notify based on delivery targets
   mapM_ (notifyRateLimit msg) event.delivery
   where
@@ -326,7 +327,7 @@ handleTelegramMessage env msg =
     handleClear = do
       Claude.clearConversation env.conversations (T.pack (show chatIdVal))
       logInfo lgr "Conversation cleared" [("chat_id", T.pack (show chatIdVal))]
-      pure (Just "Conversation cleared. Starting fresh!")
+      pure (Just $ formatNotify Info "Conversation cleared")
 
     handleMessageWithPhoto :: Text -> Maybe [Telegram.PhotoSize] -> IO (Maybe Text)
     handleMessageWithPhoto userText maybePhotos = do

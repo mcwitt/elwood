@@ -43,6 +43,7 @@ library
     Elwood.MCP.Types
     Elwood.Memory
     Elwood.Metrics
+    Elwood.Notify
     Elwood.Permissions
     Elwood.Prompt
     Elwood.Telegram

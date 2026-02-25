@@ -33,6 +33,7 @@ import Elwood.Claude.Types
 import Elwood.Config (ThinkingEffort (..), ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, recordApiResponse, recordToolCall)
+import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
 import Elwood.Tools.Registry
   ( ToolRegistry,
@@ -119,7 +120,7 @@ agentLoop ::
 agentLoop cfg msgs iteration
   | iteration >= cfg.maxIterations = do
       logError cfg.logger "Agent loop exceeded max iterations" []
-      pure $ AgentError "(Agent loop exceeded max iterations)"
+      pure $ AgentError $ formatNotify Error "**Agent loop:** `exceeded max iterations`"
   | otherwise = do
       let lgr = cfg.logger
           reg = cfg.registry
@@ -346,23 +347,19 @@ makeResultBlock (ToolUseBlock tid _ _) result =
 makeResultBlock _ _ =
   ToolResultBlock "" "Invalid tool use" True
 
--- | Format an error for user display
+-- | Format an error for user display using the notify format
 formatError :: ClaudeError -> Text
 formatError (ClaudeRateLimited retryAfter) =
-  "I'm being rate limited right now. "
-    <> maybe
-      "Please try again in a moment."
-      (\secs -> "Retry after " <> T.pack (show secs) <> " seconds.")
-      retryAfter
+  formatNotify Error $ "**Rate limited:** `" <> retryMsg retryAfter <> "`"
 formatError (ClaudeOverloaded retryAfter) =
-  "Claude is currently overloaded. "
-    <> maybe
-      "Please try again in a few minutes."
-      (\secs -> "Retry after " <> T.pack (show secs) <> " seconds.")
-      retryAfter
+  formatNotify Error $ "**Overloaded:** `" <> retryMsg retryAfter <> "`"
 formatError (ClaudeApiError errType errMsg) =
-  "Sorry, I encountered an error: " <> errType <> " - " <> errMsg
-formatError (ClaudeHttpError status _) =
-  "Sorry, there was a connection error (HTTP " <> T.pack (show status) <> "). Please try again."
-formatError (ClaudeParseError _) =
-  "Sorry, I received an unexpected response. Please try again."
+  formatNotify Error $ "**API error:** `" <> sanitizeBackticks (errType <> " — " <> errMsg) <> "`"
+formatError (ClaudeHttpError status body) =
+  formatNotify Error $ "**HTTP " <> T.pack (show status) <> ":** `" <> sanitizeBackticks (T.take 200 body) <> "`"
+formatError (ClaudeParseError err) =
+  formatNotify Error $ "**Parse error:** `" <> sanitizeBackticks (T.pack err) <> "`"
+
+-- | Format retry-after information
+retryMsg :: Maybe Int -> Text
+retryMsg = maybe "no retry-after" (\secs -> "retry after " <> T.pack (show secs) <> "s")

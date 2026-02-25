@@ -14,6 +14,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Logging
+import Elwood.Notify qualified as Notify
 import Elwood.Telegram.Client (TelegramClient, getUpdatesAllowed, sendMessage)
 import Elwood.Telegram.Types (CallbackQuery (..), Chat (..), Message (..), Update (..), User (..))
 
@@ -129,7 +130,7 @@ runPolling logger client allowedChats handler callbackHandler = do
           reply <-
             handler msg `catch` \(e :: SomeException) -> do
               logError logger "Handler error" [("error", T.pack (show e))]
-              pure $ Just $ "Error processing message: " <> T.pack (show e)
+              pure $ Just $ Notify.formatNotify Notify.Error $ "**Handler error:** `" <> Notify.sanitizeBackticks (T.pack (show e)) <> "`"
 
           case reply of
             Nothing -> pure ()
