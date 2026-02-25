@@ -23,6 +23,7 @@ import Data.ByteString.Builder qualified as B
 import Data.ByteString.Lazy qualified as LBS
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
+import Data.List (find, nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -33,6 +34,7 @@ import Elwood.Claude.Types qualified as Claude
 import Elwood.Event.Types (EventSource (..))
 import Elwood.Tools.Registry qualified as Tools
 import Elwood.Tools.Types qualified as Tools
+import Text.Printf (printf)
 
 -- | Key for a counter metric
 data CounterKey
@@ -107,6 +109,7 @@ renderCounters cs =
     <> renderTokenCounters "output" cs
     <> renderTokenCounters "cache_read" cs
     <> renderTokenCounters "cache_creation" cs
+    <> renderCostMetric cs
     <> renderApiRequestCounters cs
     <> renderToolCallCounters cs
     <> renderCompactionCounter cs
@@ -261,3 +264,74 @@ intersperse :: a -> [a] -> [a]
 intersperse _ [] = []
 intersperse _ [x] = [x]
 intersperse sep (x : xs) = x : sep : intersperse sep xs
+
+-- | Pricing per model family (all rates in $/MTok)
+data ModelPricing = ModelPricing
+  { inputPerMTok :: Double,
+    outputPerMTok :: Double,
+    cacheWritePerMTok :: Double,
+    cacheReadPerMTok :: Double
+  }
+
+-- | Prefix-matched pricing table. First match wins, so more specific prefixes come first.
+pricingTable :: [(Text, ModelPricing)]
+pricingTable =
+  [ ("claude-opus-4-6", ModelPricing 5 25 6.25 0.50),
+    ("claude-opus-4-5", ModelPricing 5 25 6.25 0.50),
+    ("claude-opus-4-1", ModelPricing 15 75 18.75 1.50),
+    ("claude-opus-4", ModelPricing 15 75 18.75 1.50),
+    ("claude-sonnet-4", ModelPricing 3 15 3.75 0.30),
+    ("claude-sonnet-3", ModelPricing 3 15 3.75 0.30),
+    ("claude-haiku-4", ModelPricing 1 5 1.25 0.10),
+    ("claude-3-5-haiku", ModelPricing 1 5 1.25 0.10),
+    ("claude-3-5-sonnet", ModelPricing 3 15 3.75 0.30),
+    ("claude-3-opus", ModelPricing 15 75 18.75 1.50),
+    ("claude-3-haiku", ModelPricing 0.25 1.25 0.30 0.03)
+  ]
+
+-- | Look up pricing for a model ID by prefix match
+lookupPricing :: Text -> Maybe ModelPricing
+lookupPricing model = snd <$> find (\(prefix, _) -> prefix `T.isPrefixOf` model) pricingTable
+
+-- | Render cost metric derived from token counters and pricing table
+renderCostMetric :: Map CounterKey Int64 -> B.Builder
+renderCostMetric cs =
+  let -- Collect all distinct (model, source) pairs from token counters
+      pairs = nub [(m, source) | (CkTokens _ m source, _) <- Map.toList cs]
+      -- Compute cost lines for models with known pricing
+      costLines =
+        [ (m, source, microDollars)
+        | (m, source) <- pairs,
+          Just pricing <- [lookupPricing m],
+          let get suffix = fromIntegral (Map.findWithDefault 0 (CkTokens suffix m source) cs) :: Double
+              input = get "input"
+              output = get "output"
+              cacheWrite = get "cache_creation"
+              cacheRead = get "cache_read"
+              -- tokens * rate_per_MTok = cost in microdollars
+              microDollars =
+                input * pricing.inputPerMTok
+                  + output * pricing.outputPerMTok
+                  + cacheWrite * pricing.cacheWritePerMTok
+                  + cacheRead * pricing.cacheReadPerMTok
+        ]
+   in if null costLines
+        then mempty
+        else
+          helpLine metricName "Approximate cumulative API cost in USD"
+            <> typeLine metricName "counter"
+            <> mconcat
+              [ metricLineDouble metricName [("model", m), ("source", source)] (microDollars / 1e6)
+              | (m, source, microDollars) <- costLines
+              ]
+  where
+    metricName = "elwood_cost_dollars"
+
+-- | Build a metric line with a Double value (6 decimal places)
+metricLineDouble :: Text -> [(Text, Text)] -> Double -> B.Builder
+metricLineDouble n labels value =
+  B.byteString (TE.encodeUtf8 n)
+    <> renderLabels labels
+    <> B.char7 ' '
+    <> B.string7 (printf "%.6f" value)
+    <> B.char7 '\n'
