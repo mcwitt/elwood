@@ -1,5 +1,4 @@
 {-# LANGUAGE StrictData #-}
-{-# OPTIONS_GHC -Wno-partial-fields #-}
 
 module Elwood.Claude.Types
   ( -- * Message Types
@@ -77,50 +76,22 @@ data ThinkingConfig
 
 -- | Content block in a message - can be text, image, tool use, or tool result
 data ContentBlock
-  = TextBlock Text
-  | ImageBlock
-      { -- | Media type (e.g., "image/jpeg", "image/png")
-        mediaType :: Text,
-        -- | Base64-encoded image data
-        data_ :: Text
-      }
-  | ToolUseBlock
-      { -- | Tool use ID (e.g., "toolu_...")
-        id_ :: ToolUseId,
-        -- | Tool name
-        name :: ToolName,
-        -- | JSON arguments
-        input :: Value
-      }
-  | ToolResultBlock
-      { -- | ID of the tool use this is a result for
-        toolUseId :: ToolUseId,
-        -- | Result content
-        content :: Text,
-        -- | Whether this is an error result
-        isError :: Bool
-      }
-  | ThinkingBlock
-      { -- | The thinking text
-        thinking :: Text,
-        -- | Signature for verification
-        signature :: Text
-      }
-  | RedactedThinkingBlock
-      { -- | Opaque data for redacted thinking
-        data_ :: Text
-      }
-  | -- | Server-side tool use (e.g., tool_search_tool_bm25) — preserved in history
-    ServerToolUseBlock
-      { id_ :: ToolUseId,
-        name :: ToolName,
-        input :: Value
-      }
-  | -- | Result from server-side tool search — preserved in history
-    ToolSearchResultBlock
-      { toolUseId :: ToolUseId,
-        searchResult :: Value
-      }
+  = -- | Plain text content
+    TextBlock Text
+  | -- | Image content (media type, base64-encoded data)
+    ImageBlock Text Text
+  | -- | Tool use request (tool use ID, tool name, JSON arguments)
+    ToolUseBlock ToolUseId ToolName Value
+  | -- | Tool use result (tool use ID, result content, is error)
+    ToolResultBlock ToolUseId Text Bool
+  | -- | Extended thinking (thinking text, signature)
+    ThinkingBlock Text Text
+  | -- | Redacted thinking (opaque data)
+    RedactedThinkingBlock Text
+  | -- | Server-side tool use (tool use ID, tool name, JSON arguments)
+    ServerToolUseBlock ToolUseId ToolName Value
+  | -- | Result from server-side tool search (tool use ID, search result)
+    ToolSearchResultBlock ToolUseId Value
   deriving stock (Show, Eq, Generic)
 
 instance ToJSON ContentBlock where
