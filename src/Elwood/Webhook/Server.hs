@@ -22,7 +22,6 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (getCurrentTime)
-import Elwood.Config (parseThinkingLevel)
 import Elwood.Event (AppEnv (..), DeliveryTarget (..), Event (..), EventSource (..), deliverToTargets, handleEvent)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (renderMetrics)
@@ -187,7 +186,7 @@ applyOverrides env wc =
       systemPromptInputs = env.systemPromptInputs,
       workspaceDir = env.workspaceDir,
       model = fromMaybe env.model wc.model,
-      thinking = maybe env.thinking parseThinkingLevel wc.thinking,
+      thinking = fromMaybe env.thinking wc.thinking,
       notifyChatIds = env.notifyChatIds,
       attachmentQueue = env.attachmentQueue,
       maxIterations = env.maxIterations,

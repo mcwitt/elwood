@@ -51,6 +51,7 @@ library
     Elwood.Telegram.Markdown
     Elwood.Telegram.Polling
     Elwood.Telegram.Types
+    Elwood.Thinking
     Elwood.Tools
     Elwood.Tools.Attachment
     Elwood.Tools.Command

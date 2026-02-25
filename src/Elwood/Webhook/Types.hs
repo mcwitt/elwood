@@ -19,6 +19,7 @@ import Data.Text qualified as T
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Prompt (PromptInput (..), PromptInputFile (..))
+import Elwood.Thinking (ThinkingLevel)
 import GHC.Generics (Generic)
 
 -- | Configuration for a single webhook endpoint
@@ -38,7 +39,7 @@ data WebhookConfig = WebhookConfig
     -- | Model override for this endpoint (Nothing = use global)
     model :: Maybe Text,
     -- | Thinking level override for this endpoint (Nothing = use global)
-    thinking :: Maybe Value
+    thinking :: Maybe ThinkingLevel
   }
   deriving stock (Show, Eq, Generic)
 

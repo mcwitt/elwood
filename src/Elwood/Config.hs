@@ -4,19 +4,17 @@ module Elwood.Config
   ( Config (..),
     CompactionConfig (..),
     MCPServerConfig (..),
-    ThinkingLevel (..),
-    ThinkingEffort (..),
     PermissionConfig (..),
     PermissionConfigFile (..),
     loadConfig,
     parseToolSearch,
-    parseThinkingLevel,
 
-    -- * Re-exports for webhook config
+    -- * Re-exports
+    ThinkingLevel (..),
+    ThinkingEffort (..),
+    parseThinkingLevel,
     WebhookServerConfig (..),
     WebhookConfig (..),
-
-    -- * Re-exports for prompt config
     PromptInput (..),
     PromptInputFile (..),
   )
@@ -38,6 +36,7 @@ import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), ToolPolicy (..), defaultPermissionConfig)
 import Elwood.Prompt (PromptInput (..), PromptInputFile (..), resolvePromptInput)
+import Elwood.Thinking (ThinkingEffort (..), ThinkingLevel (..), parseThinkingLevel)
 import Elwood.Webhook.Types
   ( DeliveryTargetFile (..),
     WebhookConfig (..),
@@ -47,50 +46,6 @@ import Elwood.Webhook.Types
   )
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
-
--- | Extended thinking level for Claude
-data ThinkingLevel
-  = ThinkingOff
-  | ThinkingAdaptive ThinkingEffort
-  | -- | Explicit budget_tokens (for older models)
-    ThinkingBudget Int
-  deriving stock (Show, Eq, Generic)
-
--- | Effort level for adaptive thinking
-data ThinkingEffort = EffortLow | EffortMedium | EffortHigh
-  deriving stock (Show, Eq, Generic)
-
--- | Parse a thinking level from a YAML value
---
--- Supported formats:
---   off / false          -> ThinkingOff (YAML parses bare "off" as boolean False)
---   {type: off}          -> ThinkingOff
---   {type: adaptive, effort: low}    -> ThinkingAdaptive EffortLow
---   {type: adaptive, effort: medium} -> ThinkingAdaptive EffortMedium
---   {type: adaptive, effort: high}   -> ThinkingAdaptive EffortHigh
---   {type: fixed, budgetTokens: N}   -> ThinkingBudget N
-parseThinkingLevel :: Value -> ThinkingLevel
-parseThinkingLevel (Bool False) = ThinkingOff
-parseThinkingLevel (String t)
-  | T.toLower t == "off" = ThinkingOff
-parseThinkingLevel (Object obj) = case lookupText "type" obj of
-  Just "adaptive" -> case lookupText "effort" obj of
-    Just "low" -> ThinkingAdaptive EffortLow
-    Just "medium" -> ThinkingAdaptive EffortMedium
-    Just "high" -> ThinkingAdaptive EffortHigh
-    _ -> ThinkingAdaptive EffortMedium -- default effort
-  Just "fixed" -> case KM.lookup (Key.fromText "budgetTokens") obj of
-    Just (Number n) | n > 0 -> ThinkingBudget (round n)
-    _ -> ThinkingOff
-  Just "off" -> ThinkingOff
-  _ -> ThinkingOff
-parseThinkingLevel _ = ThinkingOff
-
--- | Look up a text value in a KeyMap
-lookupText :: Text -> KM.KeyMap Value -> Maybe Text
-lookupText key obj = case KM.lookup (Key.fromText key) obj of
-  Just (String t) -> Just (T.toLower t)
-  _ -> Nothing
 
 -- | Main configuration for Elwood
 data Config = Config
@@ -159,7 +114,7 @@ data ConfigFile = ConfigFile
     compaction :: Maybe CompactionConfigFile,
     mcpServers :: Maybe (Map Text MCPServerConfigFile),
     webhook :: Maybe WebhookServerConfigFile,
-    thinking :: Maybe Value,
+    thinking :: Maybe ThinkingLevel,
     maxIterations :: Maybe Int,
     toolSearch :: Maybe Value,
     systemPrompt :: Maybe [PromptInputFile]
@@ -337,7 +292,7 @@ loadConfig path = do
                                   else parsed,
                         suppressIfContains = ep.suppressIfContains,
                         model = ep.model,
-                        thinking = ep.thinking
+                        thinking = parseThinkingLevel <$> ep.thinking
                       }
                   | ep <- eps
                   ]
@@ -359,7 +314,7 @@ loadConfig path = do
         compaction = compact,
         mcpServers = servers,
         webhook = webhookCfg,
-        thinking = maybe ThinkingOff parseThinkingLevel configFile.thinking,
+        thinking = fromMaybe ThinkingOff configFile.thinking,
         maxIterations = fromMaybe 20 configFile.maxIterations,
         toolSearch = parseToolSearch =<< configFile.toolSearch,
         systemPrompt = systemPrompt_

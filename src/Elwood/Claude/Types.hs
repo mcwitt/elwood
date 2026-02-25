@@ -35,7 +35,7 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Time (UTCTime)
-import Elwood.Config (ThinkingEffort (..))
+import Elwood.Thinking (ThinkingEffort (..))
 import GHC.Generics (Generic)
 
 -- | Role in a conversation
