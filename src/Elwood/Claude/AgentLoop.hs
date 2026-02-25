@@ -77,6 +77,8 @@ data AgentConfig = AgentConfig
     onRateLimit :: Maybe RateLimitCallback,
     -- | Optional callback for intermediate text produced during tool-use turns
     onText :: Maybe TextCallback,
+    -- | Optional callback fired before each API call (e.g., typing indicator)
+    onBeforeApiCall :: Maybe (IO ()),
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
     toolSearch :: Maybe (Set ToolName),
     -- | Prune horizon: tool results before this index are replaced with placeholders
@@ -169,6 +171,9 @@ agentLoop cfg msgs iteration
                     Just notify_ -> notify_ attemptNum waitSecs
                     Nothing -> pure ()
               }
+
+      -- Fire before-call callback (e.g., typing indicator)
+      sequence_ cfg.onBeforeApiCall
 
       result <- sendMessagesWithRetry cfg.client retryConfig request
 

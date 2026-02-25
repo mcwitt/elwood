@@ -12,6 +12,7 @@ module Elwood.Telegram
     downloadFile,
     sendPhoto,
     sendDocument,
+    sendChatAction,
 
     -- * Polling
     runPolling,

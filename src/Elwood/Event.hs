@@ -165,6 +165,7 @@ handleEvent env event = do
             source = metricsSource src,
             onRateLimit = Just (mkRateLimitCallback env event),
             onText = Just (mkTextCallback env event),
+            onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
             toolSearch = env.toolSearch,
             pruneHorizon = pruneHorizon
           }
@@ -296,6 +297,20 @@ mkRateLimitCallback env event attemptNum waitSecs = do
         mapM_ (\cid -> notifySafe env cid m) env.notifyChatIds
       LogOnly ->
         logInfo env.logger "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
+
+-- | Create before-API-call callback to send typing indicators
+mkBeforeApiCallCallback :: AppEnv -> Event -> IO ()
+mkBeforeApiCallCallback env event =
+  mapM_ sendTyping event.delivery
+  where
+    sendTyping :: DeliveryTarget -> IO ()
+    sendTyping (TelegramDelivery s) =
+      case parseChatId s of
+        Just chatId_ -> Telegram.sendChatAction env.telegram chatId_
+        Nothing -> pure ()
+    sendTyping TelegramBroadcast =
+      mapM_ (Telegram.sendChatAction env.telegram) env.notifyChatIds
+    sendTyping LogOnly = pure ()
 
 -- | Handle a Telegram message: commands, image fetching, and event dispatch.
 --

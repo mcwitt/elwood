@@ -14,6 +14,7 @@ module Elwood.Telegram.Client
     downloadFile,
     sendPhoto,
     sendDocument,
+    sendChatAction,
   )
 where
 
@@ -357,3 +358,24 @@ sendDocument client chatIdVal path mCaption = do
   when (status /= 200) $
     throwIO $
       TelegramHttpError status (responseBody response)
+
+-- | Send a chat action (e.g., "typing" indicator). Best-effort: logs a
+-- warning on failure instead of throwing.
+sendChatAction :: TelegramClient -> Int64 -> IO ()
+sendChatAction client chatIdVal = do
+  req <- buildRequest client "sendChatAction"
+  let body =
+        encode $
+          object
+            [ "chat_id" .= chatIdVal,
+              "action" .= ("typing" :: Text)
+            ]
+      req' =
+        req
+          { method = "POST",
+            requestBody = RequestBodyLBS body
+          }
+  response <- httpLbs req' client.tcManager
+  let status = statusCode $ responseStatus response
+  when (status /= 200) $
+    logWarn client.tcLogger "sendChatAction failed" [("status", T.pack (show status))]
