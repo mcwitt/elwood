@@ -30,6 +30,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Elwood.Claude.Conversation qualified as Claude
 import Elwood.Claude.Types qualified as Claude
 import Elwood.Event.Types (EventSource (..))
@@ -52,12 +53,13 @@ data CounterKey
 -- | Thread-safe metrics store
 data MetricsStore = MetricsStore
   { counters :: IORef (Map CounterKey Int64),
-    mcpServerCount :: IORef Int
+    mcpServerCount :: IORef Int,
+    startTime :: UTCTime
   }
 
 -- | Create an empty metrics store
 newMetricsStore :: IO MetricsStore
-newMetricsStore = MetricsStore <$> newIORef Map.empty <*> newIORef 0
+newMetricsStore = MetricsStore <$> newIORef Map.empty <*> newIORef 0 <*> getCurrentTime
 
 -- | Increment a counter by a given amount
 incrementCounter :: MetricsStore -> CounterKey -> Int64 -> IO ()
@@ -100,13 +102,16 @@ renderMetrics :: MetricsStore -> Claude.ConversationStore -> Tools.ToolRegistry 
 renderMetrics store convStore registry = do
   cs <- readIORef store.counters
   mcpCount <- readIORef store.mcpServerCount
+  now <- getCurrentTime
   convs <- Claude.allConversations convStore
   let ts = Tools.allTools registry
+      uptimeSeconds = floor (diffUTCTime now store.startTime) :: Int64
       builder =
         renderCounters cs
           <> renderConversationGauges convs
           <> renderToolGauge ts
           <> renderMCPGauge mcpCount
+          <> renderUptimeGauge uptimeSeconds
   pure $ B.toLazyByteString builder
 
 -- | Render all counter metrics
@@ -209,6 +214,13 @@ renderMCPGauge count =
   helpLine "elwood_mcp_servers_active" "Number of active MCP servers"
     <> typeLine "elwood_mcp_servers_active" "gauge"
     <> metricLine "elwood_mcp_servers_active" [] (fromIntegral count)
+
+-- | Render uptime gauge
+renderUptimeGauge :: Int64 -> B.Builder
+renderUptimeGauge seconds =
+  helpLine "elwood_uptime_seconds" "Time since process start in seconds"
+    <> typeLine "elwood_uptime_seconds" "gauge"
+    <> metricLine "elwood_uptime_seconds" [] seconds
 
 -- | Build a # HELP line
 helpLine :: Text -> Text -> B.Builder
