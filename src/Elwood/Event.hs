@@ -53,6 +53,7 @@ import Elwood.Event.Types
   )
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, metricsSource)
+import Elwood.Prompt (PromptInput, assemblePrompt)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
 import Elwood.Tools.Attachment (isPhotoExtension)
@@ -86,7 +87,8 @@ data AppEnv = AppEnv
     registry :: Tools.ToolRegistry,
     agentContext :: Tools.AgentContext,
     compaction :: CompactionConfig,
-    systemPrompt :: Maybe Text,
+    -- | System prompt inputs (resolved per-request from workspace files)
+    systemPromptInputs :: [PromptInput],
     -- | Directory containing workspace files
     workspaceDir :: FilePath,
     model :: Text,
@@ -137,6 +139,9 @@ handleEvent env event = do
       h <- getAndUpdateHorizon env.pruneHorizons cid (length conv.messages) cacheExpired
       pure (conv.messages, h)
 
+  -- Assemble system prompt from workspace files (re-read each request)
+  systemPrompt <- assemblePrompt env.workspaceDir env.systemPromptInputs
+
   -- Build user message with optional image
   let contentBlocks = case event.image of
         Just (mt, imageData) ->
@@ -153,7 +158,7 @@ handleEvent env event = do
             registry = env.registry,
             context = env.agentContext,
             compaction = env.compaction,
-            systemPrompt = env.systemPrompt,
+            systemPrompt = systemPrompt,
             model = env.model,
             thinking = env.thinking,
             maxIterations = env.maxIterations,

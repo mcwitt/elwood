@@ -31,7 +31,6 @@ import Elwood.Logging
 import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
 import Elwood.Metrics (newMetricsStore)
-import Elwood.Prompt (assemblePrompt)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
 import Elwood.Webhook qualified as Webhook
@@ -60,12 +59,6 @@ runApp config = do
   -- Initialize conversation store
   convs <- Claude.newConversationStore config.stateDir
   logInfo logger "Conversation store initialized" []
-
-  -- Assemble system prompt from configured inputs
-  sysPrompt <- assemblePrompt config.workspaceDir config.systemPrompt
-  case sysPrompt of
-    Just _ -> logInfo logger "System prompt loaded" []
-    Nothing -> logWarn logger "No system prompt content found, running without system prompt" []
 
   -- Initialize memory store
   memoryStore <- newMemoryStore config.stateDir
@@ -157,7 +150,7 @@ runApp config = do
             registry = reg,
             agentContext = baseAgentContext,
             compaction = config.compaction,
-            systemPrompt = sysPrompt,
+            systemPromptInputs = config.systemPrompt,
             workspaceDir = config.workspaceDir,
             model = config.model,
             thinking = config.thinking,
