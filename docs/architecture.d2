@@ -1,0 +1,45 @@
+direction: down
+
+telegram: Telegram Polling {
+  shape: rectangle
+}
+
+webhook-server: Webhook Server {
+  shape: rectangle
+}
+
+agent: Agent Loop {
+  claude: Claude API
+  tools: Tool Dispatch
+  claude -> tools: tool_use
+  tools -> claude: tool_result
+}
+
+builtin: Built-in Tools {
+  shape: rectangle
+}
+
+mcp: MCP Servers {
+  shape: rectangle
+}
+
+sessions: Session Store {
+  shape: cylinder
+}
+
+timers: systemd Timers {
+  shape: rectangle
+}
+
+telegram -> agent: user message
+agent -> telegram: response
+
+webhook-server -> agent: trigger
+agent -> webhook-server: response
+
+agent.tools -> builtin
+agent.tools -> mcp
+
+agent -> sessions: read/write
+
+timers -> webhook-server: POST

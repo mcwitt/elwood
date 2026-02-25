@@ -69,6 +69,7 @@
                 haskellPackages.weeder
 
                 # System tools
+                d2
                 pkg-config
                 zlib
               ]
@@ -109,6 +110,13 @@
                 hlint.enable = true;
                 ormolu.enable = true;
                 nixfmt.enable = true;
+                d2 = {
+                  enable = true;
+                  name = "d2-architecture-diagram";
+                  entry = "${pkgs.lib.getExe' pkgs.d2 "d2"} --layout=elk docs/architecture.d2 docs/architecture.svg";
+                  files = "(docs/architecture\\.d2|docs/architecture\\.svg)$";
+                  pass_filenames = false;
+                };
               };
             };
 

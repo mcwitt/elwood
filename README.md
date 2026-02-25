@@ -21,36 +21,14 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Extended thinking** — Configurable reasoning budget for complex tasks
 - **Context compaction** — Automatic summarization for long conversations
 - **Server-side tool search** — On-demand tool discovery via Anthropic's tool search with deferred loading
+- **Typing indicator** — Shows "typing..." in Telegram while the agent works
+- **Cost tracking** — Approximate API cost metric via model-aware pricing
 - **Prometheus metrics** — Token usage, API requests, tool calls, and conversation gauges
 - **NixOS module** — Multi-agent support with systemd hardening
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                      System Service                          │
-│                    (systemd, NixOS)                          │
-│                                                              │
-│  ┌──────────┐                                                │
-│  │ Telegram │───┐                                            │
-│  │(polling) │   │                                            │
-│  └──────────┘   │  ┌────────────┐   ┌───────────────────┐    │
-│  ┌──────────┐   ├─>│   Event    │──>│  Tool Dispatch    │    │
-│  │ Webhooks │───┘  │  Handler   │<──│  (built-in +      │    │
-│  │ (HTTP)   │      │            │   │   MCP servers)    │    │
-│  └──────────┘      │  ┌───────┐ │   └───────────────────┘    │
-│       ^            │  │Session│ │   ┌───────────────────┐    │
-│       │            │  │Store  │ │   │     Memory        │    │
-│       │            │  │(JSON) │ │   │  (file-based)     │    │
-│       │            │  └───────┘ │   └───────────────────┘    │
-│       │            └────────────┘                            │
-│       │                                                      │
-│  ┌────┴─────────────────────────────┐                        │
-│  │  systemd timers (cron jobs)      │                        │
-│  │  POST to webhook endpoints       │                        │
-│  └──────────────────────────────────┘                        │
-└──────────────────────────────────────────────────────────────┘
-```
+<img src="docs/architecture.svg" width="450" alt="Architecture">
 
 ## Building
 
@@ -97,7 +75,6 @@ permissions:
   approvalTimeoutSeconds: 120
   toolPolicies:
     run_command: ask
-    write_file: ask
   dangerousPatterns:
     - "\\brm\\b"
     - "\\bsudo\\b"
@@ -118,6 +95,8 @@ webhook:
       deliver:
         - type: telegram
 
+# NOTE: npx works for local dev but not in NixOS sandboxed services.
+# See the NixOS Deployment section for nix-packaged MCP servers.
 mcpServers:
   filesystem:
     command: npx
@@ -137,11 +116,11 @@ export WEBHOOK_SECRET="your-webhook-secret"   # optional, overrides config file
 
 ## Workspace Files
 
-Place these files in your `workspaceDir`:
+The system prompt is assembled from a configurable list of inputs. Each input is either a `workspaceFile` (read from `workspaceDir`) or inline `text`. When the `systemPrompt` key is omitted, it defaults to `[{type: workspaceFile, path: SOUL.md}]`.
 
-- **SOUL.md** — Personality, tone, behavioral guidelines (system prompt, loaded by default)
+Place workspace files in your `workspaceDir` (e.g. `SOUL.md` for personality and behavioral guidelines).
 
-The system prompt, webhook prompts, and cron job prompts are all configured as lists of prompt inputs. Each input is either a `workspaceFile` (read from `workspaceDir`) or inline `text`. Webhook text inputs support `{{.field}}` template placeholders for dynamic content from the JSON payload.
+Webhook and cron job prompts use the same input format. Webhook text inputs support `{{.field}}` template placeholders for dynamic content from the JSON payload.
 
 ## NixOS Deployment
 
@@ -150,12 +129,13 @@ Add the flake to your NixOS configuration:
 ```nix
 {
   inputs.elwood.url = "github:mcwitt/elwood";
+  inputs.mcp-servers.url = "github:nix-community/mcp-servers-nix";
 
-  outputs = { self, nixpkgs, elwood, ... }: {
+  outputs = { self, nixpkgs, elwood, mcp-servers, ... }: {
     nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
       modules = [
         elwood.nixosModules.default
-        {
+        ({ pkgs, system, ... }: {
           services.assistant.agents.elwood = {
             enable = true;
             allowedChatIds = [ 123456789 ];
@@ -165,7 +145,7 @@ Add the flake to your NixOS configuration:
             systemPrompt = [
               {
                 type = "workspaceFile";
-                path = soulFile;
+                path = "SOUL.md";
                 defaultContent = ''You are Elwood, a personal AI assistant'';
               }
               {
@@ -201,8 +181,8 @@ Add the flake to your NixOS configuration:
             };
 
             mcpServers.filesystem = {
-              command = "npx";
-              args = [ "-y" "@modelcontextprotocol/server-filesystem" "/var/lib/assistant/elwood/workspace" ];
+              command = "${mcp-servers.packages.${system}.filesystem}/bin/mcp-server-filesystem";
+              args = [ "/var/lib/assistant/elwood/workspace" ];
             };
 
             permissions = {
@@ -219,7 +199,7 @@ Add the flake to your NixOS configuration:
             environmentFile = "/run/secrets/career-coach-env";
             model = "claude-sonnet-4-20250514";
           };
-        }
+        })
       ];
     };
   };
@@ -254,8 +234,10 @@ When the webhook server is enabled, a Prometheus-compatible metrics endpoint is 
 | `elwood_compactions_total` | counter | — | Conversation compactions |
 | `elwood_conversation_messages` | gauge | session | Messages per conversation |
 | `elwood_conversation_estimated_tokens` | gauge | session | Estimated tokens per conversation |
+| `elwood_cost_dollars` | counter | model, source | Approximate cumulative API cost in USD |
 | `elwood_tools_registered` | gauge | — | Number of registered tools |
 | `elwood_mcp_servers_active` | gauge | — | Number of active MCP servers |
+| `elwood_uptime_seconds` | gauge | — | Time since process start |
 
 **Example Prometheus scrape config:**
 
