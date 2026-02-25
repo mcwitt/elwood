@@ -10,11 +10,11 @@ where
 
 import Control.Exception (SomeException, catch)
 import Data.Aeson
+import Data.Aeson.Types (Parser)
 import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Elwood.Aeson (rejectUnknownKeys)
 import GHC.Generics (Generic)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
@@ -28,29 +28,23 @@ data PromptInput
   deriving stock (Show, Eq, Generic)
 
 -- | Prompt input as specified in config files (YAML)
-data PromptInputFile = PromptInputFile
-  { type_ :: Text,
-    path :: Maybe FilePath,
-    content :: Maybe Text
-  }
+data PromptInputFile
+  = PromptInputFileWorkspace FilePath
+  | PromptInputFileText Text
   deriving stock (Show, Generic)
 
 instance FromJSON PromptInputFile where
   parseJSON = withObject "PromptInputFile" $ \v -> do
-    rejectUnknownKeys "PromptInputFile" ["type", "path", "content"] v
-    PromptInputFile
-      <$> v .: "type"
-      <*> v .:? "path"
-      <*> v .:? "content"
+    t <- v .: "type" :: Parser Text
+    case T.toLower t of
+      "workspacefile" -> PromptInputFileWorkspace <$> v .: "path"
+      "text" -> PromptInputFileText <$> v .: "content"
+      other -> fail $ "Unknown prompt input type: " <> T.unpack other
 
 -- | Resolve a config-file prompt input to a runtime prompt input.
---
--- Returns 'Nothing' for unrecognized types.
-resolvePromptInput :: PromptInputFile -> Maybe PromptInput
-resolvePromptInput pif = case T.toLower pif.type_ of
-  "workspacefile" -> WorkspaceFile <$> pif.path
-  "text" -> InlineText <$> pif.content
-  _ -> Nothing
+resolvePromptInput :: PromptInputFile -> PromptInput
+resolvePromptInput (PromptInputFileWorkspace p) = WorkspaceFile p
+resolvePromptInput (PromptInputFileText t) = InlineText t
 
 -- | Assemble a prompt from a list of inputs by reading workspace files
 -- and concatenating all parts with @"\\n\\n"@.

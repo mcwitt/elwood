@@ -339,7 +339,7 @@ loadConfig path = do
                   [ WebhookConfig
                       { name = ep.name,
                         secret = ep.secret,
-                        prompt = maybe [] (mapMaybe resolvePromptInput) ep.prompt,
+                        prompt = maybe [] (map resolvePromptInput) ep.prompt,
                         session = maybe Isolated Named ep.session,
                         delivery = case ep.deliver of
                           Nothing -> [TelegramBroadcast]
@@ -358,7 +358,7 @@ loadConfig path = do
 
   let systemPrompt_ = case configFile.systemPrompt of
         Nothing -> [WorkspaceFile "SOUL.md"]
-        Just spf -> mapMaybe resolvePromptInput spf
+        Just spf -> map resolvePromptInput spf
 
   pure
     Config
