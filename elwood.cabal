@@ -158,4 +158,4 @@ test-suite elwood-test
     OverloadedRecordDot
     OverloadedStrings
 
-  ghc-options:        -threaded -rtsopts -with-rtsopts=-N
+  ghc-options:        -threaded -rtsopts
