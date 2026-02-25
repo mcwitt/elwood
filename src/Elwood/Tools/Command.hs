@@ -11,6 +11,7 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text (Text)
 import Data.Text qualified as T
+import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.Permissions (PermissionConfig, PermissionResult (..), checkCommandPermission)
 import Elwood.Tools.Types
@@ -29,12 +30,15 @@ import System.Timeout (timeout)
 mkRunCommandTool :: Logger -> FilePath -> PermissionConfig -> Tool
 mkRunCommandTool logger workspaceDir_ perms =
   Tool
-    { name = "run_command",
-      description =
-        "Execute a shell command in the workspace directory. "
-          <> "Use this for listing files, checking git status, running builds, etc. "
-          <> "The command runs with a 30 second timeout.",
-      inputSchema = commandSchema,
+    { schema =
+        ToolSchema
+          { name = "run_command",
+            description =
+              "Execute a shell command in the workspace directory. "
+                <> "Use this for listing files, checking git status, running builds, etc. "
+                <> "The command runs with a 30 second timeout.",
+            inputSchema = commandSchema
+          },
       execute = \input -> case parseInput input of
         Left err -> pure $ toolError err
         Right (cmd, timeoutSecs) ->

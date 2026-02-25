@@ -2,6 +2,7 @@ module Test.Elwood.Tools.Registry (tests) where
 
 import Data.Aeson (object, (.=))
 import Data.Text (Text)
+import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Tools.Registry
 import Elwood.Tools.Types (Tool (..), ToolResult (..))
 import Test.Tasty
@@ -11,9 +12,12 @@ import Test.Tasty.HUnit
 mkTestTool :: Text -> Tool
 mkTestTool n =
   Tool
-    { name = n,
-      description = "Test tool: " <> n,
-      inputSchema = object ["type" .= ("object" :: Text)],
+    { schema =
+        ToolSchema
+          { name = n,
+            description = "Test tool: " <> n,
+            inputSchema = object ["type" .= ("object" :: Text)]
+          },
       execute = \_ -> pure (ToolSuccess "ok")
     }
 
@@ -34,10 +38,10 @@ registryBasicsTests =
                 registerTool (mkTestTool "b") newToolRegistry
         case lookupTool "a" reg of
           Nothing -> assertFailure "Should find tool a"
-          Just t -> t.name @?= "a"
+          Just t -> t.schema.name @?= "a"
         case lookupTool "b" reg of
           Nothing -> assertFailure "Should find tool b"
-          Just t -> t.name @?= "b",
+          Just t -> t.schema.name @?= "b",
       testCase "allTools returns all registered tools" $ do
         let reg =
               registerTool (mkTestTool "a") $

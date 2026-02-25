@@ -13,6 +13,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Char (toLower)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Logging (Logger, logInfo)
 import Elwood.Tools.Types
 import System.Directory (doesFileExist)
@@ -22,12 +23,15 @@ import System.FilePath (takeExtension)
 mkQueueAttachmentTool :: Logger -> TVar [Attachment] -> Tool
 mkQueueAttachmentTool logger queue =
   Tool
-    { name = "queue_attachment",
-      description =
-        "Queue a file to be sent as a Telegram attachment after the text response. "
-          <> "Supports photos (png, jpg, jpeg, gif, webp) and documents (any file type). "
-          <> "The path must be an absolute path to an existing file.",
-      inputSchema = queueAttachmentSchema,
+    { schema =
+        ToolSchema
+          { name = "queue_attachment",
+            description =
+              "Queue a file to be sent as a Telegram attachment after the text response. "
+                <> "Supports photos (png, jpg, jpeg, gif, webp) and documents (any file type). "
+                <> "The path must be an absolute path to an existing file.",
+            inputSchema = queueAttachmentSchema
+          },
       execute = \input -> case parseInput input of
         Left err -> pure $ toolError err
         Right (p, attTy, cap) -> do

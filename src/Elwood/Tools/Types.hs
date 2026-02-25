@@ -19,6 +19,7 @@ where
 
 import Data.Aeson (Value)
 import Data.Text (Text)
+import Elwood.Claude.Types qualified as Claude
 import Elwood.Permissions (PermissionConfig)
 
 -- | Result of executing a tool
@@ -67,12 +68,8 @@ data Attachment = Attachment
 
 -- | A tool that can be used by Claude
 data Tool = Tool
-  { -- | Unique tool name
-    name :: Text,
-    -- | Description of what the tool does
-    description :: Text,
-    -- | JSON Schema for input parameters
-    inputSchema :: Value,
+  { -- | Tool schema (name, description, input schema)
+    schema :: Claude.ToolSchema,
     -- | Execute the tool with given input
     execute :: Value -> IO ToolResult
   }

@@ -11,6 +11,7 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text (Text)
 import Data.Text qualified as T
+import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Logging (Logger, logInfo)
 import Elwood.Memory (MemoryResult (..), MemoryStore, saveMemory, searchMemory)
 import Elwood.Tools.Types
@@ -19,13 +20,16 @@ import Elwood.Tools.Types
 mkSaveMemoryTool :: Logger -> MemoryStore -> Tool
 mkSaveMemoryTool logger memStore =
   Tool
-    { name = "save_memory",
-      description =
-        "Save information to persistent memory for future reference. "
-          <> "Use this to remember important facts, preferences, or information "
-          <> "that should persist across conversations. "
-          <> "The key should be a short, descriptive identifier.",
-      inputSchema = saveMemorySchema,
+    { schema =
+        ToolSchema
+          { name = "save_memory",
+            description =
+              "Save information to persistent memory for future reference. "
+                <> "Use this to remember important facts, preferences, or information "
+                <> "that should persist across conversations. "
+                <> "The key should be a short, descriptive identifier.",
+            inputSchema = saveMemorySchema
+          },
       execute = \input -> case parseSaveInput input of
         Left err -> pure $ toolError err
         Right (k, c) -> do
@@ -40,12 +44,15 @@ mkSaveMemoryTool logger memStore =
 mkSearchMemoryTool :: Logger -> MemoryStore -> Tool
 mkSearchMemoryTool logger memStore =
   Tool
-    { name = "search_memory",
-      description =
-        "Search persistent memory for previously saved information. "
-          <> "Use this to recall facts, preferences, or context from past conversations. "
-          <> "The query can contain multiple keywords.",
-      inputSchema = searchMemorySchema,
+    { schema =
+        ToolSchema
+          { name = "search_memory",
+            description =
+              "Search persistent memory for previously saved information. "
+                <> "Use this to recall facts, preferences, or context from past conversations. "
+                <> "The query can contain multiple keywords.",
+            inputSchema = searchMemorySchema
+          },
       execute = \input -> case parseSearchInput input of
         Left err -> pure $ toolError err
         Right query -> do

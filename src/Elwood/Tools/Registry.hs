@@ -27,7 +27,7 @@ newToolRegistry = ToolRegistry Map.empty
 -- | Register a tool in the registry
 registerTool :: Tool -> ToolRegistry -> ToolRegistry
 registerTool tool (ToolRegistry reg) =
-  ToolRegistry $ Map.insert tool.name tool reg
+  ToolRegistry $ Map.insert tool.schema.name tool reg
 
 -- | Look up a tool by name
 lookupTool :: Text -> ToolRegistry -> Maybe Tool
@@ -39,11 +39,4 @@ allTools (ToolRegistry reg) = Map.elems reg
 
 -- | Generate tool schemas for the API request (all tools)
 toolSchemas :: ToolRegistry -> [ToolSchema]
-toolSchemas registry =
-  [ ToolSchema
-      { name = tool.name,
-        description = tool.description,
-        inputSchema = tool.inputSchema
-      }
-  | tool <- allTools registry
-  ]
+toolSchemas registry = map (.schema) (allTools registry)
