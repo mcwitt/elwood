@@ -255,7 +255,8 @@ loadConfig path = do
 
   -- Helper to resolve delivery targets from file objects
   let resolveDeliveryTarget :: DeliveryTargetFile -> DeliveryTarget
-      resolveDeliveryTarget (DeliveryTargetFileTelegram s) = maybe TelegramBroadcast TelegramDelivery s
+      resolveDeliveryTarget (DeliveryTargetFileTelegram ids) = TelegramDelivery ids
+      resolveDeliveryTarget DeliveryTargetFileBroadcast = TelegramBroadcast
       resolveDeliveryTarget DeliveryTargetFileLog = LogOnly
 
   let workspaceDir_ = fromMaybe "/var/lib/assistant/workspace" configFile.workspaceDir
@@ -283,13 +284,7 @@ loadConfig path = do
                       { name = ep.name,
                         prompt = maybe [] (map resolvePromptInput) ep.prompt,
                         session = maybe Isolated Named ep.session,
-                        deliveryTargets = case ep.deliveryTargets of
-                          Nothing -> [TelegramBroadcast]
-                          Just targets ->
-                            let parsed = map resolveDeliveryTarget targets
-                             in if null parsed
-                                  then [TelegramBroadcast]
-                                  else parsed,
+                        deliveryTarget = maybe TelegramBroadcast resolveDeliveryTarget ep.deliveryTarget,
                         suppressIfContains = ep.suppressIfContains,
                         model = ep.model,
                         thinking = parseThinkingLevel <$> ep.thinking

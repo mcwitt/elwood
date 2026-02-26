@@ -119,11 +119,13 @@ webhook:
       # thinking:                         # per-endpoint thinking override (default: use global thinking)
       #   type: adaptive
       #   effort: low
-      delivery_targets:         # where to send responses (default: [{type: telegram_broadcast}])
-        - type: telegram_broadcast  # broadcast to all allowed_chat_ids
-        # - type: telegram
-        #   chat_id: 123456789    # send to specific chat
-        - type: log_only           # log only, no notification
+      delivery_target:                      # where to send responses (default: telegram_broadcast)
+        type: telegram_broadcast          # broadcast to all allowed_chat_ids
+      # delivery_target:
+      #   type: telegram
+      #   chat_ids: [123456789]           # send to specific chat(s)
+      # delivery_target:
+      #   type: log_only                  # log only, no notification
       suppress_if_contains: "no action needed"  # suppress notification if response contains this
 
 # Environment variables (not set in this file):

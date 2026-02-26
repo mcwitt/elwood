@@ -15,6 +15,7 @@ module Elwood.Event.Types
 where
 
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 
 -- | Source of an event
@@ -37,8 +38,8 @@ data SessionConfig
 
 -- | Where to deliver event responses
 data DeliveryTarget
-  = -- | Send to a specific Telegram chat
-    TelegramDelivery Int64
+  = -- | Send to specific Telegram chat(s)
+    TelegramDelivery (NonEmpty Int64)
   | -- | Broadcast to all allowed chats
     TelegramBroadcast
   | -- | Just log, no notification

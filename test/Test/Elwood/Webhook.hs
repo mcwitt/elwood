@@ -1,6 +1,7 @@
 module Test.Elwood.Webhook (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
+import Data.List.NonEmpty (NonEmpty (..))
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Prompt (PromptInput (..))
 import Elwood.Webhook.Server (renderTemplate)
@@ -97,7 +98,7 @@ webhookConfigTests =
                 { name = "test-hook",
                   prompt = [InlineText "Hello"],
                   session = Isolated,
-                  deliveryTargets = [LogOnly],
+                  deliveryTarget = LogOnly,
                   suppressIfContains = Nothing,
                   model = Nothing,
                   thinking = Nothing
@@ -105,25 +106,25 @@ webhookConfigTests =
         config.name @?= "test-hook"
         config.prompt @?= [InlineText "Hello"]
         config.session @?= Isolated,
-      testCase "can have multiple delivery targets" $ do
+      testCase "TelegramDelivery can target multiple chat IDs" $ do
         let config =
               WebhookConfig
-                { name = "multi-target",
+                { name = "multi-chat",
                   prompt = [InlineText "Test"],
                   session = Isolated,
-                  deliveryTargets = [TelegramBroadcast, TelegramDelivery 123, LogOnly],
+                  deliveryTarget = TelegramDelivery (123 :| [456, 789]),
                   suppressIfContains = Nothing,
                   model = Nothing,
                   thinking = Nothing
                 }
-        length config.deliveryTargets @?= 3,
+        config.deliveryTarget @?= TelegramDelivery (123 :| [456, 789]),
       testCase "can have suppressIfContains" $ do
         let config =
               WebhookConfig
                 { name = "heartbeat",
                   prompt = [InlineText "Check system health"],
                   session = Isolated,
-                  deliveryTargets = [TelegramBroadcast],
+                  deliveryTarget = TelegramBroadcast,
                   suppressIfContains = Just "HEARTBEAT_OK",
                   model = Nothing,
                   thinking = Nothing
@@ -135,7 +136,7 @@ webhookConfigTests =
                 { name = "empty-prompt",
                   prompt = [],
                   session = Isolated,
-                  deliveryTargets = [LogOnly],
+                  deliveryTarget = LogOnly,
                   suppressIfContains = Nothing,
                   model = Nothing,
                   thinking = Nothing
@@ -163,7 +164,7 @@ webhookServerConfigTests =
                 { name = "hook1",
                   prompt = [InlineText "Test"],
                   session = Isolated,
-                  deliveryTargets = [LogOnly],
+                  deliveryTarget = LogOnly,
                   suppressIfContains = Nothing,
                   model = Nothing,
                   thinking = Nothing

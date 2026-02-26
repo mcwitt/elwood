@@ -1,5 +1,6 @@
 module Test.Elwood.Event (tests) where
 
+import Data.List.NonEmpty (NonEmpty (..))
 import Elwood.Event (sessionToConversationId)
 import Elwood.Event.Types
   ( DeliveryTarget (..),
@@ -37,9 +38,13 @@ deliveryTargetTests :: TestTree
 deliveryTargetTests =
   testGroup
     "DeliveryTarget"
-    [ testCase "TelegramDelivery holds chat ID" $
-        case TelegramDelivery 12345 of
-          TelegramDelivery chatId_ -> chatId_ @?= 12345
+    [ testCase "TelegramDelivery holds chat IDs" $
+        case TelegramDelivery (12345 :| []) of
+          TelegramDelivery chatIds -> chatIds @?= (12345 :| [])
+          _ -> assertFailure "Expected TelegramDelivery",
+      testCase "TelegramDelivery with multiple chat IDs" $
+        case TelegramDelivery (111 :| [222, 333]) of
+          TelegramDelivery chatIds -> chatIds @?= (111 :| [222, 333])
           _ -> assertFailure "Expected TelegramDelivery",
       testCase "TelegramBroadcast equality" $
         TelegramBroadcast == TelegramBroadcast @?= True,

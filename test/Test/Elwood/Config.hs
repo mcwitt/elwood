@@ -141,9 +141,9 @@ exampleConfigTests =
         config.thinking @?= ThinkingOff
         config.allowedChatIds @?= [123456789]
         config.compaction.tokenThreshold @?= 50000
-        -- Verify delivery targets from example config
+        -- Verify delivery target from example config
         let webhooks = config.webhook.webhooks
         length webhooks @?= 1
         let wh = head webhooks
-        wh.deliveryTargets @?= [TelegramBroadcast, LogOnly]
+        wh.deliveryTarget @?= TelegramBroadcast
     ]

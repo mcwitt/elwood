@@ -45,6 +45,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (sortOn)
+import Data.List.NonEmpty qualified as NE
 import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Set (Set)
@@ -83,7 +84,7 @@ data Event = Event
     -- | Session configuration
     session :: SessionConfig,
     -- | Where to deliver responses
-    deliveryTargets :: [DeliveryTarget]
+    deliveryTarget :: DeliveryTarget
   }
   deriving stock (Show)
 
@@ -152,7 +153,7 @@ handleEventCore env event callbacks = do
     "Handling event"
     [ ("source", formatSource src),
       ("session", T.pack (show event.session)),
-      ("delivery_targets", T.pack (show (length event.deliveryTargets)))
+      ("delivery_target", T.pack (show event.deliveryTarget))
     ]
 
   -- Determine conversation ID from session config
@@ -259,7 +260,7 @@ data BufferedResult
 -- buffer (with typing indicators and pacing) then delivers the final
 -- response including attachments. On error, the buffer is discarded.
 handleEventBuffered ::
-  AppEnv -> Event -> [DeliveryTarget] -> IO BufferedResult
+  AppEnv -> Event -> DeliveryTarget -> IO BufferedResult
 handleEventBuffered env event targets = do
   bufRef <- newIORef ([] :: [BufferedItem])
   let callbacks =
@@ -291,24 +292,24 @@ handleEventBuffered env event targets = do
 
 -- | Replay buffered items with typing indicators and pacing, then deliver
 -- the final response (including attachment drain).
-flushBuffer :: AppEnv -> [DeliveryTarget] -> [BufferedItem] -> Text -> IO ()
-flushBuffer env targets items finalResponse = do
-  let chatIds = concatMap (targetChatIds env) targets
+flushBuffer :: AppEnv -> DeliveryTarget -> [BufferedItem] -> Text -> IO ()
+flushBuffer env target items finalResponse = do
+  let chatIds = targetChatIds env target
   mapM_ (flushItem chatIds) items
   -- Final response: typing → delay → deliver with attachments
-  sendTypingToTargets env targets
+  sendTypingToTargets env target
   threadDelay flushPacingDelay
-  deliverToTargets env targets finalResponse
+  deliverToTargets env target finalResponse
   where
     flushItem :: [Int64] -> BufferedItem -> IO ()
     flushItem chatIds (BufferedText t atts) = do
-      sendTypingToTargets env targets
+      sendTypingToTargets env target
       threadDelay flushPacingDelay
-      deliverTextOnly env targets t
+      deliverTextOnly env target t
       -- Deliver attachments that were queued before this text
       mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) atts
     flushItem _ (BufferedRateLimit m) = do
-      deliverTextOnly env targets m
+      deliverTextOnly env target m
 
 -- | Drain the attachment queue, discarding all queued attachments
 drainAttachmentQueue :: AppEnv -> IO ()
@@ -317,30 +318,26 @@ drainAttachmentQueue env =
 
 -- | Deliver response to configured targets, then send queued attachments
 deliverResponse :: AppEnv -> Event -> Text -> IO ()
-deliverResponse env event = deliverToTargets env event.deliveryTargets
+deliverResponse env event = deliverToTargets env event.deliveryTarget
 
--- | Deliver text to the specified targets without draining the attachment queue
-deliverTextOnly :: AppEnv -> [DeliveryTarget] -> Text -> IO ()
-deliverTextOnly env targets msg =
-  mapM_ deliver targets
-  where
-    deliver :: DeliveryTarget -> IO ()
-    deliver target = case target of
-      TelegramDelivery chatId_ ->
-        notifySafe env chatId_ msg
-      TelegramBroadcast ->
-        mapM_ (\cid -> notifySafe env cid msg) env.notifyChatIds
-      LogOnly ->
-        logInfo env.logger "Event response (log only)" [("response", T.take 100 msg)]
+-- | Deliver text to the specified target without draining the attachment queue
+deliverTextOnly :: AppEnv -> DeliveryTarget -> Text -> IO ()
+deliverTextOnly env target msg = case target of
+  TelegramDelivery chatIds ->
+    mapM_ (\cid -> notifySafe env cid msg) chatIds
+  TelegramBroadcast ->
+    mapM_ (\cid -> notifySafe env cid msg) env.notifyChatIds
+  LogOnly ->
+    logInfo env.logger "Event response (log only)" [("response", T.take 100 msg)]
 
--- | Deliver a message to the specified targets, then send queued attachments
-deliverToTargets :: AppEnv -> [DeliveryTarget] -> Text -> IO ()
-deliverToTargets env targets msg = do
-  deliverTextOnly env targets msg
+-- | Deliver a message to the specified target, then send queued attachments
+deliverToTargets :: AppEnv -> DeliveryTarget -> Text -> IO ()
+deliverToTargets env target msg = do
+  deliverTextOnly env target msg
   -- Send queued attachments to Telegram targets (if any)
   -- Only drain the queue when there are real Telegram targets; for LogOnly
   -- the polling path in App.hs handles attachment delivery separately.
-  let chatIds = concatMap (targetChatIds env) targets
+  let chatIds = targetChatIds env target
   unless (null chatIds) $ do
     attachments <- atomically $ do
       atts <- readTVar env.attachmentQueue
@@ -350,7 +347,7 @@ deliverToTargets env targets msg = do
 
 -- | Resolve a delivery target to its Telegram chat IDs
 targetChatIds :: AppEnv -> DeliveryTarget -> [Int64]
-targetChatIds _ (TelegramDelivery chatId_) = [chatId_]
+targetChatIds _ (TelegramDelivery chatIds) = NE.toList chatIds
 targetChatIds env TelegramBroadcast = env.notifyChatIds
 targetChatIds _ LogOnly = []
 
@@ -390,40 +387,34 @@ sessionToConversationId (Named n) = Just n
 
 -- | Create text callback to deliver intermediate text during tool-use turns
 mkTextCallback :: AppEnv -> Event -> Claude.TextCallback
-mkTextCallback env event = deliverToTargets env event.deliveryTargets
+mkTextCallback env event = deliverToTargets env event.deliveryTarget
 
 -- | Create rate limit notification callback based on event delivery targets
 mkRateLimitCallback :: AppEnv -> Event -> Claude.RateLimitCallback
 mkRateLimitCallback env event attemptNum waitSecs = do
   let msg = formatNotify Warn $ "Rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s"
-  -- Notify based on delivery targets
-  mapM_ (notifyRateLimit msg) event.deliveryTargets
-  where
-    notifyRateLimit :: Text -> DeliveryTarget -> IO ()
-    notifyRateLimit m target = case target of
-      TelegramDelivery chatId_ ->
-        notifySafe env chatId_ m
-      TelegramBroadcast ->
-        mapM_ (\cid -> notifySafe env cid m) env.notifyChatIds
-      LogOnly ->
-        logInfo env.logger "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
+  -- Notify based on delivery target
+  case event.deliveryTarget of
+    TelegramDelivery chatIds ->
+      mapM_ (\cid -> notifySafe env cid msg) chatIds
+    TelegramBroadcast ->
+      mapM_ (\cid -> notifySafe env cid msg) env.notifyChatIds
+    LogOnly ->
+      logInfo env.logger "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
 
--- | Send typing indicator to a list of delivery targets
-sendTypingToTargets :: AppEnv -> [DeliveryTarget] -> IO ()
-sendTypingToTargets env =
-  mapM_ sendTyping
-  where
-    sendTyping :: DeliveryTarget -> IO ()
-    sendTyping (TelegramDelivery chatId_) =
-      Telegram.sendChatAction env.telegram chatId_
-    sendTyping TelegramBroadcast =
-      mapM_ (Telegram.sendChatAction env.telegram) env.notifyChatIds
-    sendTyping LogOnly = pure ()
+-- | Send typing indicator to a delivery target
+sendTypingToTargets :: AppEnv -> DeliveryTarget -> IO ()
+sendTypingToTargets env target = case target of
+  TelegramDelivery chatIds ->
+    mapM_ (Telegram.sendChatAction env.telegram) chatIds
+  TelegramBroadcast ->
+    mapM_ (Telegram.sendChatAction env.telegram) env.notifyChatIds
+  LogOnly -> pure ()
 
 -- | Create before-API-call callback to send typing indicators
 mkBeforeApiCallCallback :: AppEnv -> Event -> IO ()
 mkBeforeApiCallCallback env event =
-  sendTypingToTargets env event.deliveryTargets
+  sendTypingToTargets env event.deliveryTarget
 
 -- | Handle a Telegram message: commands, image fetching, and event dispatch.
 --
@@ -484,7 +475,7 @@ handleTelegramMessage env msg =
                     prompt = userText,
                     image = imageData,
                     session = Named (T.pack (show chatIdVal)),
-                    deliveryTargets = [TelegramDelivery chatIdVal]
+                    deliveryTarget = TelegramDelivery (pure chatIdVal)
                   }
 
           -- Handle the event - delivery to Telegram is done by the event system

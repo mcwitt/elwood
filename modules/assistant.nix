@@ -19,8 +19,8 @@ let
         {
           type = dt.type;
         }
-        // lib.optionalAttrs (dt.type == "telegram" && dt.chatId != null) {
-          chat_id = dt.chatId;
+        // lib.optionalAttrs (dt.type == "telegram") {
+          chat_ids = dt.chatIds;
         };
 
       # Serialize a prompt input, stripping the NixOS-only defaultContent field
@@ -43,7 +43,7 @@ let
           name = epName;
           prompt = map mkPromptInputYaml epCfg.prompt;
           session = epCfg.session;
-          delivery_targets = map mkDeliveryTarget epCfg.deliveryTargets;
+          delivery_target = mkDeliveryTarget epCfg.deliveryTarget;
         }
         // lib.optionalAttrs (epCfg.suppressIfContains != null) {
           suppress_if_contains = epCfg.suppressIfContains;
@@ -218,7 +218,7 @@ let
       };
 
   # Submodule for delivery targets
-  deliverTargetModule = lib.types.submodule {
+  deliveryTargetModule = lib.types.submodule {
     options = {
       type = lib.mkOption {
         type = lib.types.enum [
@@ -229,11 +229,11 @@ let
         description = "Delivery target type.";
       };
 
-      chatId = lib.mkOption {
-        type = lib.types.nullOr lib.types.int;
-        default = null;
-        description = "Telegram chat ID to send to (telegram type only).";
-        example = 123456789;
+      chatIds = lib.mkOption {
+        type = lib.types.listOf lib.types.int;
+        default = [ ];
+        description = "Telegram chat IDs to send to (telegram type only).";
+        example = [ 123456789 ];
       };
     };
   };
@@ -282,10 +282,12 @@ let
       description = "Session name for persistent conversation. Null means isolated (no history).";
     };
 
-    deliveryTargets = lib.mkOption {
-      type = lib.types.listOf deliverTargetModule;
-      default = [ { type = "telegram_broadcast"; } ];
-      description = "Delivery targets.";
+    deliveryTarget = lib.mkOption {
+      type = deliveryTargetModule;
+      default = {
+        type = "telegram_broadcast";
+      };
+      description = "Delivery target.";
     };
 
     suppressIfContains = lib.mkOption {
@@ -645,8 +647,36 @@ in
             services.assistant.agents.${name}.allowedChatIds = [ <your-chat-id> ];
           '';
         }) enabledAgents;
+
+        # Delivery target type "telegram" requires non-empty chatIds
+        deliveryTargetAssertions =
+          let
+            collect =
+              agentName: agentCfg:
+              let
+                fromEndpoints = lib.mapAttrsToList (epName: ep: {
+                  path = "services.assistant.agents.${agentName}.webhook.endpoints.${epName}.deliveryTarget";
+                  dt = ep.deliveryTarget;
+                }) agentCfg.webhook.endpoints;
+                fromCrons = lib.mapAttrsToList (cronName: cron: {
+                  path = "services.assistant.agents.${agentName}.cronJobs.${cronName}.deliveryTarget";
+                  dt = cron.deliveryTarget;
+                }) agentCfg.cronJobs;
+              in
+              fromEndpoints ++ fromCrons;
+            allTargets = lib.concatLists (lib.mapAttrsToList collect enabledAgents);
+          in
+          map (t: {
+            assertion = t.dt.type != "telegram" || t.dt.chatIds != [ ];
+            message = ''
+              ${t.path} has type "telegram" but no chatIds.
+              At least one chat ID is required:
+
+                ${t.path}.chatIds = [ <chat-id> ];
+            '';
+          }) allTargets;
       in
-      webhookAssertions ++ portConflictAssertions ++ chatIdAssertions;
+      webhookAssertions ++ portConflictAssertions ++ chatIdAssertions ++ deliveryTargetAssertions;
 
     # Collect all unique users and groups
     # Use lib.unique to avoid duplicate definitions when multiple agents share the same user

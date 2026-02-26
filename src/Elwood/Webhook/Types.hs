@@ -15,6 +15,7 @@ where
 import Data.Aeson
 import Data.Aeson.Types (Parser)
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Aeson (rejectUnknownKeys)
@@ -32,7 +33,7 @@ data WebhookConfig = WebhookConfig
     -- | Session mode: isolated or named:<id>
     session :: SessionConfig,
     -- | Where to deliver responses
-    deliveryTargets :: [DeliveryTarget],
+    deliveryTarget :: DeliveryTarget,
     -- | Suppress notification if response contains this string
     suppressIfContains :: Maybe Text,
     -- | Model override for this endpoint (Nothing = use global)
@@ -69,7 +70,7 @@ data WebhookConfigFile = WebhookConfigFile
   { name :: Text,
     prompt :: Maybe [PromptInputFile],
     session :: Maybe Text,
-    deliveryTargets :: Maybe [DeliveryTargetFile],
+    deliveryTarget :: Maybe DeliveryTargetFile,
     suppressIfContains :: Maybe Text,
     model :: Maybe Text,
     thinking :: Maybe Value
@@ -78,7 +79,8 @@ data WebhookConfigFile = WebhookConfigFile
 
 -- | YAML file configuration for a delivery target
 data DeliveryTargetFile
-  = DeliveryTargetFileTelegram (Maybe Int64)
+  = DeliveryTargetFileTelegram (NonEmpty Int64)
+  | DeliveryTargetFileBroadcast
   | DeliveryTargetFileLog
   deriving stock (Show, Generic)
 
@@ -87,11 +89,11 @@ instance FromJSON DeliveryTargetFile where
     t <- v .: "type" :: Parser Text
     case T.toLower t of
       "telegram" -> do
-        rejectUnknownKeys "DeliveryTargetFile" ["type", "chat_id"] v
-        DeliveryTargetFileTelegram <$> v .: "chat_id"
+        rejectUnknownKeys "DeliveryTargetFile" ["type", "chat_ids"] v
+        DeliveryTargetFileTelegram <$> v .: "chat_ids"
       "telegram_broadcast" -> do
         rejectUnknownKeys "DeliveryTargetFile" ["type"] v
-        pure (DeliveryTargetFileTelegram Nothing)
+        pure DeliveryTargetFileBroadcast
       "log_only" -> do
         rejectUnknownKeys "DeliveryTargetFile" ["type"] v
         pure DeliveryTargetFileLog
@@ -108,12 +110,12 @@ instance FromJSON WebhookServerConfigFile where
 
 instance FromJSON WebhookConfigFile where
   parseJSON = withObject "WebhookConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookConfigFile" ["name", "prompt", "session", "delivery_targets", "suppress_if_contains", "model", "thinking"] v
+    rejectUnknownKeys "WebhookConfigFile" ["name", "prompt", "session", "delivery_target", "suppress_if_contains", "model", "thinking"] v
     WebhookConfigFile
       <$> v .: "name"
       <*> v .:? "prompt"
       <*> v .:? "session"
-      <*> v .:? "delivery_targets"
+      <*> v .:? "delivery_target"
       <*> v .:? "suppress_if_contains"
       <*> v .:? "model"
       <*> v .:? "thinking"
