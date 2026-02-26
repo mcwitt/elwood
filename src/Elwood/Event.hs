@@ -16,8 +16,14 @@ module Elwood.Event
     handleEvent,
     handleTelegramMessage,
 
+    -- * Core Pipeline
+    DeliveryCallbacks (..),
+    handleEventCore,
+
     -- * Delivery
     deliverToTargets,
+    deliverTextOnly,
+    sendTypingToTargets,
 
     -- * Session ID Utilities
     sessionToConversationId,
@@ -109,11 +115,33 @@ data AppEnv = AppEnv
     pruneHorizons :: PruneHorizons
   }
 
+-- | Callbacks wired into the agent loop for delivery during a turn
+data DeliveryCallbacks = DeliveryCallbacks
+  { onText :: Maybe Claude.TextCallback,
+    onRateLimit :: Maybe Claude.RateLimitCallback,
+    onBeforeApiCall :: Maybe (IO ()),
+    onResponse :: Text -> IO ()
+  }
+
 -- | Handle any event through the agent pipeline
 --
 -- Returns Either error message or success response text
 handleEvent :: AppEnv -> Event -> IO (Either Text Text)
-handleEvent env event = do
+handleEvent env event = handleEventCore env event (eagerCallbacks env event)
+
+-- | Construct eager (immediate-delivery) callbacks from an event's delivery targets
+eagerCallbacks :: AppEnv -> Event -> DeliveryCallbacks
+eagerCallbacks env event =
+  DeliveryCallbacks
+    { onText = Just (mkTextCallback env event),
+      onRateLimit = Just (mkRateLimitCallback env event),
+      onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
+      onResponse = deliverResponse env event
+    }
+
+-- | Core event handler parameterised by delivery callbacks
+handleEventCore :: AppEnv -> Event -> DeliveryCallbacks -> IO (Either Text Text)
+handleEventCore env event callbacks = do
   let lgr = env.logger
       src = event.source
 
@@ -163,9 +191,9 @@ handleEvent env event = do
             maxIterations = env.maxIterations,
             metrics = env.metrics,
             source = metricsSource src,
-            onRateLimit = Just (mkRateLimitCallback env event),
-            onText = Just (mkTextCallback env event),
-            onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
+            onRateLimit = callbacks.onRateLimit,
+            onText = callbacks.onText,
+            onBeforeApiCall = callbacks.onBeforeApiCall,
             toolSearch = env.toolSearch,
             pruneHorizon = pruneHorizon
           }
@@ -185,7 +213,7 @@ handleEvent env event = do
         Just cid -> Claude.updateConversation env.conversations cid allMessages
 
       -- Deliver response
-      deliverResponse env event responseText
+      callbacks.onResponse responseText
 
       logInfo
         lgr
@@ -203,20 +231,10 @@ handleEvent env event = do
 deliverResponse :: AppEnv -> Event -> Text -> IO ()
 deliverResponse env event = deliverToTargets env event.delivery
 
--- | Deliver a message to the specified targets, then send queued attachments
-deliverToTargets :: AppEnv -> [DeliveryTarget] -> Text -> IO ()
-deliverToTargets env targets msg = do
+-- | Deliver text to the specified targets without draining the attachment queue
+deliverTextOnly :: AppEnv -> [DeliveryTarget] -> Text -> IO ()
+deliverTextOnly env targets msg =
   mapM_ deliver targets
-  -- Send queued attachments to Telegram targets (if any)
-  -- Only drain the queue when there are real Telegram targets; for LogOnly
-  -- the polling path in App.hs handles attachment delivery separately.
-  let chatIds = concatMap (targetChatIds env) targets
-  unless (null chatIds) $ do
-    attachments <- atomically $ do
-      atts <- readTVar env.attachmentQueue
-      writeTVar env.attachmentQueue []
-      pure atts
-    mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) attachments
   where
     deliver :: DeliveryTarget -> IO ()
     deliver target = case target of
@@ -228,6 +246,21 @@ deliverToTargets env targets msg = do
         mapM_ (\cid -> notifySafe env cid msg) env.notifyChatIds
       LogOnly ->
         logInfo env.logger "Event response (log only)" [("response", T.take 100 msg)]
+
+-- | Deliver a message to the specified targets, then send queued attachments
+deliverToTargets :: AppEnv -> [DeliveryTarget] -> Text -> IO ()
+deliverToTargets env targets msg = do
+  deliverTextOnly env targets msg
+  -- Send queued attachments to Telegram targets (if any)
+  -- Only drain the queue when there are real Telegram targets; for LogOnly
+  -- the polling path in App.hs handles attachment delivery separately.
+  let chatIds = concatMap (targetChatIds env) targets
+  unless (null chatIds) $ do
+    attachments <- atomically $ do
+      atts <- readTVar env.attachmentQueue
+      writeTVar env.attachmentQueue []
+      pure atts
+    mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) attachments
 
 -- | Resolve a delivery target to its Telegram chat IDs
 targetChatIds :: AppEnv -> DeliveryTarget -> [Int64]
@@ -298,10 +331,10 @@ mkRateLimitCallback env event attemptNum waitSecs = do
       LogOnly ->
         logInfo env.logger "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
 
--- | Create before-API-call callback to send typing indicators
-mkBeforeApiCallCallback :: AppEnv -> Event -> IO ()
-mkBeforeApiCallCallback env event =
-  mapM_ sendTyping event.delivery
+-- | Send typing indicator to a list of delivery targets
+sendTypingToTargets :: AppEnv -> [DeliveryTarget] -> IO ()
+sendTypingToTargets env =
+  mapM_ sendTyping
   where
     sendTyping :: DeliveryTarget -> IO ()
     sendTyping (TelegramDelivery s) =
@@ -311,6 +344,11 @@ mkBeforeApiCallCallback env event =
     sendTyping TelegramBroadcast =
       mapM_ (Telegram.sendChatAction env.telegram) env.notifyChatIds
     sendTyping LogOnly = pure ()
+
+-- | Create before-API-call callback to send typing indicators
+mkBeforeApiCallCallback :: AppEnv -> Event -> IO ()
+mkBeforeApiCallCallback env event =
+  sendTypingToTargets env event.delivery
 
 -- | Handle a Telegram message: commands, image fetching, and event dispatch.
 --
