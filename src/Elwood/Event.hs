@@ -231,8 +231,16 @@ handleEventCore env event callbacks = do
       logError lgr "Event handling failed" [("source", formatSource src), ("error", err)]
       pure (Left err)
 
+-- | Delay in microseconds between typing indicator and message delivery
+-- during buffered flush (500ms)
+flushPacingDelay :: Int
+flushPacingDelay = 500000
+
 -- | Buffered output item captured during an agent turn
-data BufferedItem = BufferedText Text | BufferedRateLimit Text
+data BufferedItem
+  = -- | Intermediate text with any attachments queued before it
+    BufferedText Text [Tools.Attachment]
+  | BufferedRateLimit Text
 
 -- | Result of a buffered event handler run
 data BufferedResult
@@ -258,7 +266,13 @@ handleEventBuffered env event targets = do
   bufRef <- newIORef ([] :: [BufferedItem])
   let callbacks =
         DeliveryCallbacks
-          { onText = Just (\t -> modifyIORef' bufRef (BufferedText t :)),
+          { onText = Just $ \t -> do
+              -- Drain any attachments queued since the last text callback
+              atts <- atomically $ do
+                a <- readTVar env.attachmentQueue
+                writeTVar env.attachmentQueue []
+                pure a
+              modifyIORef' bufRef (BufferedText t atts :),
             onRateLimit =
               Just
                 ( \n s -> do
@@ -281,18 +295,21 @@ handleEventBuffered env event targets = do
 -- the final response (including attachment drain).
 flushBuffer :: AppEnv -> [DeliveryTarget] -> [BufferedItem] -> Text -> IO ()
 flushBuffer env targets items finalResponse = do
-  mapM_ flushItem items
+  let chatIds = concatMap (targetChatIds env) targets
+  mapM_ (flushItem chatIds) items
   -- Final response: typing → delay → deliver with attachments
   sendTypingToTargets env targets
-  threadDelay 500000
+  threadDelay flushPacingDelay
   deliverToTargets env targets finalResponse
   where
-    flushItem :: BufferedItem -> IO ()
-    flushItem (BufferedText t) = do
+    flushItem :: [Int64] -> BufferedItem -> IO ()
+    flushItem chatIds (BufferedText t atts) = do
       sendTypingToTargets env targets
-      threadDelay 500000
+      threadDelay flushPacingDelay
       deliverTextOnly env targets t
-    flushItem (BufferedRateLimit m) = do
+      -- Deliver attachments that were queued before this text
+      mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) atts
+    flushItem _ (BufferedRateLimit m) = do
       deliverTextOnly env targets m
 
 -- | Drain the attachment queue, discarding all queued attachments

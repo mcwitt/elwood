@@ -320,7 +320,7 @@ let
       suppressIfContains = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Suppress notification if response exactly equals this string.";
+        description = "Suppress notification if response contains this string.";
         example = "HEARTBEAT_OK";
       };
 
@@ -376,7 +376,7 @@ let
       suppressIfContains = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Suppress notification if response exactly equals this string.";
+        description = "Suppress notification if response contains this string.";
         example = "HEARTBEAT_OK";
       };
 
