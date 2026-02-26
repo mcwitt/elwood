@@ -703,7 +703,7 @@ in
             Type = "simple";
             User = agentCfg.user;
             Group = agentCfg.group;
-            ExecStart = "${cfg.package}/bin/elwood";
+            ExecStart = lib.getExe cfg.package;
             Restart = "always";
             RestartSec = 10;
 
@@ -728,8 +728,8 @@ in
             ];
             RestrictNamespaces = true;
             LockPersonality = true;
-            # Note: MemoryDenyWriteExecute breaks Node.js JIT (used by MCP servers)
-            MemoryDenyWriteExecute = false;
+            # MemoryDenyWriteExecute breaks Node.js JIT (used by MCP servers)
+            MemoryDenyWriteExecute = agentCfg.mcpServers == { };
             RestrictRealtime = true;
             RestrictSUIDSGID = true;
             ReadWritePaths = lib.unique [
@@ -741,7 +741,7 @@ in
             SyslogIdentifier = "assistant-${name}";
           }
           // lib.optionalAttrs (defaultContentScript != null) {
-            ExecStartPre = "+${defaultContentScript}";
+            ExecStartPre = "${defaultContentScript}";
           };
         }
       ) enabledAgents)
