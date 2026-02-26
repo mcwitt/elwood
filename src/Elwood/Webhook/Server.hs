@@ -10,7 +10,6 @@ module Elwood.Webhook.Server
   )
 where
 
-import Control.Applicative ((<|>))
 import Control.Concurrent.STM (atomically, writeTVar)
 import Control.Exception (SomeException, catch)
 import Data.Aeson (Value (..), eitherDecode, encode)
@@ -80,8 +79,7 @@ webhookApp config env request respond = do
           respond $ jsonResponse status404 $ errorJson "Unknown webhook"
         Just webhookCfg -> do
           -- Verify authentication
-          let effectiveSecret = webhookCfg.secret <|> config.globalSecret
-          case effectiveSecret of
+          case config.secret of
             Just sec -> do
               let providedSecret = lookup webhookSecretHeader (requestHeaders request)
               if providedSecret == Just (TE.encodeUtf8 sec)

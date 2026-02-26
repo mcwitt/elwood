@@ -261,27 +261,26 @@ loadConfig path = do
   let workspaceDir_ = fromMaybe "/var/lib/assistant/workspace" configFile.workspaceDir
 
   -- Webhook secret: env var takes precedence over config file
-  let webhookGlobalSecret = webhookSecretEnv <|> (configFile.webhook >>= (.globalSecret))
+  let webhookSecret = webhookSecretEnv <|> (configFile.webhook >>= (.secret))
 
   let webhookCfg = case configFile.webhook of
         Nothing ->
           WebhookServerConfig
             { enabled = False,
               port = 8080,
-              globalSecret = webhookGlobalSecret,
+              secret = webhookSecret,
               webhooks = []
             }
         Just wscf ->
           WebhookServerConfig
             { enabled = fromMaybe False wscf.enabled,
               port = fromMaybe 8080 wscf.port,
-              globalSecret = webhookGlobalSecret,
+              secret = webhookSecret,
               webhooks = case wscf.endpoints of
                 Nothing -> []
                 Just eps ->
                   [ WebhookConfig
                       { name = ep.name,
-                        secret = ep.secret,
                         prompt = maybe [] (map resolvePromptInput) ep.prompt,
                         session = maybe Isolated Named ep.session,
                         deliveryTargets = case ep.deliveryTargets of

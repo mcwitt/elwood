@@ -108,10 +108,9 @@ mcp_servers:
 webhook:
   enabled: false                # default: false
   port: 8080                    # default: 8080
-  global_secret: "s3cret"        # required header X-Webhook-Secret (or set WEBHOOK_SECRET env var)
+  secret: "s3cret"               # required header X-Webhook-Secret (or set WEBHOOK_SECRET env var)
   endpoints:
     - name: deploy              # route: POST /webhook/deploy (required)
-      secret: "per-hook-key"    # per-endpoint secret override
       prompt:                   # prompt inputs (assembled and rendered with {{.field}} placeholders)
         - type: text
           content: "Deploy event: {{.repo}} {{.branch}}"
@@ -130,4 +129,4 @@ webhook:
 # Environment variables (not set in this file):
 #   TELEGRAM_BOT_TOKEN   - Telegram bot token (required)
 #   ANTHROPIC_API_KEY    - Anthropic API key (required)
-#   WEBHOOK_SECRET       - Webhook secret (optional, overrides global_secret above)
+#   WEBHOOK_SECRET       - Webhook secret (optional, overrides secret above)

@@ -95,7 +95,6 @@ webhookConfigTests =
         let config =
               WebhookConfig
                 { name = "test-hook",
-                  secret = Nothing,
                   prompt = [InlineText "Hello"],
                   session = Isolated,
                   deliveryTargets = [LogOnly],
@@ -106,25 +105,10 @@ webhookConfigTests =
         config.name @?= "test-hook"
         config.prompt @?= [InlineText "Hello"]
         config.session @?= Isolated,
-      testCase "can create config with secret" $ do
-        let config =
-              WebhookConfig
-                { name = "secure-hook",
-                  secret = Just "my-secret",
-                  prompt = [InlineText "Hello"],
-                  session = Named "session",
-                  deliveryTargets = [TelegramBroadcast],
-                  suppressIfContains = Nothing,
-                  model = Nothing,
-                  thinking = Nothing
-                }
-        config.secret @?= Just "my-secret"
-        config.session @?= Named "session",
       testCase "can have multiple delivery targets" $ do
         let config =
               WebhookConfig
                 { name = "multi-target",
-                  secret = Nothing,
                   prompt = [InlineText "Test"],
                   session = Isolated,
                   deliveryTargets = [TelegramBroadcast, TelegramDelivery 123, LogOnly],
@@ -137,7 +121,6 @@ webhookConfigTests =
         let config =
               WebhookConfig
                 { name = "heartbeat",
-                  secret = Nothing,
                   prompt = [InlineText "Check system health"],
                   session = Isolated,
                   deliveryTargets = [TelegramBroadcast],
@@ -150,7 +133,6 @@ webhookConfigTests =
         let config =
               WebhookConfig
                 { name = "empty-prompt",
-                  secret = Nothing,
                   prompt = [],
                   session = Isolated,
                   deliveryTargets = [LogOnly],
@@ -170,7 +152,7 @@ webhookServerConfigTests =
               WebhookServerConfig
                 { enabled = False,
                   port = 8080,
-                  globalSecret = Nothing,
+                  secret = Nothing,
                   webhooks = []
                 }
         config.enabled @?= False
@@ -179,7 +161,6 @@ webhookServerConfigTests =
         let webhook =
               WebhookConfig
                 { name = "hook1",
-                  secret = Nothing,
                   prompt = [InlineText "Test"],
                   session = Isolated,
                   deliveryTargets = [LogOnly],
@@ -191,19 +172,19 @@ webhookServerConfigTests =
               WebhookServerConfig
                 { enabled = True,
                   port = 9000,
-                  globalSecret = Just "global-secret",
+                  secret = Just "global-secret",
                   webhooks = [webhook]
                 }
         config.enabled @?= True
         config.port @?= 9000
-        config.globalSecret @?= Just "global-secret"
+        config.secret @?= Just "global-secret"
         length config.webhooks @?= 1,
       testCase "default port is 8080" $ do
         let config =
               WebhookServerConfig
                 { enabled = True,
                   port = 8080,
-                  globalSecret = Nothing,
+                  secret = Nothing,
                   webhooks = []
                 }
         config.port @?= 8080

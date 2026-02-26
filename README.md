@@ -84,7 +84,7 @@ permissions:
 webhook:
   enabled: true
   port: 8080
-  global_secret: "your-webhook-secret"
+  secret: "your-webhook-secret"
   endpoints:
     - name: doorbell
       prompt:

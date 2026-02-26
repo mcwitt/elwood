@@ -27,8 +27,6 @@ import GHC.Generics (Generic)
 data WebhookConfig = WebhookConfig
   { -- | Route name: /webhook/<name>
     name :: Text,
-    -- | Required secret (header: X-Webhook-Secret)
-    secret :: Maybe Text,
     -- | Prompt inputs (assembled at request time)
     prompt :: [PromptInput],
     -- | Session mode: isolated or named:<id>
@@ -50,8 +48,8 @@ data WebhookServerConfig = WebhookServerConfig
     enabled :: Bool,
     -- | Port to listen on (default: 8080)
     port :: Int,
-    -- | Global secret (fallback if webhook has no secret)
-    globalSecret :: Maybe Text,
+    -- | Webhook secret (header: X-Webhook-Secret); per-endpoint secret takes precedence
+    secret :: Maybe Text,
     -- | Configured webhook endpoints
     webhooks :: [WebhookConfig]
   }
@@ -61,7 +59,7 @@ data WebhookServerConfig = WebhookServerConfig
 data WebhookServerConfigFile = WebhookServerConfigFile
   { enabled :: Maybe Bool,
     port :: Maybe Int,
-    globalSecret :: Maybe Text,
+    secret :: Maybe Text,
     endpoints :: Maybe [WebhookConfigFile]
   }
   deriving stock (Show, Generic)
@@ -69,7 +67,6 @@ data WebhookServerConfigFile = WebhookServerConfigFile
 -- | YAML file configuration for a webhook endpoint
 data WebhookConfigFile = WebhookConfigFile
   { name :: Text,
-    secret :: Maybe Text,
     prompt :: Maybe [PromptInputFile],
     session :: Maybe Text,
     deliveryTargets :: Maybe [DeliveryTargetFile],
@@ -102,19 +99,18 @@ instance FromJSON DeliveryTargetFile where
 
 instance FromJSON WebhookServerConfigFile where
   parseJSON = withObject "WebhookServerConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookServerConfigFile" ["enabled", "port", "global_secret", "endpoints"] v
+    rejectUnknownKeys "WebhookServerConfigFile" ["enabled", "port", "secret", "endpoints"] v
     WebhookServerConfigFile
       <$> v .:? "enabled"
       <*> v .:? "port"
-      <*> v .:? "global_secret"
+      <*> v .:? "secret"
       <*> v .:? "endpoints"
 
 instance FromJSON WebhookConfigFile where
   parseJSON = withObject "WebhookConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "prompt", "session", "delivery_targets", "suppress_if_contains", "model", "thinking"] v
+    rejectUnknownKeys "WebhookConfigFile" ["name", "prompt", "session", "delivery_targets", "suppress_if_contains", "model", "thinking"] v
     WebhookConfigFile
       <$> v .: "name"
-      <*> v .:? "secret"
       <*> v .:? "prompt"
       <*> v .:? "session"
       <*> v .:? "delivery_targets"
