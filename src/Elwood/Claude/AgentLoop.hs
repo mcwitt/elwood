@@ -34,7 +34,7 @@ import Elwood.Claude.Types
   )
 import Elwood.Config (ThinkingEffort (..), ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
-import Elwood.Metrics (MetricsStore, recordApiResponse, recordToolCall)
+import Elwood.Metrics (MetricsStore, recordApiResponse, recordInputBreakdown, recordToolCall)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
 import Elwood.Tools.Registry
@@ -133,6 +133,10 @@ agentLoop cfg msgs iteration
 
       -- Always send all tool schemas (tool search handles filtering server-side)
       let schemas = toolSchemas reg
+          prunedMsgs = pruneToolResults cfg.pruneHorizon msgs
+
+      -- Record estimated input token breakdown
+      recordInputBreakdown cfg.metrics mdl cfg.source cfg.systemPrompt cfg.toolSearch prunedMsgs schemas
 
       -- Build and send request
       let request =
@@ -140,7 +144,7 @@ agentLoop cfg msgs iteration
               { model = mdl,
                 maxTokens = thinkingMaxTokens thk,
                 system = cfg.systemPrompt,
-                messages = pruneToolResults cfg.pruneHorizon msgs,
+                messages = prunedMsgs,
                 tools = schemas,
                 thinking = thinkingToConfig thk,
                 cacheControl = True,

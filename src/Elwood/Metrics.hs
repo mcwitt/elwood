@@ -10,6 +10,13 @@ module Elwood.Metrics
     recordToolCall,
     recordCompaction,
     setMCPServerCount,
+    recordEstimatedInputTokens,
+    recordInputBreakdown,
+
+    -- * Estimation
+    InputTokenType (..),
+    estimateTextTokens,
+    estimateJsonTokens,
 
     -- * Source Labels
     metricsSource,
@@ -19,7 +26,9 @@ module Elwood.Metrics
   )
 where
 
-import Data.Aeson (encode)
+import Control.Monad (when)
+import Data.Aeson (Value (..), encode, withObject, (.:))
+import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Builder qualified as B
 import Data.ByteString.Lazy qualified as LBS
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
@@ -27,6 +36,9 @@ import Data.Int (Int64)
 import Data.List (find, nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -38,6 +50,27 @@ import Elwood.Tools.Registry qualified as Tools
 import Elwood.Tools.Types qualified as Tools
 import Text.Printf (printf)
 
+-- | Content type for estimated input token breakdown
+data InputTokenType
+  = ItSystemPrompt
+  | ItUserText
+  | ItAssistantText
+  | ItThinking
+  | ItToolSchemas
+  | ItToolUse
+  | ItToolResult
+  deriving stock (Eq, Ord, Show)
+
+-- | Convert an InputTokenType to its Prometheus label value
+inputTokenTypeLabel :: InputTokenType -> Text
+inputTokenTypeLabel ItSystemPrompt = "system_prompt"
+inputTokenTypeLabel ItUserText = "user_text"
+inputTokenTypeLabel ItAssistantText = "assistant_text"
+inputTokenTypeLabel ItThinking = "thinking"
+inputTokenTypeLabel ItToolSchemas = "tool_schemas"
+inputTokenTypeLabel ItToolUse = "tool_use"
+inputTokenTypeLabel ItToolResult = "tool_result"
+
 -- | Key for a counter metric
 data CounterKey
   = -- | Token counter: metric_suffix, model, source
@@ -48,6 +81,8 @@ data CounterKey
     CkToolCalls Text
   | -- | Compactions (no labels)
     CkCompactions
+  | -- | Estimated input tokens: model, source, type, tool (empty when not applicable)
+    CkEstimatedInputTokens Text Text InputTokenType Text
   deriving stock (Eq, Ord, Show)
 
 -- | Thread-safe metrics store
@@ -91,6 +126,110 @@ recordCompaction store =
 setMCPServerCount :: MetricsStore -> Int -> IO ()
 setMCPServerCount store n = writeIORef store.mcpServerCount n
 
+-- | Estimate tokens from text (chars / 4)
+estimateTextTokens :: Text -> Int64
+estimateTextTokens t = fromIntegral (T.length t) `div` 4
+
+-- | Estimate tokens from a JSON value (encoded bytes / 4)
+estimateJsonTokens :: Value -> Int64
+estimateJsonTokens v = LBS.length (encode v) `div` 4
+
+-- | Record estimated input tokens for a content type
+recordEstimatedInputTokens :: MetricsStore -> Text -> Text -> InputTokenType -> Text -> Int64 -> IO ()
+recordEstimatedInputTokens store model source typ tool =
+  incrementCounter store (CkEstimatedInputTokens model source typ tool)
+
+-- | Estimate tokens for a single tool schema (name + description + input schema)
+estimateSchemaTokens :: Claude.ToolSchema -> Int64
+estimateSchemaTokens s =
+  let Claude.ToolName tn = s.name
+   in estimateTextTokens tn + estimateTextTokens s.description + estimateJsonTokens s.inputSchema
+
+-- | Extract tool names from tool_reference objects in a tool search result.
+-- Returns an empty list if the JSON structure doesn't match the expected
+-- @{"tool_references": [{"tool_name": "..."}]}@ format.
+extractToolReferences :: Value -> [Claude.ToolName]
+extractToolReferences v = fromMaybe [] $ parseMaybe parser v
+  where
+    parser = withObject "search_result" $ \o -> do
+      refs <- o .: "tool_references"
+      mapM (withObject "tool_ref" (\r -> Claude.ToolName <$> r .: "tool_name")) refs
+
+-- | Record estimated input token breakdown for an API call.
+--
+-- Iterates over the system prompt, tool schemas, and all message content blocks
+-- to estimate tokens by content type. Builds a ToolUseId→ToolName map from
+-- assistant messages so tool_result blocks can be attributed to the correct tool.
+--
+-- When tool search is enabled ('Just' neverDefer set), only non-deferred tools
+-- are counted upfront. Deferred tools are counted when their 'tool_reference'
+-- blocks appear in the conversation (the server expands these into full
+-- definitions each turn). Non-deferred tools appearing in search results are
+-- skipped to avoid double-counting.
+recordInputBreakdown :: MetricsStore -> Text -> Text -> Maybe Text -> Maybe (Set Claude.ToolName) -> [Claude.ClaudeMessage] -> [Claude.ToolSchema] -> IO ()
+recordInputBreakdown store model source systemPrompt toolSearch msgs schemas = do
+  -- System prompt
+  case systemPrompt of
+    Just sp -> record ItSystemPrompt "" (estimateTextTokens sp)
+    Nothing -> pure ()
+
+  -- Tool schemas: only count non-deferred tools upfront
+  let baseSchemas = filter (\s -> Set.member s.name nonDeferred) schemas
+      schemaTokens = sum (map estimateSchemaTokens baseSchemas)
+  when (schemaTokens > 0) $ record ItToolSchemas "" schemaTokens
+
+  -- Build ToolUseId → ToolName map from all messages
+  let toolNameMap =
+        Map.fromList
+          [ (tid, tn)
+          | Claude.ClaudeMessage Claude.Assistant blocks <- msgs,
+            Claude.ToolUseBlock tid tn _ <- blocks
+          ]
+
+  -- Schema map for looking up deferred tools referenced in search results
+  let schemaMap = Map.fromList [(s.name, s) | s <- schemas]
+
+  -- Content blocks
+  mapM_ (recordMessageBlocks toolNameMap schemaMap) msgs
+  where
+    record = recordEstimatedInputTokens store model source
+
+    roleTokenType Claude.User = ItUserText
+    roleTokenType Claude.Assistant = ItAssistantText
+
+    recordMessageBlocks toolNameMap schemaMap (Claude.ClaudeMessage role blocks) =
+      mapM_ (recordBlock role toolNameMap schemaMap) blocks
+
+    recordBlock role _ _ (Claude.TextBlock t) =
+      record (roleTokenType role) "" (estimateTextTokens t)
+    recordBlock _ _ _ (Claude.ThinkingBlock t _sig) =
+      record ItThinking "" (estimateTextTokens t)
+    recordBlock _ _ _ (Claude.RedactedThinkingBlock d) =
+      record ItThinking "" (estimateTextTokens d)
+    recordBlock _ _ _ (Claude.ToolUseBlock _ (Claude.ToolName tn) input) =
+      record ItToolUse tn (estimateJsonTokens input)
+    recordBlock _ toolNameMap _ (Claude.ToolResultBlock tid content_ _isErr) =
+      let Claude.ToolName tn = Map.findWithDefault (Claude.ToolName "unknown") tid toolNameMap
+       in record ItToolResult tn (estimateTextTokens content_)
+    recordBlock _ _ schemaMap (Claude.ToolSearchResultBlock _ searchResult) =
+      let refs = extractToolReferences searchResult
+       in mapM_ (recordReferencedSchema schemaMap) refs
+    -- ImageBlock, ServerToolUseBlock: not estimated (images are base64-encoded
+    -- data; server tool use is handled via ToolSearchResultBlock)
+    recordBlock _ _ _ _ = pure ()
+
+    -- Record schema tokens for a tool_reference, skipping tools already
+    -- counted as non-deferred to avoid double-counting.
+    recordReferencedSchema schemaMap tn
+      | Set.member tn nonDeferred = pure ()
+      | otherwise = case Map.lookup tn schemaMap of
+          Just s -> record ItToolSchemas "" (estimateSchemaTokens s)
+          Nothing -> pure ()
+
+    nonDeferred = case toolSearch of
+      Nothing -> Set.fromList (map (.name) schemas)
+      Just neverDefer -> neverDefer
+
 -- | Normalize an EventSource to a metrics label
 metricsSource :: EventSource -> Text
 metricsSource (TelegramSource _) = "telegram"
@@ -121,6 +260,7 @@ renderCounters cs =
     <> renderTokenCounters "output" cs
     <> renderTokenCounters "cache_read" cs
     <> renderTokenCounters "cache_creation" cs
+    <> renderEstimatedInputTokenCounters cs
     <> renderCostMetric cs
     <> renderApiRequestCounters cs
     <> renderToolCallCounters cs
@@ -140,6 +280,28 @@ renderTokenCounters suffix cs =
               [ metricLine metricName [("model", m), ("source", source)] v
               | (m, source, v) <- matching
               ]
+
+-- | Render estimated input token counters by content type
+renderEstimatedInputTokenCounters :: Map CounterKey Int64 -> B.Builder
+renderEstimatedInputTokenCounters cs =
+  let metricName = "elwood_estimated_input_tokens_total"
+      matching =
+        [ (m, source, inputTokenTypeLabel typ, tool, v)
+        | (CkEstimatedInputTokens m source typ tool, v) <- Map.toList cs
+        ]
+   in if null matching
+        then mempty
+        else
+          helpLine metricName "Estimated input tokens by content type"
+            <> typeLine metricName "counter"
+            <> mconcat
+              [ metricLine metricName (labels m source typ tool) v
+              | (m, source, typ, tool, v) <- matching
+              ]
+  where
+    labels m source typ tool
+      | T.null tool = [("model", m), ("source", source), ("type", typ)]
+      | otherwise = [("model", m), ("source", source), ("type", typ), ("tool", tool)]
 
 -- | Render API request counters
 renderApiRequestCounters :: Map CounterKey Int64 -> B.Builder
