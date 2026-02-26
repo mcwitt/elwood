@@ -53,7 +53,7 @@ queueAttachmentTests =
         att.path @?= filePath
         att.type_ @?= AttachAuto
         att.caption @?= (Nothing :: Maybe Text),
-      testCase "rejects missing file" $ withSystemTempDirectory "att-test" $ \tmpDir -> do
+      testCase "rejects missing file" $ withSystemTempDirectory "att-test" $ \_tmpDir -> do
         queue <- newTVarIO []
         logger <- newLogger Error
         let tool = mkQueueAttachmentTool logger queue

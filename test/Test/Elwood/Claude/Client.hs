@@ -3,7 +3,7 @@ module Test.Elwood.Claude.Client
   )
 where
 
-import Data.IORef (IORef, modifyIORef, newIORef, readIORef, writeIORef)
+import Data.IORef (modifyIORef, newIORef, readIORef, writeIORef)
 import Elwood.Claude.Client
   ( RetryConfig (..),
     calculateRetryDelay,
@@ -109,7 +109,7 @@ retryTests =
       result <- retryWithBackoff defaultRetryConfig action noDelay
 
       attempts <- readIORef attemptsRef
-      assertEqual "should succeed" (Right "success") result
+      assertEqual "should succeed" (Right ("success" :: String)) result
       assertEqual "should only attempt once" 1 attempts,
     testCase "retries on rate limit then succeeds" $ do
       attemptsRef <- newIORef (0 :: Int)
@@ -118,13 +118,13 @@ retryTests =
             writeIORef attemptsRef (n + 1)
             if n < 2
               then pure (Left $ ClaudeRateLimited (Just 1))
-              else pure (Right "success")
+              else pure (Right ("success" :: String))
           noDelay _ = pure ()
 
       result <- retryWithBackoff defaultRetryConfig action noDelay
 
       attempts <- readIORef attemptsRef
-      assertEqual "should succeed" (Right "success") result
+      assertEqual "should succeed" (Right ("success" :: String)) result
       assertEqual "should attempt 3 times" 3 attempts,
     testCase "stops after max retries" $ do
       attemptsRef <- newIORef (0 :: Int)
@@ -162,7 +162,7 @@ retryTests =
                 onRetry = Just $ \attempt secs _err ->
                   modifyIORef callbackRef ((attempt, secs) :)
               }
-          action = pure (Left $ ClaudeRateLimited (Just 30))
+          action = pure (Left $ ClaudeRateLimited (Just 30) :: Either ClaudeError String)
           noDelay _ = pure ()
 
       _ <- retryWithBackoff config action noDelay
@@ -178,7 +178,7 @@ retryTests =
             writeIORef attemptsRef (n + 1)
             if n < 2
               then pure (Left $ ClaudeRateLimited (Just 15))
-              else pure (Right "success")
+              else pure (Right ("success" :: String))
           trackDelay s = modifyIORef delaysRef (s :)
 
       _ <- retryWithBackoff defaultRetryConfig action trackDelay
