@@ -36,57 +36,46 @@ let
           inherit (pi) content;
         };
 
+      # Serialize common endpoint fields to a YAML-ready attrset
+      mkEndpointYaml =
+        epName: epCfg:
+        {
+          name = epName;
+          prompt = map mkPromptInputYaml epCfg.prompt;
+          session = epCfg.session;
+          deliver = map mkDeliverTarget epCfg.deliver;
+        }
+        // lib.optionalAttrs (epCfg.suppressIfContains != null) {
+          suppressIfContains = epCfg.suppressIfContains;
+        }
+        // lib.optionalAttrs (epCfg.model != null) {
+          model = epCfg.model;
+        }
+        // lib.optionalAttrs (epCfg.thinking != null) {
+          thinking = mkThinkingConfig epCfg.thinking;
+        };
+
       allWebhookEndpoints =
         let
           # User-defined endpoints
           userEndpoints = lib.mapAttrsToList (
             epName: epCfg:
-            {
-              name = epName;
-              prompt = map mkPromptInputYaml epCfg.prompt;
-              session = epCfg.session;
-              deliver = map mkDeliverTarget epCfg.deliver;
-            }
+            mkEndpointYaml epName epCfg
             // lib.optionalAttrs (epCfg.secret != null) {
               secret = epCfg.secret;
-            }
-            // lib.optionalAttrs (epCfg.suppressIfContains != null) {
-              suppressIfContains = epCfg.suppressIfContains;
-            }
-            // lib.optionalAttrs (epCfg.model != null) {
-              model = epCfg.model;
-            }
-            // lib.optionalAttrs (epCfg.thinking != null) {
-              thinking = mkThinkingConfig epCfg.thinking;
             }
           ) agentCfg.webhook.endpoints;
 
           # Auto-generated cron job endpoints
           cronEndpoints = lib.mapAttrsToList (
             cronName: cronCfg:
-            {
-              name = "cron-${cronName}";
-              prompt = map mkPromptInputYaml cronCfg.prompt;
-              session = cronCfg.session;
-              deliver = map mkDeliverTarget cronCfg.deliver;
-            }
+            mkEndpointYaml "cron-${cronName}" cronCfg
             // lib.optionalAttrs (cronCfg.webhookSecret != null) {
               secret = cronCfg.webhookSecret;
-            }
-            // lib.optionalAttrs (cronCfg.suppressIfContains != null) {
-              suppressIfContains = cronCfg.suppressIfContains;
-            }
-            // lib.optionalAttrs (cronCfg.model != null) {
-              model = cronCfg.model;
-            }
-            // lib.optionalAttrs (cronCfg.thinking != null) {
-              thinking = mkThinkingConfig cronCfg.thinking;
             }
           ) agentCfg.cronJobs;
         in
         userEndpoints ++ cronEndpoints;
-
-      webhookEndpoints = allWebhookEndpoints;
 
       # Build MCP servers
       mcpServersList = lib.mapAttrs (
@@ -142,8 +131,8 @@ let
         // lib.optionalAttrs (agentCfg.webhook.globalSecret != null) {
           globalSecret = agentCfg.webhook.globalSecret;
         }
-        // lib.optionalAttrs (webhookEndpoints != [ ]) {
-          endpoints = webhookEndpoints;
+        // lib.optionalAttrs (allWebhookEndpoints != [ ]) {
+          endpoints = allWebhookEndpoints;
         };
       };
     in
@@ -291,75 +280,60 @@ let
     };
   };
 
+  # Options shared between webhook endpoints and cron jobs
+  commonEndpointOptions = {
+    prompt = lib.mkOption {
+      type = lib.types.listOf promptInputModule;
+      description = "Prompt inputs for this endpoint.";
+    };
+
+    session = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Session name for persistent conversation. Null means isolated (no history).";
+    };
+
+    deliver = lib.mkOption {
+      type = lib.types.listOf deliverTargetModule;
+      default = [ { type = "telegram"; } ];
+      description = "Delivery targets.";
+    };
+
+    suppressIfContains = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Suppress notification if response contains this string.";
+      example = "HEARTBEAT_OK";
+    };
+
+    model = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Model override for this endpoint. Null means use the agent's global model.";
+      example = "claude-haiku-4-20250414";
+    };
+
+    thinking = lib.mkOption {
+      type = lib.types.nullOr thinkingModule;
+      default = null;
+      description = "Thinking override for this endpoint. Null means use the agent's global thinking.";
+    };
+  };
+
   # Submodule for webhook endpoints
   webhookEndpointModule = lib.types.submodule {
-    options = {
+    options = commonEndpointOptions // {
       secret = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Secret for this endpoint (overrides global secret).";
-      };
-
-      prompt = lib.mkOption {
-        type = lib.types.listOf promptInputModule;
-        description = "Prompt inputs for this endpoint. Text inputs support {{.field}} template placeholders.";
-      };
-
-      session = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Session name for persistent conversation. Null means isolated (no history).";
-      };
-
-      deliver = lib.mkOption {
-        type = lib.types.listOf deliverTargetModule;
-        default = [ { type = "telegram"; } ];
-        description = "Delivery targets.";
-      };
-
-      suppressIfContains = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Suppress notification if response contains this string.";
-        example = "HEARTBEAT_OK";
-      };
-
-      model = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Model override for this endpoint. Null means use the agent's global model.";
-        example = "claude-haiku-4-20250414";
-      };
-
-      thinking = lib.mkOption {
-        type = lib.types.nullOr thinkingModule;
-        default = null;
-        description = "Thinking override for this endpoint. Null means use the agent's global thinking.";
       };
     };
   };
 
   # Submodule for cron jobs (always use systemd timers)
   cronJobModule = lib.types.submodule {
-    options = {
-      prompt = lib.mkOption {
-        type = lib.types.listOf promptInputModule;
-        description = "Prompt inputs for this cron job.";
-      };
-
-      session = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Session name for persistent conversation. Null means isolated (no history). Use a Telegram chat ID to share conversation with that chat.";
-        example = "123456789";
-      };
-
-      deliver = lib.mkOption {
-        type = lib.types.listOf deliverTargetModule;
-        default = [ { type = "telegram"; } ];
-        description = "Delivery targets.";
-      };
-
+    options = commonEndpointOptions // {
       schedule = lib.mkOption {
         type = lib.types.str;
         default = "hourly";
@@ -371,26 +345,6 @@ let
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Secret for the auto-generated webhook endpoint. Falls back to global webhook secret.";
-      };
-
-      suppressIfContains = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Suppress notification if response contains this string.";
-        example = "HEARTBEAT_OK";
-      };
-
-      model = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Model override for this cron job. Null means use the agent's global model.";
-        example = "claude-haiku-4-20250414";
-      };
-
-      thinking = lib.mkOption {
-        type = lib.types.nullOr thinkingModule;
-        default = null;
-        description = "Thinking override for this cron job. Null means use the agent's global thinking.";
       };
     };
   };
