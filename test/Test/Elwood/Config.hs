@@ -83,9 +83,9 @@ thinkingLevelTests =
         parseThinkingLevel (object ["type" .= ("adaptive" :: String)])
           @?= ThinkingAdaptive EffortMedium,
       testCase "parseThinkingLevel parses fixed object" $ do
-        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budgetTokens" .= (4096 :: Int)])
+        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budget_tokens" .= (4096 :: Int)])
           @?= ThinkingBudget 4096
-        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budgetTokens" .= (1024 :: Int)])
+        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budget_tokens" .= (1024 :: Int)])
           @?= ThinkingBudget 1024,
       testCase "parseThinkingLevel parses off object" $ do
         parseThinkingLevel (object ["type" .= ("off" :: String)])
@@ -95,7 +95,7 @@ thinkingLevelTests =
         parseThinkingLevel (object ["type" .= ("fixed" :: String)])
           @?= ThinkingOff
         -- Zero budgetTokens
-        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budgetTokens" .= (0 :: Int)])
+        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budget_tokens" .= (0 :: Int)])
           @?= ThinkingOff
     ]
 

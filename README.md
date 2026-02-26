@@ -53,38 +53,38 @@ cabal run elwood
 Create a `config.yaml` file (see [`config.yaml.example`](config.yaml.example) for all options):
 
 ```yaml
-stateDir: /var/lib/assistant
-workspaceDir: /var/lib/assistant/workspace
+state_dir: /var/lib/assistant
+workspace_dir: /var/lib/assistant/workspace
 
-allowedChatIds:
+allowed_chat_ids:
   - 123456789
 
-systemPrompt:
-  - type: workspaceFile
+system_prompt:
+  - type: workspace_file
     path: SOUL.md
 
 model: claude-sonnet-4-20250514
-thinking: off  # off | {type: adaptive, effort: medium} | {type: fixed, budgetTokens: 4096}
+thinking: off  # off | {type: adaptive, effort: medium} | {type: fixed, budget_tokens: 4096}
 
 compaction:
-  tokenThreshold: 50000
+  token_threshold: 50000
   model: claude-3-5-haiku-20241022
 
 permissions:
-  defaultPolicy: allow  # allow | ask | deny
-  approvalTimeoutSeconds: 120
-  toolPolicies:
+  default_policy: allow  # allow | ask | deny
+  approval_timeout_seconds: 120
+  tool_policies:
     run_command: ask  # Telegram prompts for approval; webhooks deny (use "allow" for webhook-safe tools)
-  dangerousPatterns:
+  dangerous_patterns:
     - "\\brm\\b"
     - "\\bsudo\\b"
-  safePatterns:
+  safe_patterns:
     - "^rm -i\\b"
 
 webhook:
   enabled: true
   port: 8080
-  globalSecret: "your-webhook-secret"
+  global_secret: "your-webhook-secret"
   endpoints:
     - name: doorbell
       prompt:
@@ -93,11 +93,11 @@ webhook:
             Motion detected at front door at {{.timestamp}}.
             Please describe what you see.
       delivery_targets:
-        - type: telegram
+        - type: telegram_broadcast
 
 # NOTE: npx works for local dev but not in NixOS sandboxed services.
 # See the NixOS Deployment section for nix-packaged MCP servers.
-mcpServers:
+mcp_servers:
   filesystem:
     command: npx
     args:
@@ -116,9 +116,9 @@ export WEBHOOK_SECRET="your-webhook-secret"   # optional, overrides config file
 
 ## Workspace Files
 
-The system prompt is assembled from a configurable list of inputs. Each input is either a `workspaceFile` (read from `workspaceDir`) or inline `text`. When the `systemPrompt` key is omitted, it defaults to `[{type: workspaceFile, path: SOUL.md}]`.
+The system prompt is assembled from a configurable list of inputs. Each input is either a `workspace_file` (read from `workspace_dir`) or inline `text`. When the `system_prompt` key is omitted, it defaults to `[{type: workspace_file, path: SOUL.md}]`.
 
-Place workspace files in your `workspaceDir` (e.g. `SOUL.md` for personality and behavioral guidelines).
+Place workspace files in your `workspace_dir` (e.g. `SOUL.md` for personality and behavioral guidelines).
 
 Webhook and cron job prompts use the same input format. Webhook text inputs support `{{.field}}` template placeholders for dynamic content from the JSON payload.
 
@@ -144,7 +144,7 @@ Add the flake to your NixOS configuration:
 
             systemPrompt = [
               {
-                type = "workspaceFile";
+                type = "workspace_file";
                 path = "SOUL.md";
                 defaultContent = ''You are Elwood, a personal AI assistant'';
               }
@@ -160,7 +160,7 @@ Add the flake to your NixOS configuration:
               port = 8080;
               endpoints."doorbell" = {
                 prompt = [ { type = "text"; content = "Motion detected at {{.timestamp}}"; } ];
-                deliveryTargets = [ { type = "telegram"; } ];
+                deliveryTargets = [ { type = "telegram_broadcast"; } ];
               };
             };
 
@@ -176,7 +176,7 @@ Add the flake to your NixOS configuration:
             cronJobs.daily-summary = {
               prompt = [ { type = "text"; content = "Generate my daily summary"; } ];
               schedule = "*-*-* 08:00";
-              deliver = [ { type = "telegram"; } ];  # broadcast (default)
+              deliveryTargets = [ { type = "telegram_broadcast"; } ];  # broadcast (default)
               # session = null (default); each run is isolated
             };
 

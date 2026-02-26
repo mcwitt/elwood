@@ -48,7 +48,7 @@ parseThinkingLevel (Object obj) = case lookupText "type" obj of
     Just "medium" -> ThinkingAdaptive EffortMedium
     Just "high" -> ThinkingAdaptive EffortHigh
     _ -> ThinkingAdaptive EffortMedium -- default effort
-  Just "fixed" -> case KM.lookup (Key.fromText "budgetTokens") obj of
+  Just "fixed" -> case KM.lookup (Key.fromText "budget_tokens") obj of
     Just (Number n) | n > 0 -> ThinkingBudget (round n)
     _ -> ThinkingOff
   Just "off" -> ThinkingOff

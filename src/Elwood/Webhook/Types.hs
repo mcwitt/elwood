@@ -86,31 +86,37 @@ data DeliveryTargetFile
 
 instance FromJSON DeliveryTargetFile where
   parseJSON = withObject "DeliveryTargetFile" $ \v -> do
-    rejectUnknownKeys "DeliveryTargetFile" ["type", "session"] v
     t <- v .: "type" :: Parser Text
     case T.toLower t of
-      "telegram" -> DeliveryTargetFileTelegram <$> v .:? "session"
-      "log" -> pure DeliveryTargetFileLog
+      "telegram" -> do
+        rejectUnknownKeys "DeliveryTargetFile" ["type", "session"] v
+        DeliveryTargetFileTelegram <$> v .: "session"
+      "telegram_broadcast" -> do
+        rejectUnknownKeys "DeliveryTargetFile" ["type"] v
+        pure (DeliveryTargetFileTelegram Nothing)
+      "log_only" -> do
+        rejectUnknownKeys "DeliveryTargetFile" ["type"] v
+        pure DeliveryTargetFileLog
       other -> fail $ "Unknown delivery target type: " <> T.unpack other
 
 instance FromJSON WebhookServerConfigFile where
   parseJSON = withObject "WebhookServerConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookServerConfigFile" ["enabled", "port", "globalSecret", "endpoints"] v
+    rejectUnknownKeys "WebhookServerConfigFile" ["enabled", "port", "global_secret", "endpoints"] v
     WebhookServerConfigFile
       <$> v .:? "enabled"
       <*> v .:? "port"
-      <*> v .:? "globalSecret"
+      <*> v .:? "global_secret"
       <*> v .:? "endpoints"
 
 instance FromJSON WebhookConfigFile where
   parseJSON = withObject "WebhookConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "prompt", "session", "delivery_targets", "suppressIfContains", "model", "thinking"] v
+    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "prompt", "session", "delivery_targets", "suppress_if_contains", "model", "thinking"] v
     WebhookConfigFile
       <$> v .: "name"
       <*> v .:? "secret"
       <*> v .:? "prompt"
       <*> v .:? "session"
       <*> v .:? "delivery_targets"
-      <*> v .:? "suppressIfContains"
+      <*> v .:? "suppress_if_contains"
       <*> v .:? "model"
       <*> v .:? "thinking"

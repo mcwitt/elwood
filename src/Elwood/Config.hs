@@ -150,46 +150,46 @@ data MCPServerConfigFile = MCPServerConfigFile
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["stateDir", "workspaceDir", "allowedChatIds", "model", "permissions", "compaction", "mcpServers", "webhook", "thinking", "maxIterations", "toolSearch", "dynamicToolLoading", "systemPrompt"] v
+    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "allowed_chat_ids", "model", "permissions", "compaction", "mcp_servers", "webhook", "thinking", "max_iterations", "tool_search", "dynamic_tool_loading", "system_prompt"] v
     ConfigFile
-      <$> v .:? "stateDir"
-      <*> v .:? "workspaceDir"
-      <*> v .:? "allowedChatIds"
+      <$> v .:? "state_dir"
+      <*> v .:? "workspace_dir"
+      <*> v .:? "allowed_chat_ids"
       <*> v .:? "model"
       <*> v .:? "permissions"
       <*> v .:? "compaction"
-      <*> v .:? "mcpServers"
+      <*> v .:? "mcp_servers"
       <*> v .:? "webhook"
       <*> v .:? "thinking"
-      <*> v .:? "maxIterations"
-      <*> (v .:? "toolSearch" <|> v .:? "dynamicToolLoading")
-      <*> v .:? "systemPrompt"
+      <*> v .:? "max_iterations"
+      <*> (v .:? "tool_search" <|> v .:? "dynamic_tool_loading")
+      <*> v .:? "system_prompt"
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v -> do
-    rejectUnknownKeys "PermissionConfigFile" ["safePatterns", "dangerousPatterns", "toolPolicies", "defaultPolicy", "approvalTimeoutSeconds"] v
+    rejectUnknownKeys "PermissionConfigFile" ["safe_patterns", "dangerous_patterns", "tool_policies", "default_policy", "approval_timeout_seconds"] v
     PermissionConfigFile
-      <$> v .:? "safePatterns"
-      <*> v .:? "dangerousPatterns"
-      <*> v .:? "toolPolicies"
-      <*> v .:? "defaultPolicy"
-      <*> v .:? "approvalTimeoutSeconds"
+      <$> v .:? "safe_patterns"
+      <*> v .:? "dangerous_patterns"
+      <*> v .:? "tool_policies"
+      <*> v .:? "default_policy"
+      <*> v .:? "approval_timeout_seconds"
 
 instance FromJSON CompactionConfigFile where
   parseJSON = withObject "CompactionConfigFile" $ \v -> do
-    rejectUnknownKeys "CompactionConfigFile" ["tokenThreshold", "model"] v
+    rejectUnknownKeys "CompactionConfigFile" ["token_threshold", "model"] v
     CompactionConfigFile
-      <$> v .:? "tokenThreshold"
+      <$> v .:? "token_threshold"
       <*> v .:? "model"
 
 instance FromJSON MCPServerConfigFile where
   parseJSON = withObject "MCPServerConfigFile" $ \v -> do
-    rejectUnknownKeys "MCPServerConfigFile" ["command", "args", "env", "startupDelay"] v
+    rejectUnknownKeys "MCPServerConfigFile" ["command", "args", "env", "startup_delay"] v
     MCPServerConfigFile
       <$> v .: "command"
       <*> v .:? "args"
       <*> v .:? "env"
-      <*> v .:? "startupDelay"
+      <*> v .:? "startup_delay"
 
 -- | Default compaction configuration
 defaultCompaction :: CompactionConfig

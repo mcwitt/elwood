@@ -19,7 +19,7 @@ let
         {
           type = dt.type;
         }
-        // lib.optionalAttrs (dt.session != null) {
+        // lib.optionalAttrs (dt.type == "telegram" && dt.session != null) {
           session = dt.session;
         };
 
@@ -46,7 +46,7 @@ let
           delivery_targets = map mkDeliveryTarget epCfg.deliveryTargets;
         }
         // lib.optionalAttrs (epCfg.suppressIfContains != null) {
-          suppressIfContains = epCfg.suppressIfContains;
+          suppress_if_contains = epCfg.suppressIfContains;
         }
         // lib.optionalAttrs (epCfg.model != null) {
           model = epCfg.model;
@@ -80,37 +80,37 @@ let
           env = serverCfg.env;
         }
         // lib.optionalAttrs (serverCfg.startupDelay != 0) {
-          startupDelay = serverCfg.startupDelay;
+          startup_delay = serverCfg.startupDelay;
         }
       ) agentCfg.mcpServers;
 
       configContent = {
-        stateDir = agentCfg.stateDir;
-        workspaceDir = agentCfg.workspaceDir;
-        allowedChatIds = agentCfg.allowedChatIds;
+        state_dir = agentCfg.stateDir;
+        workspace_dir = agentCfg.workspaceDir;
+        allowed_chat_ids = agentCfg.allowedChatIds;
         model = agentCfg.model;
         thinking = mkThinkingConfig agentCfg.thinking;
-        maxIterations = agentCfg.maxIterations;
-        systemPrompt = map mkPromptInputYaml agentCfg.systemPrompt;
+        max_iterations = agentCfg.maxIterations;
+        system_prompt = map mkPromptInputYaml agentCfg.systemPrompt;
 
         permissions = {
-          safePatterns = agentCfg.permissions.safePatterns;
-          dangerousPatterns = agentCfg.permissions.dangerousPatterns;
-          toolPolicies = agentCfg.permissions.toolPolicies;
-          defaultPolicy = agentCfg.permissions.defaultPolicy;
-          approvalTimeoutSeconds = agentCfg.permissions.approvalTimeoutSeconds;
+          safe_patterns = agentCfg.permissions.safePatterns;
+          dangerous_patterns = agentCfg.permissions.dangerousPatterns;
+          tool_policies = agentCfg.permissions.toolPolicies;
+          default_policy = agentCfg.permissions.defaultPolicy;
+          approval_timeout_seconds = agentCfg.permissions.approvalTimeoutSeconds;
         };
 
         compaction = {
-          tokenThreshold = agentCfg.compaction.tokenThreshold;
+          token_threshold = agentCfg.compaction.tokenThreshold;
           model = agentCfg.compaction.model;
         };
       }
       // lib.optionalAttrs (agentCfg.toolSearch != null) {
-        toolSearch = agentCfg.toolSearch;
+        tool_search = agentCfg.toolSearch;
       }
       // lib.optionalAttrs (mcpServersList != { }) {
-        mcpServers = mcpServersList;
+        mcp_servers = mcpServersList;
       }
       // lib.optionalAttrs agentCfg.webhook.enable {
         webhook = {
@@ -130,7 +130,7 @@ let
     let
       fromInputs =
         inputs:
-        lib.filter (pi: pi.type == "workspaceFile" && pi.path != null && pi.defaultContent != null) inputs;
+        lib.filter (pi: pi.type == "workspace_file" && pi.path != null && pi.defaultContent != null) inputs;
 
       systemPromptFiles = fromInputs agentCfg.systemPrompt;
 
@@ -214,7 +214,7 @@ let
         inherit (tc) effort;
       }
       // lib.optionalAttrs (tc.budgetTokens != null) {
-        inherit (tc) budgetTokens;
+        budget_tokens = tc.budgetTokens;
       };
 
   # Submodule for delivery targets
@@ -223,7 +223,8 @@ let
       type = lib.mkOption {
         type = lib.types.enum [
           "telegram"
-          "log"
+          "telegram_broadcast"
+          "log_only"
         ];
         description = "Delivery target type.";
       };
@@ -242,10 +243,10 @@ let
     options = {
       type = lib.mkOption {
         type = lib.types.enum [
-          "workspaceFile"
+          "workspace_file"
           "text"
         ];
-        description = "Prompt input type: workspaceFile reads from workspace directory, text is inline content.";
+        description = "Prompt input type: workspace_file reads from workspace directory, text is inline content.";
       };
 
       path = lib.mkOption {
@@ -283,7 +284,7 @@ let
 
     deliveryTargets = lib.mkOption {
       type = lib.types.listOf deliverTargetModule;
-      default = [ { type = "telegram"; } ];
+      default = [ { type = "telegram_broadcast"; } ];
       description = "Delivery targets.";
     };
 
@@ -418,7 +419,7 @@ let
           type = lib.types.listOf promptInputModule;
           default = [
             {
-              type = "workspaceFile";
+              type = "workspace_file";
               path = "SOUL.md";
             }
           ];

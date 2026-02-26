@@ -3,15 +3,15 @@
 
 # Directory for persistent state (conversation history, etc.)
 # Default: /var/lib/assistant
-stateDir: /var/lib/assistant
+state_dir: /var/lib/assistant
 
 # Directory containing SOUL.md, AGENTS.md, etc.
 # Default: /var/lib/assistant/workspace
-workspaceDir: /var/lib/assistant/workspace
+workspace_dir: /var/lib/assistant/workspace
 
 # Telegram chat IDs allowed to interact with the bot
 # Find your chat ID by messaging @userinfobot on Telegram
-allowedChatIds:
+allowed_chat_ids:
   - 123456789
 
 # Claude model to use
@@ -31,12 +31,12 @@ model: claude-sonnet-4-20250514
 # Fixed budget (for older models):
 #   thinking:
 #     type: fixed
-#     budgetTokens: 4096      # explicit budget_tokens value
+#     budget_tokens: 4096      # explicit budget_tokens value
 thinking: off
 
 # Maximum agent loop iterations per turn (prevents infinite tool-use loops)
 # Default: 30
-maxIterations: 20
+max_iterations: 20
 
 # Tool search: null | [] | [tool1, ...]
 # Uses Anthropic's server-side tool search for on-demand tool discovery.
@@ -48,20 +48,20 @@ maxIterations: 20
 #
 # The list is optional. It provides a minor latency optimization for
 # frequently-used tools (avoids the server-side search round-trip).
-# toolSearch: null
+# tool_search: null
 
 # System prompt configuration
 # A list of prompt inputs assembled into the system prompt.
-# Default (when omitted): [{ type: workspaceFile, path: SOUL.md }]
+# Default (when omitted): [{ type: workspace_file, path: SOUL.md }]
 #
 # Supported input types:
-#   - type: workspaceFile    # read file from workspaceDir
+#   - type: workspace_file    # read file from workspace_dir
 #     path: SOUL.md
 #   - type: text             # inline text
 #     content: "Additional context"
 #
-# systemPrompt:
-#   - type: workspaceFile
+# system_prompt:
+#   - type: workspace_file
 #     path: SOUL.md
 #   - type: text
 #     content: "Additional instructions"
@@ -70,27 +70,27 @@ maxIterations: 20
 # When conversation history exceeds the token threshold, older messages
 # are summarized using a fast model to stay within context limits.
 compaction:
-  tokenThreshold: 50000             # default: 50000
+  token_threshold: 50000             # default: 50000
   model: claude-3-5-haiku-20241022  # default: claude-3-5-haiku-20241022
 
 # Tool permission settings
 permissions:
-  defaultPolicy: allow          # allow | ask | deny (default: allow)
-  approvalTimeoutSeconds: 120   # seconds to wait for user approval (default: 120)
-  toolPolicies:                 # per-tool overrides
+  default_policy: allow          # allow | ask | deny (default: allow)
+  approval_timeout_seconds: 120   # seconds to wait for user approval (default: 120)
+  tool_policies:                 # per-tool overrides
     run_command: ask            # NOTE: "ask" requires an interactive approval
                                 # channel (Telegram). Webhook-triggered runs
                                 # deny "ask" tools — use "allow" for tools
                                 # that webhooks need.
-  dangerousPatterns:            # regex patterns — matched commands are denied
+  dangerous_patterns:            # regex patterns — matched commands are denied
     - "\\brm\\b"               # block rm, but...
     - "\\bsudo\\b"
-  safePatterns:                 # regex patterns — override dangerousPatterns
+  safe_patterns:                 # regex patterns — override dangerous_patterns
     - "^rm -i\\b"              # ...allow interactive rm
 
 # MCP (Model Context Protocol) server configurations
 # Each key becomes the server name used to namespace its tools.
-mcpServers:
+mcp_servers:
   my-server:
     command: npx                    # command to run (required)
     args:                           # command arguments
@@ -98,7 +98,7 @@ mcpServers:
       - "@example/mcp-server"
     env:                            # environment variables
       API_KEY: "secret"
-    startupDelay: 1000              # ms to wait after spawn (default: 0)
+    startup_delay: 1000              # ms to wait after spawn (default: 0)
 
 # Webhook server configuration
 # Exposes HTTP endpoints that trigger agent conversations.
@@ -108,7 +108,7 @@ mcpServers:
 webhook:
   enabled: false                # default: false
   port: 8080                    # default: 8080
-  globalSecret: "s3cret"        # required header X-Webhook-Secret (or set WEBHOOK_SECRET env var)
+  global_secret: "s3cret"        # required header X-Webhook-Secret (or set WEBHOOK_SECRET env var)
   endpoints:
     - name: deploy              # route: POST /webhook/deploy (required)
       secret: "per-hook-key"    # per-endpoint secret override
@@ -120,14 +120,14 @@ webhook:
       # thinking:                         # per-endpoint thinking override (default: use global thinking)
       #   type: adaptive
       #   effort: low
-      delivery_targets:         # where to send responses (default: [{type: telegram}])
-        - type: telegram        # broadcast to all allowedChatIds
+      delivery_targets:         # where to send responses (default: [{type: telegram_broadcast}])
+        - type: telegram_broadcast  # broadcast to all allowed_chat_ids
         # - type: telegram
         #   session: "123456789"  # send to specific chat
-        - type: log             # log only, no notification
-      suppressIfContains: "no action needed"  # suppress notification if response contains this
+        - type: log_only           # log only, no notification
+      suppress_if_contains: "no action needed"  # suppress notification if response contains this
 
 # Environment variables (not set in this file):
 #   TELEGRAM_BOT_TOKEN   - Telegram bot token (required)
 #   ANTHROPIC_API_KEY    - Anthropic API key (required)
-#   WEBHOOK_SECRET       - Webhook secret (optional, overrides globalSecret above)
+#   WEBHOOK_SECRET       - Webhook secret (optional, overrides global_secret above)

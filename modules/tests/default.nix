@@ -223,7 +223,7 @@ in
         "systemctl show assistant-suppress-test.service -p Environment | grep -oP 'ELWOOD_CONFIG=\\K[^\\s]+'"
       ).strip()
       config = machine.succeed(f"cat {config_path}")
-      assert "suppressIfContains" in config, f"suppressIfContains not in config: {config}"
+      assert "suppress_if_contains" in config, f"suppress_if_contains not in config: {config}"
       assert "HEARTBEAT_OK" in config, f"HEARTBEAT_OK pattern not in config: {config}"
     '';
   };
@@ -286,9 +286,9 @@ in
       # Verify key config values are present (JSON format)
       # Note: heartbeat config is no longer in the YAML - it's handled via systemd timers
       assert "claude-test-model" in config, f"Model not in config: {config}"
-      assert '"tokenThreshold":50000' in config, f"tokenThreshold not in config: {config}"
+      assert '"token_threshold":50000' in config, f"token_threshold not in config: {config}"
       assert '"port":9000' in config, f"webhook port not in config: {config}"
-      assert '"defaultPolicy":"ask"' in config, f"defaultPolicy not in config: {config}"
+      assert '"default_policy":"ask"' in config, f"default_policy not in config: {config}"
 
       # Verify systemPrompt default is present
       assert "SOUL.md" in config, f"Default systemPrompt (SOUL.md) not in config: {config}"
@@ -371,7 +371,7 @@ in
 
           systemPrompt = [
             {
-              type = "workspaceFile";
+              type = "workspace_file";
               path = "SOUL.md";
               defaultContent = "You are a helpful assistant.";
             }

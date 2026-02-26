@@ -37,7 +37,7 @@ instance FromJSON PromptInputFile where
   parseJSON = withObject "PromptInputFile" $ \v -> do
     t <- v .: "type" :: Parser Text
     case T.toLower t of
-      "workspacefile" -> PromptInputFileWorkspace <$> v .: "path"
+      "workspace_file" -> PromptInputFileWorkspace <$> v .: "path"
       "text" -> PromptInputFileText <$> v .: "content"
       other -> fail $ "Unknown prompt input type: " <> T.unpack other
 
