@@ -14,6 +14,7 @@ where
 
 import Data.Aeson
 import Data.Aeson.Types (Parser)
+import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Aeson (rejectUnknownKeys)
@@ -80,7 +81,7 @@ data WebhookConfigFile = WebhookConfigFile
 
 -- | YAML file configuration for a delivery target
 data DeliveryTargetFile
-  = DeliveryTargetFileTelegram (Maybe Text)
+  = DeliveryTargetFileTelegram (Maybe Int64)
   | DeliveryTargetFileLog
   deriving stock (Show, Generic)
 
@@ -89,8 +90,8 @@ instance FromJSON DeliveryTargetFile where
     t <- v .: "type" :: Parser Text
     case T.toLower t of
       "telegram" -> do
-        rejectUnknownKeys "DeliveryTargetFile" ["type", "session"] v
-        DeliveryTargetFileTelegram <$> v .: "session"
+        rejectUnknownKeys "DeliveryTargetFile" ["type", "chat_id"] v
+        DeliveryTargetFileTelegram <$> v .: "chat_id"
       "telegram_broadcast" -> do
         rejectUnknownKeys "DeliveryTargetFile" ["type"] v
         pure (DeliveryTargetFileTelegram Nothing)

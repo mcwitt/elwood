@@ -37,9 +37,9 @@ deliveryTargetTests :: TestTree
 deliveryTargetTests =
   testGroup
     "DeliveryTarget"
-    [ testCase "TelegramDelivery holds session" $
-        case TelegramDelivery "12345" of
-          TelegramDelivery session -> session @?= "12345"
+    [ testCase "TelegramDelivery holds chat ID" $
+        case TelegramDelivery 12345 of
+          TelegramDelivery chatId_ -> chatId_ @?= 12345
           _ -> assertFailure "Expected TelegramDelivery",
       testCase "TelegramBroadcast equality" $
         TelegramBroadcast == TelegramBroadcast @?= True,

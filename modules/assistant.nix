@@ -19,8 +19,8 @@ let
         {
           type = dt.type;
         }
-        // lib.optionalAttrs (dt.type == "telegram" && dt.session != null) {
-          session = dt.session;
+        // lib.optionalAttrs (dt.type == "telegram" && dt.chatId != null) {
+          chat_id = dt.chatId;
         };
 
       # Serialize a prompt input, stripping the NixOS-only defaultContent field
@@ -229,11 +229,11 @@ let
         description = "Delivery target type.";
       };
 
-      session = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+      chatId = lib.mkOption {
+        type = lib.types.nullOr lib.types.int;
         default = null;
-        description = "Telegram chat ID to send to. If null, broadcasts to all allowedChatIds.";
-        example = "123456789";
+        description = "Telegram chat ID to send to (telegram type only).";
+        example = 123456789;
       };
     };
   };

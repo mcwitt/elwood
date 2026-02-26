@@ -169,7 +169,7 @@ Add the flake to your NixOS configuration:
               prompt = [ { type = "text"; content = "Check system health. Reply HEARTBEAT_OK if all is well."; } ];
               schedule = "*-*-* *:00/30";  # every 30 minutes
               session = "123456789";       # share conversation with Telegram chat
-              deliveryTargets = [ { type = "telegram"; session = "123456789"; } ];
+              deliveryTargets = [ { type = "telegram"; chatId = 123456789; } ];
               suppressIfContains = "HEARTBEAT_OK";
             };
 

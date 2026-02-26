@@ -31,7 +31,6 @@ module Elwood.Event
     sessionToConversationId,
 
     -- * Utilities
-    parseChatId,
     sendAttachmentSafe,
   )
 where
@@ -68,7 +67,6 @@ import Elwood.Prompt (PromptInput, assemblePrompt)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
 import Elwood.Tools.Attachment (isPhotoExtension)
-import Text.Read (readMaybe)
 
 -- | Unified event type for all sources
 data Event = Event
@@ -328,10 +326,8 @@ deliverTextOnly env targets msg =
   where
     deliver :: DeliveryTarget -> IO ()
     deliver target = case target of
-      TelegramDelivery s ->
-        case parseChatId s of
-          Just chatId_ -> notifySafe env chatId_ msg
-          Nothing -> logError env.logger "Invalid chat ID in TelegramDelivery" [("session", s)]
+      TelegramDelivery chatId_ ->
+        notifySafe env chatId_ msg
       TelegramBroadcast ->
         mapM_ (\cid -> notifySafe env cid msg) env.notifyChatIds
       LogOnly ->
@@ -354,16 +350,9 @@ deliverToTargets env targets msg = do
 
 -- | Resolve a delivery target to its Telegram chat IDs
 targetChatIds :: AppEnv -> DeliveryTarget -> [Int64]
-targetChatIds _ (TelegramDelivery s) =
-  case parseChatId s of
-    Just cid -> [cid]
-    Nothing -> []
+targetChatIds _ (TelegramDelivery chatId_) = [chatId_]
 targetChatIds env TelegramBroadcast = env.notifyChatIds
 targetChatIds _ LogOnly = []
-
--- | Parse a chat ID from text
-parseChatId :: Text -> Maybe Int64
-parseChatId = readMaybe . T.unpack
 
 -- | Send a single attachment to a chat, choosing photo vs document
 sendAttachmentSafe :: AppEnv -> Int64 -> Tools.Attachment -> IO ()
@@ -412,10 +401,8 @@ mkRateLimitCallback env event attemptNum waitSecs = do
   where
     notifyRateLimit :: Text -> DeliveryTarget -> IO ()
     notifyRateLimit m target = case target of
-      TelegramDelivery s ->
-        case parseChatId s of
-          Just chatId_ -> notifySafe env chatId_ m
-          Nothing -> pure ()
+      TelegramDelivery chatId_ ->
+        notifySafe env chatId_ m
       TelegramBroadcast ->
         mapM_ (\cid -> notifySafe env cid m) env.notifyChatIds
       LogOnly ->
@@ -427,10 +414,8 @@ sendTypingToTargets env =
   mapM_ sendTyping
   where
     sendTyping :: DeliveryTarget -> IO ()
-    sendTyping (TelegramDelivery s) =
-      case parseChatId s of
-        Just chatId_ -> Telegram.sendChatAction env.telegram chatId_
-        Nothing -> pure ()
+    sendTyping (TelegramDelivery chatId_) =
+      Telegram.sendChatAction env.telegram chatId_
     sendTyping TelegramBroadcast =
       mapM_ (Telegram.sendChatAction env.telegram) env.notifyChatIds
     sendTyping LogOnly = pure ()
@@ -499,7 +484,7 @@ handleTelegramMessage env msg =
                     prompt = userText,
                     image = imageData,
                     session = Named (T.pack (show chatIdVal)),
-                    deliveryTargets = [TelegramDelivery (T.pack (show chatIdVal))]
+                    deliveryTargets = [TelegramDelivery chatIdVal]
                   }
 
           -- Handle the event - delivery to Telegram is done by the event system
