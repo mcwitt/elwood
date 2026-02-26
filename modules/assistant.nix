@@ -109,8 +109,8 @@ let
           model = agentCfg.compaction.model;
         };
       }
-      // lib.optionalAttrs agentCfg.toolSearch.enable {
-        toolSearch = agentCfg.toolSearch.neverDefer;
+      // lib.optionalAttrs (agentCfg.toolSearch != null) {
+        toolSearch = agentCfg.toolSearch;
       }
       // lib.optionalAttrs (mcpServersList != { }) {
         mcpServers = mcpServersList;
@@ -426,13 +426,11 @@ let
           description = "System prompt inputs. Assembled in order to form the system prompt.";
         };
 
-        toolSearch = {
-          enable = lib.mkEnableOption "server-side tool search";
-          neverDefer = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Tool names that are never deferred (always available without search).";
-          };
+        toolSearch = lib.mkOption {
+          type = lib.types.nullOr (lib.types.listOf lib.types.str);
+          default = null;
+          description = "Tool names that are never deferred (always available). Null disables tool search.";
+          example = [ "run_command" ];
         };
 
         permissions = {
@@ -449,7 +447,13 @@ let
           };
 
           toolPolicies = lib.mkOption {
-            type = lib.types.attrsOf lib.types.str;
+            type = lib.types.attrsOf (
+              lib.types.enum [
+                "allow"
+                "ask"
+                "deny"
+              ]
+            );
             default = { };
             description = "Per-tool policies (allow, ask, deny).";
             example = {
@@ -459,7 +463,11 @@ let
           };
 
           defaultPolicy = lib.mkOption {
-            type = lib.types.str;
+            type = lib.types.enum [
+              "allow"
+              "ask"
+              "deny"
+            ];
             default = "ask";
             description = "Default policy for tools not in toolPolicies.";
           };
