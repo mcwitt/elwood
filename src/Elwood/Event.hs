@@ -14,6 +14,8 @@ module Elwood.Event
 
     -- * Event Handling
     handleEvent,
+    handleEventBuffered,
+    BufferedResult (..),
     handleTelegramMessage,
 
     -- * Core Pipeline
@@ -34,12 +36,14 @@ module Elwood.Event
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (TVar, atomically, readTVar, writeTVar)
 import Control.Exception (SomeException, catch)
 import Control.Monad (unless)
 import Data.Aeson (Value (..))
 import Data.ByteString.Base64.Lazy qualified as B64
 import Data.ByteString.Lazy qualified as LBS
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (sortOn)
 import Data.Maybe (fromMaybe, isNothing, listToMaybe)
@@ -226,6 +230,75 @@ handleEventCore env event callbacks = do
     Claude.AgentError err -> do
       logError lgr "Event handling failed" [("source", formatSource src), ("error", err)]
       pure (Left err)
+
+-- | Buffered output item captured during an agent turn
+data BufferedItem = BufferedText Text | BufferedRateLimit Text
+
+-- | Result of a buffered event handler run
+data BufferedResult
+  = -- | Agent turn failed
+    BufferedError Text
+  | -- | Agent turn succeeded with response text and flush action.
+    -- Call the flush action to deliver all buffered output.
+    BufferedSuccess
+      -- | Response text
+      Text
+      -- | Flush action: replays buffered output then delivers final response
+      (IO ())
+
+-- | Handle an event with buffered delivery
+--
+-- All intermediate text and rate-limit messages are captured in a buffer.
+-- On success, returns a 'BufferedSuccess' whose 'flush' action replays the
+-- buffer (with typing indicators and pacing) then delivers the final
+-- response including attachments. On error, the buffer is discarded.
+handleEventBuffered ::
+  AppEnv -> Event -> [DeliveryTarget] -> IO BufferedResult
+handleEventBuffered env event targets = do
+  bufRef <- newIORef ([] :: [BufferedItem])
+  let callbacks =
+        DeliveryCallbacks
+          { onText = Just (\t -> modifyIORef' bufRef (BufferedText t :)),
+            onRateLimit =
+              Just
+                ( \n s -> do
+                    let m = formatNotify Warn $ "Rate limited, retry " <> T.pack (show n) <> " in " <> T.pack (show s) <> "s"
+                    modifyIORef' bufRef (BufferedRateLimit m :)
+                ),
+            onBeforeApiCall = Nothing,
+            onResponse = \_ -> pure ()
+          }
+  result <- handleEventCore env event callbacks
+  case result of
+    Left err -> do
+      drainAttachmentQueue env
+      pure (BufferedError err)
+    Right rsp -> do
+      buf <- readIORef bufRef
+      pure $ BufferedSuccess rsp (flushBuffer env targets (reverse buf) rsp)
+
+-- | Replay buffered items with typing indicators and pacing, then deliver
+-- the final response (including attachment drain).
+flushBuffer :: AppEnv -> [DeliveryTarget] -> [BufferedItem] -> Text -> IO ()
+flushBuffer env targets items finalResponse = do
+  mapM_ flushItem items
+  -- Final response: typing → delay → deliver with attachments
+  sendTypingToTargets env targets
+  threadDelay 500000
+  deliverToTargets env targets finalResponse
+  where
+    flushItem :: BufferedItem -> IO ()
+    flushItem (BufferedText t) = do
+      sendTypingToTargets env targets
+      threadDelay 500000
+      deliverTextOnly env targets t
+    flushItem (BufferedRateLimit m) = do
+      deliverTextOnly env targets m
+
+-- | Drain the attachment queue, discarding all queued attachments
+drainAttachmentQueue :: AppEnv -> IO ()
+drainAttachmentQueue env =
+  atomically $ writeTVar env.attachmentQueue []
 
 -- | Deliver response to configured targets, then send queued attachments
 deliverResponse :: AppEnv -> Event -> Text -> IO ()
