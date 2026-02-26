@@ -619,9 +619,34 @@ in
             '';
           }) agentsNeedingWebhook;
 
-        cronAssertions = [ ];
+        # No two enabled agents may share the same webhook port
+        portConflictAssertions =
+          let
+            agentsWithWebhook = lib.filterAttrs (_: agent: agent.webhook.enable) enabledAgents;
+            ports = lib.mapAttrsToList (_: agent: agent.webhook.port) agentsWithWebhook;
+          in
+          [
+            {
+              assertion = lib.length ports == lib.length (lib.unique ports);
+              message = ''
+                Multiple assistant agents are configured with the same webhook port.
+                Each agent with webhook.enable must use a unique port.
+              '';
+            }
+          ];
+
+        # Each enabled agent must have at least one allowedChatId
+        chatIdAssertions = lib.mapAttrsToList (name: agent: {
+          assertion = agent.allowedChatIds != [ ];
+          message = ''
+            Assistant agent '${name}' has no allowedChatIds configured.
+            At least one Telegram chat ID is required:
+
+            services.assistant.agents.${name}.allowedChatIds = [ <your-chat-id> ];
+          '';
+        }) enabledAgents;
       in
-      webhookAssertions ++ cronAssertions;
+      webhookAssertions ++ portConflictAssertions ++ chatIdAssertions;
 
     # Collect all unique users and groups
     # Use lib.unique to avoid duplicate definitions when multiple agents share the same user
