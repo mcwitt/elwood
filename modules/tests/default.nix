@@ -139,7 +139,6 @@ in
           webhook = {
             enable = true;
             port = 8080;
-            globalSecret = "test-secret";
           };
 
           # Cron jobs now always use systemd timers

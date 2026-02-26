@@ -154,10 +154,10 @@ Add the flake to your NixOS configuration:
               }
             ];
 
+            # environmentFile should contain WEBHOOK_SECRET (and TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY)
             webhook = {
               enable = true;
               port = 8080;
-              globalSecret = "your-secret";
               endpoints."doorbell" = {
                 prompt = [ { type = "text"; content = "Motion detected at {{.timestamp}}"; } ];
                 deliver = [ { type = "telegram"; } ];

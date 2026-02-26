@@ -59,20 +59,12 @@ let
         let
           # User-defined endpoints
           userEndpoints = lib.mapAttrsToList (
-            epName: epCfg:
-            mkEndpointYaml epName epCfg
-            // lib.optionalAttrs (epCfg.secret != null) {
-              secret = epCfg.secret;
-            }
+            epName: epCfg: mkEndpointYaml epName epCfg
           ) agentCfg.webhook.endpoints;
 
           # Auto-generated cron job endpoints
           cronEndpoints = lib.mapAttrsToList (
-            cronName: cronCfg:
-            mkEndpointYaml "cron-${cronName}" cronCfg
-            // lib.optionalAttrs (cronCfg.webhookSecret != null) {
-              secret = cronCfg.webhookSecret;
-            }
+            cronName: cronCfg: mkEndpointYaml "cron-${cronName}" cronCfg
           ) agentCfg.cronJobs;
         in
         userEndpoints ++ cronEndpoints;
@@ -127,9 +119,6 @@ let
         webhook = {
           enabled = true;
           port = agentCfg.webhook.port;
-        }
-        // lib.optionalAttrs (agentCfg.webhook.globalSecret != null) {
-          globalSecret = agentCfg.webhook.globalSecret;
         }
         // lib.optionalAttrs (allWebhookEndpoints != [ ]) {
           endpoints = allWebhookEndpoints;
@@ -322,13 +311,7 @@ let
 
   # Submodule for webhook endpoints
   webhookEndpointModule = lib.types.submodule {
-    options = commonEndpointOptions // {
-      secret = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Secret for this endpoint (overrides global secret).";
-      };
-    };
+    options = commonEndpointOptions;
   };
 
   # Submodule for cron jobs (always use systemd timers)
@@ -339,12 +322,6 @@ let
         default = "hourly";
         description = "systemd OnCalendar schedule.";
         example = "*-*-* 09:00";
-      };
-
-      webhookSecret = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Secret for the auto-generated webhook endpoint. Falls back to global webhook secret.";
       };
     };
   };
@@ -519,12 +496,6 @@ let
             type = lib.types.port;
             default = 8080;
             description = "Port for webhook server.";
-          };
-
-          globalSecret = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "Global secret for all webhook endpoints.";
           };
 
           endpoints = lib.mkOption {
@@ -779,9 +750,6 @@ in
         let
           webhookPort = agentCfg.webhook.port;
           webhookEndpoint = "cron-${cronName}";
-          secret =
-            if cronCfg.webhookSecret != null then cronCfg.webhookSecret else agentCfg.webhook.globalSecret;
-          secretHeader = lib.optionalString (secret != null) ''-H "X-Webhook-Secret: ${secret}"'';
         in
         lib.nameValuePair "assistant-cron-${timerName}" {
           description = "Cron job ${cronName} for assistant ${agentName}";
@@ -793,15 +761,25 @@ in
             User = agentCfg.user;
             Group = agentCfg.group;
             ExecStart = pkgs.writeShellScript "assistant-cron-${timerName}" ''
-              ${pkgs.curl}/bin/curl -s -X POST \
-                "http://localhost:${toString webhookPort}/webhook/${webhookEndpoint}" \
-                -H "Content-Type: application/json" \
-                ${secretHeader} \
-                -d '{"trigger": "systemd-timer", "cron": "${cronName}"}'
+              if [ -n "''${WEBHOOK_SECRET:-}" ]; then
+                ${pkgs.curl}/bin/curl -s -X POST \
+                  "http://localhost:${toString webhookPort}/webhook/${webhookEndpoint}" \
+                  -H "Content-Type: application/json" \
+                  -H "X-Webhook-Secret: $WEBHOOK_SECRET" \
+                  -d '{"trigger": "systemd-timer", "cron": "${cronName}"}'
+              else
+                ${pkgs.curl}/bin/curl -s -X POST \
+                  "http://localhost:${toString webhookPort}/webhook/${webhookEndpoint}" \
+                  -H "Content-Type: application/json" \
+                  -d '{"trigger": "systemd-timer", "cron": "${cronName}"}'
+              fi
             '';
             StandardOutput = "journal";
             StandardError = "journal";
             SyslogIdentifier = "assistant-cron-${timerName}";
+          }
+          // lib.optionalAttrs (agentCfg.environmentFile != null) {
+            EnvironmentFile = agentCfg.environmentFile;
           };
         }
       ) allTimerCrons)
