@@ -11,6 +11,7 @@ module Elwood.Webhook.Server
 where
 
 import Control.Applicative ((<|>))
+import Control.Concurrent.STM (atomically, writeTVar)
 import Control.Exception (SomeException, catch)
 import Data.Aeson (Value (..), eitherDecode, encode)
 import Data.Aeson.Key qualified as Key
@@ -22,7 +23,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (getCurrentTime)
-import Elwood.Event (AppEnv (..), DeliveryTarget (..), Event (..), EventSource (..), deliverToTargets, handleEvent)
+import Elwood.Event (AppEnv (..), BufferedResult (..), DeliveryTarget (..), Event (..), EventSource (..), handleEvent, handleEventBuffered)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (renderMetrics)
 import Elwood.Prompt (assemblePrompt)
@@ -132,45 +133,66 @@ handleWebhookRequest lgr webhookCfg env request respond = do
           respond $ jsonResponse status500 $ errorJson "No prompt content resolved"
         Just assembled -> do
           let promptText = renderTemplate assembled payloadVal
-          -- Create event with LogOnly delivery - we handle notification manually
-          -- to support conditional suppression
           now <- getCurrentTime
-          let evt =
-                Event
-                  { source = WebhookSource webhookCfg.name,
-                    timestamp = now,
-                    payload = payloadVal,
-                    prompt = promptText,
-                    image = Nothing,
-                    session = webhookCfg.session,
-                    delivery = [LogOnly]
-                  }
 
-          -- Handle the event
-          result <- handleEvent envWithOverrides evt
+          case webhookCfg.suppressIfContains of
+            -- No suppression: eager delivery through the normal pipeline
+            Nothing -> do
+              let evt =
+                    Event
+                      { source = WebhookSource webhookCfg.name,
+                        timestamp = now,
+                        payload = payloadVal,
+                        prompt = promptText,
+                        image = Nothing,
+                        session = webhookCfg.session,
+                        delivery = webhookCfg.delivery
+                      }
 
-          case result of
-            Right responseText -> do
-              -- Check if we should suppress notification
-              let shouldSuppress = case webhookCfg.suppressIfContains of
-                    Just suppressPattern -> suppressPattern `T.isInfixOf` responseText
-                    Nothing -> False
+              result <- handleEvent envWithOverrides evt
 
-              if shouldSuppress
-                then do
-                  logInfo
-                    lgr
-                    "Webhook response suppressed"
-                    [("name", webhookCfg.name), ("pattern", fromMaybe "" webhookCfg.suppressIfContains)]
-                  respond $ jsonResponse status200 $ successJson responseText
-                else do
-                  -- Deliver to configured targets
-                  deliverToTargets envWithOverrides webhookCfg.delivery responseText
+              case result of
+                Right responseText -> do
                   logInfo lgr "Webhook processed successfully" [("name", webhookCfg.name)]
                   respond $ jsonResponse status200 $ successJson responseText
-            Left err -> do
-              logError lgr "Webhook processing failed" [("name", webhookCfg.name), ("error", err)]
-              respond $ jsonResponse status500 $ errorJson err
+                Left err -> do
+                  logError lgr "Webhook processing failed" [("name", webhookCfg.name), ("error", err)]
+                  respond $ jsonResponse status500 $ errorJson err
+
+            -- With suppression: buffer output, then decide whether to flush
+            Just suppressPattern -> do
+              let evt =
+                    Event
+                      { source = WebhookSource webhookCfg.name,
+                        timestamp = now,
+                        payload = payloadVal,
+                        prompt = promptText,
+                        image = Nothing,
+                        session = webhookCfg.session,
+                        delivery = [LogOnly]
+                      }
+
+              buffered <- handleEventBuffered envWithOverrides evt webhookCfg.delivery
+
+              case buffered of
+                BufferedSuccess responseText flushAction -> do
+                  if suppressPattern `T.isInfixOf` responseText
+                    then do
+                      -- Suppressed: discard buffered output and attachments
+                      atomically $ writeTVar envWithOverrides.attachmentQueue []
+                      logInfo
+                        lgr
+                        "Webhook response suppressed"
+                        [("name", webhookCfg.name), ("pattern", suppressPattern)]
+                      respond $ jsonResponse status200 $ successJson responseText
+                    else do
+                      -- Not suppressed: replay buffered output
+                      flushAction
+                      logInfo lgr "Webhook processed successfully" [("name", webhookCfg.name)]
+                      respond $ jsonResponse status200 $ successJson responseText
+                BufferedError err -> do
+                  logError lgr "Webhook processing failed" [("name", webhookCfg.name), ("error", err)]
+                  respond $ jsonResponse status500 $ errorJson err
 
 -- | Apply per-endpoint model/thinking overrides to the environment
 applyOverrides :: AppEnv -> WebhookConfig -> AppEnv
