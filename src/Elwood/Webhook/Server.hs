@@ -146,7 +146,7 @@ handleWebhookRequest lgr webhookCfg env request respond = do
                         prompt = promptText,
                         image = Nothing,
                         session = webhookCfg.session,
-                        delivery = webhookCfg.delivery
+                        deliveryTargets = webhookCfg.deliveryTargets
                       }
 
               result <- handleEvent envWithOverrides evt
@@ -169,10 +169,10 @@ handleWebhookRequest lgr webhookCfg env request respond = do
                         prompt = promptText,
                         image = Nothing,
                         session = webhookCfg.session,
-                        delivery = [LogOnly]
+                        deliveryTargets = [LogOnly]
                       }
 
-              buffered <- handleEventBuffered envWithOverrides evt webhookCfg.delivery
+              buffered <- handleEventBuffered envWithOverrides evt webhookCfg.deliveryTargets
 
               case buffered of
                 BufferedSuccess responseText flushAction -> do

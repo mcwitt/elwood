@@ -145,5 +145,5 @@ exampleConfigTests =
         let webhooks = config.webhook.webhooks
         length webhooks @?= 1
         let wh = head webhooks
-        wh.delivery @?= [TelegramBroadcast, LogOnly]
+        wh.deliveryTargets @?= [TelegramBroadcast, LogOnly]
     ]

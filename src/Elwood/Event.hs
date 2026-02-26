@@ -85,7 +85,7 @@ data Event = Event
     -- | Session configuration
     session :: SessionConfig,
     -- | Where to deliver responses
-    delivery :: [DeliveryTarget]
+    deliveryTargets :: [DeliveryTarget]
   }
   deriving stock (Show)
 
@@ -154,7 +154,7 @@ handleEventCore env event callbacks = do
     "Handling event"
     [ ("source", formatSource src),
       ("session", T.pack (show event.session)),
-      ("delivery_targets", T.pack (show (length event.delivery)))
+      ("delivery_targets", T.pack (show (length event.deliveryTargets)))
     ]
 
   -- Determine conversation ID from session config
@@ -319,7 +319,7 @@ drainAttachmentQueue env =
 
 -- | Deliver response to configured targets, then send queued attachments
 deliverResponse :: AppEnv -> Event -> Text -> IO ()
-deliverResponse env event = deliverToTargets env event.delivery
+deliverResponse env event = deliverToTargets env event.deliveryTargets
 
 -- | Deliver text to the specified targets without draining the attachment queue
 deliverTextOnly :: AppEnv -> [DeliveryTarget] -> Text -> IO ()
@@ -401,14 +401,14 @@ sessionToConversationId (Named n) = Just n
 
 -- | Create text callback to deliver intermediate text during tool-use turns
 mkTextCallback :: AppEnv -> Event -> Claude.TextCallback
-mkTextCallback env event = deliverToTargets env event.delivery
+mkTextCallback env event = deliverToTargets env event.deliveryTargets
 
 -- | Create rate limit notification callback based on event delivery targets
 mkRateLimitCallback :: AppEnv -> Event -> Claude.RateLimitCallback
 mkRateLimitCallback env event attemptNum waitSecs = do
   let msg = formatNotify Warn $ "Rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s"
   -- Notify based on delivery targets
-  mapM_ (notifyRateLimit msg) event.delivery
+  mapM_ (notifyRateLimit msg) event.deliveryTargets
   where
     notifyRateLimit :: Text -> DeliveryTarget -> IO ()
     notifyRateLimit m target = case target of
@@ -438,7 +438,7 @@ sendTypingToTargets env =
 -- | Create before-API-call callback to send typing indicators
 mkBeforeApiCallCallback :: AppEnv -> Event -> IO ()
 mkBeforeApiCallCallback env event =
-  sendTypingToTargets env event.delivery
+  sendTypingToTargets env event.deliveryTargets
 
 -- | Handle a Telegram message: commands, image fetching, and event dispatch.
 --
@@ -499,7 +499,7 @@ handleTelegramMessage env msg =
                     prompt = userText,
                     image = imageData,
                     session = Named (T.pack (show chatIdVal)),
-                    delivery = [TelegramDelivery (T.pack (show chatIdVal))]
+                    deliveryTargets = [TelegramDelivery (T.pack (show chatIdVal))]
                   }
 
           -- Handle the event - delivery to Telegram is done by the event system

@@ -33,7 +33,7 @@ data WebhookConfig = WebhookConfig
     -- | Session mode: isolated or named:<id>
     session :: SessionConfig,
     -- | Where to deliver responses
-    delivery :: [DeliveryTarget],
+    deliveryTargets :: [DeliveryTarget],
     -- | Suppress notification if response contains this string
     suppressIfContains :: Maybe Text,
     -- | Model override for this endpoint (Nothing = use global)
@@ -71,7 +71,7 @@ data WebhookConfigFile = WebhookConfigFile
     secret :: Maybe Text,
     prompt :: Maybe [PromptInputFile],
     session :: Maybe Text,
-    deliver :: Maybe [DeliveryTargetFile],
+    deliveryTargets :: Maybe [DeliveryTargetFile],
     suppressIfContains :: Maybe Text,
     model :: Maybe Text,
     thinking :: Maybe Value
@@ -104,13 +104,13 @@ instance FromJSON WebhookServerConfigFile where
 
 instance FromJSON WebhookConfigFile where
   parseJSON = withObject "WebhookConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "prompt", "session", "deliver", "suppressIfContains", "model", "thinking"] v
+    rejectUnknownKeys "WebhookConfigFile" ["name", "secret", "prompt", "session", "delivery_targets", "suppressIfContains", "model", "thinking"] v
     WebhookConfigFile
       <$> v .: "name"
       <*> v .:? "secret"
       <*> v .:? "prompt"
       <*> v .:? "session"
-      <*> v .:? "deliver"
+      <*> v .:? "delivery_targets"
       <*> v .:? "suppressIfContains"
       <*> v .:? "model"
       <*> v .:? "thinking"

@@ -284,7 +284,7 @@ loadConfig path = do
                         secret = ep.secret,
                         prompt = maybe [] (map resolvePromptInput) ep.prompt,
                         session = maybe Isolated Named ep.session,
-                        delivery = case ep.deliver of
+                        deliveryTargets = case ep.deliveryTargets of
                           Nothing -> [TelegramBroadcast]
                           Just targets ->
                             let parsed = map resolveDeliveryTarget targets

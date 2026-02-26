@@ -92,7 +92,7 @@ webhook:
           content: |
             Motion detected at front door at {{.timestamp}}.
             Please describe what you see.
-      deliver:
+      delivery_targets:
         - type: telegram
 
 # NOTE: npx works for local dev but not in NixOS sandboxed services.
@@ -160,7 +160,7 @@ Add the flake to your NixOS configuration:
               port = 8080;
               endpoints."doorbell" = {
                 prompt = [ { type = "text"; content = "Motion detected at {{.timestamp}}"; } ];
-                deliver = [ { type = "telegram"; } ];
+                deliveryTargets = [ { type = "telegram"; } ];
               };
             };
 
@@ -169,7 +169,7 @@ Add the flake to your NixOS configuration:
               prompt = [ { type = "text"; content = "Check system health. Reply HEARTBEAT_OK if all is well."; } ];
               schedule = "*-*-* *:00/30";  # every 30 minutes
               session = "123456789";       # share conversation with Telegram chat
-              deliver = [ { type = "telegram"; session = "123456789"; } ];
+              deliveryTargets = [ { type = "telegram"; session = "123456789"; } ];
               suppressIfContains = "HEARTBEAT_OK";
             };
 

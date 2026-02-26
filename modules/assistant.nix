@@ -14,7 +14,7 @@ let
     let
       # Build webhook endpoints (includes auto-generated cron endpoints)
       # Serialize a deliver target submodule to a YAML-ready attrset
-      mkDeliverTarget =
+      mkDeliveryTarget =
         dt:
         {
           type = dt.type;
@@ -43,7 +43,7 @@ let
           name = epName;
           prompt = map mkPromptInputYaml epCfg.prompt;
           session = epCfg.session;
-          deliver = map mkDeliverTarget epCfg.deliver;
+          delivery_targets = map mkDeliveryTarget epCfg.deliveryTargets;
         }
         // lib.optionalAttrs (epCfg.suppressIfContains != null) {
           suppressIfContains = epCfg.suppressIfContains;
@@ -281,7 +281,7 @@ let
       description = "Session name for persistent conversation. Null means isolated (no history).";
     };
 
-    deliver = lib.mkOption {
+    deliveryTargets = lib.mkOption {
       type = lib.types.listOf deliverTargetModule;
       default = [ { type = "telegram"; } ];
       description = "Delivery targets.";

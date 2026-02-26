@@ -120,7 +120,7 @@ webhook:
       # thinking:                         # per-endpoint thinking override (default: use global thinking)
       #   type: adaptive
       #   effort: low
-      deliver:                  # where to send responses (default: [{type: telegram}])
+      delivery_targets:         # where to send responses (default: [{type: telegram}])
         - type: telegram        # broadcast to all allowedChatIds
         # - type: telegram
         #   session: "123456789"  # send to specific chat
