@@ -93,9 +93,6 @@ let
         maxIterations = agentCfg.maxIterations;
         systemPrompt = map mkPromptInputYaml agentCfg.systemPrompt;
 
-        # Heartbeat and cronJobs are now handled externally via systemd timers
-        # The Haskell app no longer needs these config sections
-
         permissions = {
           safePatterns = agentCfg.permissions.safePatterns;
           dangerousPatterns = agentCfg.permissions.dangerousPatterns;
@@ -179,6 +176,7 @@ let
         ];
         default = "off";
         description = "Thinking type: off, adaptive, or fixed.";
+        example = "adaptive";
       };
 
       effort = lib.mkOption {
@@ -191,6 +189,7 @@ let
         );
         default = null;
         description = "Effort level for adaptive thinking.";
+        example = "medium";
       };
 
       budgetTokens = lib.mkOption {
@@ -817,8 +816,5 @@ in
         }
       ) allTimerCrons)
     ];
-
-    # Cron job webhook endpoints are now auto-created in the config generation
-    # so no warnings are needed
   };
 }
