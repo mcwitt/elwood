@@ -4,6 +4,7 @@ module Elwood.Claude.AgentLoop
   ( runAgentTurn,
     AgentConfig (..),
     AgentResult (..),
+    AgentObserver (..),
     RateLimitCallback,
     TextCallback,
   )
@@ -28,13 +29,13 @@ import Elwood.Claude.Types
     StopReason (..),
     ThinkingConfig (..),
     ToolName (..),
+    ToolSchema (..),
     ToolUseId (..),
     Usage (..),
     stopReasonToText,
   )
 import Elwood.Config (ThinkingEffort (..), ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
-import Elwood.Metrics (MetricsStore, recordApiResponse, recordInputBreakdown, recordToolCall)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
 import Elwood.Tools.Registry
@@ -59,6 +60,20 @@ type RateLimitCallback = Int -> Int -> IO ()
 -- | Callback for intermediate text content produced during tool-use turns
 type TextCallback = Text -> IO ()
 
+-- | Observer callbacks for metrics and telemetry.
+-- The agent loop fires these at key points without knowing the underlying
+-- recording mechanism.
+data AgentObserver = AgentObserver
+  { -- | Estimated input token breakdown (system prompt, tool search, messages, schemas)
+    onInputEstimate :: Maybe Text -> Maybe (Set ToolName) -> [ClaudeMessage] -> [ToolSchema] -> IO (),
+    -- | API response received (stop reason, usage)
+    onApiResponse :: StopReason -> Usage -> IO (),
+    -- | Tool call about to be executed (tool name)
+    onToolCall :: Text -> IO (),
+    -- | Context compaction triggered
+    onCompaction :: IO ()
+  }
+
 -- | Configuration for the agent loop (all environment/config params)
 data AgentConfig = AgentConfig
   { logger :: Logger,
@@ -70,9 +85,8 @@ data AgentConfig = AgentConfig
     model :: Text,
     thinking :: ThinkingLevel,
     maxIterations :: Int,
-    metrics :: MetricsStore,
-    -- | Source label for metrics
-    source :: Text,
+    -- | Observer for metrics and telemetry
+    observer :: AgentObserver,
     -- | Optional callback for rate limit notifications
     onRateLimit :: Maybe RateLimitCallback,
     -- | Optional callback for intermediate text produced during tool-use turns
@@ -109,7 +123,7 @@ runAgentTurn ::
   IO AgentResult
 runAgentTurn cfg history userMessage = do
   -- Compact history if needed before adding new message
-  compactedHistory <- compactIfNeeded cfg.logger cfg.client cfg.compaction cfg.metrics cfg.source history
+  compactedHistory <- compactIfNeeded cfg.logger cfg.client cfg.compaction cfg.observer.onCompaction cfg.observer.onApiResponse history
   let adjustedHorizon = min cfg.pruneHorizon (length compactedHistory)
       msgs = compactedHistory ++ [userMessage]
 
@@ -136,7 +150,7 @@ agentLoop cfg msgs iteration
           prunedMsgs = pruneToolResults cfg.pruneHorizon msgs
 
       -- Record estimated input token breakdown
-      recordInputBreakdown cfg.metrics mdl cfg.source cfg.systemPrompt cfg.toolSearch prunedMsgs schemas
+      cfg.observer.onInputEstimate cfg.systemPrompt cfg.toolSearch prunedMsgs schemas
 
       -- Build and send request
       let request =
@@ -187,7 +201,6 @@ agentLoop cfg msgs iteration
           pure $ AgentError $ formatError err
         Right response -> do
           let u = response.usage
-              src = cfg.source
           logInfo
             lgr
             "Claude response received"
@@ -200,7 +213,7 @@ agentLoop cfg msgs iteration
             ]
 
           -- Record API metrics
-          recordApiResponse cfg.metrics mdl src response.stopReason response.usage
+          cfg.observer.onApiResponse response.stopReason response.usage
 
           handleResponse cfg msgs response iteration
 
@@ -251,7 +264,6 @@ handleResponse cfg msgs response iteration =
     ContinueWithTools toolUses intermediateText allMessages -> do
       let lgr = cfg.logger
           reg = cfg.registry
-          mets = cfg.metrics
 
       logInfo lgr "Tool use requested" [("tool_count", T.pack (show (length toolUses)))]
 
@@ -261,7 +273,7 @@ handleResponse cfg msgs response iteration =
         _ -> pure ()
 
       -- Record tool call metrics
-      mapM_ (\case ToolUseBlock _ (ToolName tn) _ -> recordToolCall mets tn; _ -> pure ()) toolUses
+      mapM_ (\case ToolUseBlock _ (ToolName tn) _ -> cfg.observer.onToolCall tn; _ -> pure ()) toolUses
 
       -- Execute all tool uses
       toolResults <- executeToolUses lgr reg cfg.context toolUses
@@ -318,25 +330,22 @@ executeToolUse lgr reg ctx (ToolUseBlock tid n input) = do
           executeToolWithLogging lgr tool tn input
         PolicyAsk -> do
           -- Request approval before execution
-          case ctx.requestApproval of
-            Nothing -> do
-              -- No approval channel (e.g. webhook-triggered), deny
+          logInfo lgr "Requesting approval for tool" [("tool", tn)]
+          let inputSummary = T.take 200 (decodeUtf8 (LBS.toStrict (encode input)))
+          outcome <- ctx.requestApproval n inputSummary
+          case outcome of
+            ApprovalGranted -> do
+              logInfo lgr "Tool approved by user" [("tool", tn)]
+              executeToolWithLogging lgr tool tn input
+            ApprovalDenied -> do
+              logInfo lgr "Tool denied by user" [("tool", tn)]
+              pure $ ToolError "Action denied by user"
+            ApprovalTimeout -> do
+              logWarn lgr "Tool approval timed out" [("tool", tn)]
+              pure $ ToolError "Approval request timed out"
+            ApprovalUnavailable -> do
               logWarn lgr "No approval mechanism, denying tool" [("tool", tn)]
               pure $ ToolError $ "Tool '" <> tn <> "' requires approval but no approval channel is available"
-            Just reqApproval -> do
-              logInfo lgr "Requesting approval for tool" [("tool", tn)]
-              let inputSummary = T.take 200 (decodeUtf8 (LBS.toStrict (encode input)))
-              outcome <- reqApproval n inputSummary
-              case outcome of
-                ApprovalGranted -> do
-                  logInfo lgr "Tool approved by user" [("tool", tn)]
-                  executeToolWithLogging lgr tool tn input
-                ApprovalDenied -> do
-                  logInfo lgr "Tool denied by user" [("tool", tn)]
-                  pure $ ToolError "Action denied by user"
-                ApprovalTimeout -> do
-                  logWarn lgr "Tool approval timed out" [("tool", tn)]
-                  pure $ ToolError "Approval request timed out"
 executeToolUse _ _ _ _ = pure $ ToolError "Invalid tool use block"
 
 -- | Execute a tool and log the result

@@ -18,6 +18,9 @@ module Elwood.Metrics
     estimateTextTokens,
     estimateJsonTokens,
 
+    -- * Observer
+    metricsObserver,
+
     -- * Source Labels
     metricsSource,
 
@@ -43,6 +46,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
+import Elwood.Claude.AgentLoop (AgentObserver (..))
 import Elwood.Claude.Conversation qualified as Claude
 import Elwood.Claude.Types qualified as Claude
 import Elwood.Event.Types (EventSource (..))
@@ -236,13 +240,24 @@ metricsSource (TelegramSource _) = "telegram"
 metricsSource (WebhookSource n) = "webhook:" <> n
 metricsSource (CronSource n) = "cron:" <> n
 
+-- | Build an 'AgentObserver' that records metrics to a 'MetricsStore'.
+-- The @model@ and @source@ labels are baked in at construction time.
+metricsObserver :: MetricsStore -> Text -> Text -> AgentObserver
+metricsObserver store model source =
+  AgentObserver
+    { onInputEstimate = recordInputBreakdown store model source,
+      onApiResponse = recordApiResponse store model source,
+      onToolCall = recordToolCall store,
+      onCompaction = recordCompaction store
+    }
+
 -- | Render all metrics in Prometheus text exposition format
 renderMetrics :: MetricsStore -> Claude.ConversationStore -> Tools.ToolRegistry -> IO LBS.ByteString
 renderMetrics store convStore registry = do
   cs <- readIORef store.counters
   mcpCount <- readIORef store.mcpServerCount
   now <- getCurrentTime
-  convs <- Claude.allConversations convStore
+  convs <- convStore.allConversations
   let ts = Tools.allTools registry
       uptimeSeconds = floor (diffUTCTime now store.startTime) :: Int64
       builder =

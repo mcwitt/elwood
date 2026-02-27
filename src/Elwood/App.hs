@@ -125,7 +125,7 @@ runApp config = do
   let baseAgentContext =
         Tools.AgentContext
           { permissionConfig = config.permissions,
-            requestApproval = Nothing
+            requestApproval = Tools.noApprovalChannel
           }
 
   -- Helper to create agent context with approval function for a specific chat
@@ -133,7 +133,7 @@ runApp config = do
       mkAgentContextWithApproval cid =
         Tools.AgentContext
           { permissionConfig = config.permissions,
-            requestApproval = Just (requestToolApproval logger tg approvalCoordinator cid)
+            requestApproval = requestToolApproval logger tg approvalCoordinator cid
           }
 
   -- Create callback handler for approval responses

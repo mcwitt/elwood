@@ -11,6 +11,9 @@ module Elwood.Tools.Types
     Attachment (..),
     AttachmentType (..),
 
+    -- * Approval Defaults
+    noApprovalChannel,
+
     -- * Result Helpers
     toolSuccess,
     toolError,
@@ -34,8 +37,8 @@ data ToolResult
 data AgentContext = AgentContext
   { -- | Permission configuration for tool policy
     permissionConfig :: PermissionConfig,
-    -- | Approval request function (sends Telegram message, returns result)
-    requestApproval :: Maybe (Claude.ToolName -> Text -> IO ApprovalOutcome)
+    -- | Approval request function (transport-agnostic)
+    requestApproval :: Claude.ToolName -> Text -> IO ApprovalOutcome
   }
 
 -- | Outcome of an approval request
@@ -43,7 +46,14 @@ data ApprovalOutcome
   = ApprovalGranted
   | ApprovalDenied
   | ApprovalTimeout
+  | -- | No approval channel available (e.g. webhook-triggered events)
+    ApprovalUnavailable
   deriving stock (Show, Eq)
+
+-- | Default approval function for contexts without an interactive approval channel.
+-- Always returns 'ApprovalUnavailable'.
+noApprovalChannel :: Claude.ToolName -> Text -> IO ApprovalOutcome
+noApprovalChannel _ _ = pure ApprovalUnavailable
 
 -- | Type of attachment to send
 data AttachmentType

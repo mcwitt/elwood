@@ -4,6 +4,7 @@ module Elwood.Tools
     ToolResult (..),
     AgentContext (..),
     ApprovalOutcome (..),
+    noApprovalChannel,
     Attachment (..),
     AttachmentType (..),
 

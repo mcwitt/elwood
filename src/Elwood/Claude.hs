@@ -10,17 +10,15 @@ module Elwood.Claude
     -- * Agent Loop
     AgentConfig (..),
     AgentResult (..),
+    AgentObserver (..),
     RateLimitCallback,
     TextCallback,
     runAgentTurn,
 
     -- * Conversation
-    ConversationStore,
+    ConversationStore (..),
     newConversationStore,
-    getConversation,
-    allConversations,
-    updateConversation,
-    clearConversation,
+    newInMemoryConversationStore,
 
     -- * Compaction
     compactIfNeeded,

@@ -62,7 +62,7 @@ import Elwood.Event.Types
     SessionConfig (..),
   )
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
-import Elwood.Metrics (MetricsStore, metricsSource)
+import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Prompt (PromptInput, assemblePrompt)
 import Elwood.Telegram qualified as Telegram
@@ -164,7 +164,7 @@ handleEventCore env event callbacks = do
   (history, pruneHorizon) <- case mConversationId of
     Nothing -> pure ([], 0)
     Just cid -> do
-      conv <- Claude.getConversation env.conversations cid
+      conv <- env.conversations.getConversation cid
       let cacheExpired = diffUTCTime now conv.lastUpdated > anthropicCacheTtl
       h <- getAndUpdateHorizon env.pruneHorizons cid (length conv.messages) cacheExpired
       pure (conv.messages, h)
@@ -192,8 +192,7 @@ handleEventCore env event callbacks = do
             model = env.model,
             thinking = env.thinking,
             maxIterations = env.maxIterations,
-            metrics = env.metrics,
-            source = metricsSource src,
+            observer = metricsObserver env.metrics env.model (metricsSource src),
             onRateLimit = callbacks.onRateLimit,
             onText = callbacks.onText,
             onBeforeApiCall = callbacks.onBeforeApiCall,
@@ -213,7 +212,7 @@ handleEventCore env event callbacks = do
       -- Update conversation (skip for isolated sessions)
       case mConversationId of
         Nothing -> pure ()
-        Just cid -> Claude.updateConversation env.conversations cid allMessages
+        Just cid -> env.conversations.updateConversation cid allMessages
 
       -- Deliver response
       callbacks.onResponse responseText
@@ -442,7 +441,7 @@ handleTelegramMessage env msg =
 
     handleClear :: IO (Maybe Text)
     handleClear = do
-      Claude.clearConversation env.conversations (T.pack (show chatIdVal))
+      env.conversations.clearConversation (T.pack (show chatIdVal))
       logInfo lgr "Conversation cleared" [("chat_id", T.pack (show chatIdVal))]
       pure (Just $ formatNotify Info "Conversation cleared")
 
