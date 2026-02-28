@@ -842,13 +842,13 @@ in
               CURRENT_TIME=$(${pkgs.coreutils}/bin/date -Iseconds)
               PAYLOAD="{\"trigger\": \"systemd-timer\", \"cron\": \"${cronName}\", \"time\": \"$CURRENT_TIME\"}"
               if [ -n "''${WEBHOOK_SECRET:-}" ]; then
-                ${pkgs.curl}/bin/curl -s -X POST \
+                ${pkgs.curl}/bin/curl -sf --connect-timeout 10 --max-time 30 -X POST \
                   "http://localhost:${toString webhookPort}/webhook/${webhookEndpoint}" \
                   -H "Content-Type: application/json" \
                   -H "X-Webhook-Secret: $WEBHOOK_SECRET" \
                   -d "$PAYLOAD"
               else
-                ${pkgs.curl}/bin/curl -s -X POST \
+                ${pkgs.curl}/bin/curl -sf --connect-timeout 10 --max-time 30 -X POST \
                   "http://localhost:${toString webhookPort}/webhook/${webhookEndpoint}" \
                   -H "Content-Type: application/json" \
                   -d "$PAYLOAD"
