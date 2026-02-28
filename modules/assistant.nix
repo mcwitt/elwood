@@ -511,14 +511,26 @@ let
           endpoints = lib.mkOption {
             type = lib.types.attrsOf webhookEndpointModule;
             default = { };
-            description = "Webhook endpoint configurations.";
+            description = ''
+              Webhook endpoint configurations.
+              Prompts support `{{.field}}` template placeholders that are
+              substituted with values from the incoming JSON payload
+              (e.g. `{{.repo}}`, `{{.branch}}`). Nested fields use dot
+              notation (e.g. `{{.commit.author}}`).
+            '';
           };
         };
 
         cronJobs = lib.mkOption {
           type = lib.types.attrsOf cronJobModule;
           default = { };
-          description = "Scheduled jobs for this agent.";
+          description = ''
+            Scheduled jobs for this agent.
+            Prompts support `{{.field}}` template variables from the cron payload:
+            - `{{.time}}` — ISO 8601 timestamp with timezone (e.g. `2026-02-27T08:00:00-05:00`)
+            - `{{.trigger}}` — always `"systemd-timer"` for cron jobs
+            - `{{.cron}}` — the cron job attribute name (e.g. `"daily-summary"`)
+          '';
         };
 
         mcpServers = lib.mkOption {
@@ -824,17 +836,19 @@ in
             User = agentCfg.user;
             Group = agentCfg.group;
             ExecStart = pkgs.writeShellScript "assistant-cron-${timerName}" ''
+              CURRENT_TIME=$(${pkgs.coreutils}/bin/date -Iseconds)
+              PAYLOAD="{\"trigger\": \"systemd-timer\", \"cron\": \"${cronName}\", \"time\": \"$CURRENT_TIME\"}"
               if [ -n "''${WEBHOOK_SECRET:-}" ]; then
                 ${pkgs.curl}/bin/curl -s -X POST \
                   "http://localhost:${toString webhookPort}/webhook/${webhookEndpoint}" \
                   -H "Content-Type: application/json" \
                   -H "X-Webhook-Secret: $WEBHOOK_SECRET" \
-                  -d '{"trigger": "systemd-timer", "cron": "${cronName}"}'
+                  -d "$PAYLOAD"
               else
                 ${pkgs.curl}/bin/curl -s -X POST \
                   "http://localhost:${toString webhookPort}/webhook/${webhookEndpoint}" \
                   -H "Content-Type: application/json" \
-                  -d '{"trigger": "systemd-timer", "cron": "${cronName}"}'
+                  -d "$PAYLOAD"
               fi
             '';
             StandardOutput = "journal";

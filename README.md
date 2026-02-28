@@ -120,7 +120,7 @@ The system prompt is assembled from a configurable list of inputs. Each input is
 
 Place workspace files in your `workspace_dir` (e.g. `SOUL.md` for personality and behavioral guidelines).
 
-Webhook and cron job prompts use the same input format. Webhook text inputs support `{{.field}}` template placeholders for dynamic content from the JSON payload.
+Webhook and cron job prompts use the same input format. Webhook text inputs support `{{.field}}` template placeholders for dynamic content from the JSON payload. Cron jobs automatically include `{{.time}}` (ISO 8601), `{{.trigger}}`, and `{{.cron}}` in the payload.
 
 ## NixOS Deployment
 
@@ -174,7 +174,11 @@ Add the flake to your NixOS configuration:
             };
 
             cronJobs.daily-summary = {
-              prompt = [ { type = "text"; content = "Generate my daily summary"; } ];
+              prompt = [ { type = "text"; content = "The current time is {{.time}}. Generate my daily summary."; } ];
+              # Available template variables:
+              #   {{.time}}    - ISO 8601 timestamp (e.g., 2026-02-27T08:00:00-05:00)
+              #   {{.trigger}} - always "systemd-timer" for cron jobs
+              #   {{.cron}}    - the cron job name (e.g., "daily-summary")
               schedule = "*-*-* 08:00";
               deliveryTarget = { type = "telegram_broadcast"; };  # broadcast (default)
               # session = null (default); each run is isolated
