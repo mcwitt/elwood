@@ -830,6 +830,9 @@ in
           description = "Cron job ${cronName} for assistant ${agentName}";
           after = [ "assistant-${agentName}.service" ];
           requires = [ "assistant-${agentName}.service" ];
+          # Timer-activated oneshots should not be restarted during nixos-rebuild switch;
+          # the timer will use the updated service definition on its next firing.
+          restartIfChanged = false;
 
           serviceConfig = {
             Type = "oneshot";

@@ -233,6 +233,7 @@ When the webhook server is enabled, a Prometheus-compatible metrics endpoint is 
 | `elwood_output_tokens_total` | counter | model, source | Output tokens consumed |
 | `elwood_cache_read_tokens_total` | counter | model, source | Cache read tokens |
 | `elwood_cache_creation_tokens_total` | counter | model, source | Cache creation tokens |
+| `elwood_estimated_input_tokens_total` | counter | model, source, type, tool | Estimated input tokens by content type |
 | `elwood_api_requests_total` | counter | model, source, stop_reason | API requests made |
 | `elwood_tool_calls_total` | counter | tool | Tool invocations |
 | `elwood_compactions_total` | counter | — | Conversation compactions |
