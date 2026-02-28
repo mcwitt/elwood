@@ -46,6 +46,8 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (sortOn)
 import Data.List.NonEmpty qualified as NE
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Set (Set)
@@ -104,8 +106,8 @@ data AppEnv = AppEnv
     model :: Text,
     -- | Extended thinking level
     thinking :: ThinkingLevel,
-    -- | All allowed chat IDs (for broadcast)
-    notifyChatIds :: [Int64],
+    -- | Telegram chat ID to session config mapping (source of truth for allowed chats)
+    telegramSessionMap :: Map Int64 SessionConfig,
     -- | Attachment queue
     attachmentQueue :: TVar [Tools.Attachment],
     -- | Maximum agent loop iterations per turn
@@ -325,7 +327,7 @@ deliverTextOnly env target msg = case target of
   TelegramDelivery chatIds ->
     mapM_ (\cid -> notifySafe env cid msg) chatIds
   TelegramBroadcast ->
-    mapM_ (\cid -> notifySafe env cid msg) env.notifyChatIds
+    mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramSessionMap)
   LogOnly ->
     logInfo env.logger "Event response (log only)" [("response", T.take 100 msg)]
 
@@ -347,7 +349,7 @@ deliverToTargets env target msg = do
 -- | Resolve a delivery target to its Telegram chat IDs
 targetChatIds :: AppEnv -> DeliveryTarget -> [Int64]
 targetChatIds _ (TelegramDelivery chatIds) = NE.toList chatIds
-targetChatIds env TelegramBroadcast = env.notifyChatIds
+targetChatIds env TelegramBroadcast = Map.keys env.telegramSessionMap
 targetChatIds _ LogOnly = []
 
 -- | Send a single attachment to a chat, choosing photo vs document
@@ -397,7 +399,7 @@ mkRateLimitCallback env event attemptNum waitSecs = do
     TelegramDelivery chatIds ->
       mapM_ (\cid -> notifySafe env cid msg) chatIds
     TelegramBroadcast ->
-      mapM_ (\cid -> notifySafe env cid msg) env.notifyChatIds
+      mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramSessionMap)
     LogOnly ->
       logInfo env.logger "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
 
@@ -407,7 +409,7 @@ sendTypingToTargets env target = case target of
   TelegramDelivery chatIds ->
     mapM_ (Telegram.sendChatAction env.telegram) chatIds
   TelegramBroadcast ->
-    mapM_ (Telegram.sendChatAction env.telegram) env.notifyChatIds
+    mapM_ (Telegram.sendChatAction env.telegram) (Map.keys env.telegramSessionMap)
   LogOnly -> pure ()
 
 -- | Create before-API-call callback to send typing indicators
@@ -439,11 +441,19 @@ handleTelegramMessage env msg =
     chatIdVal :: Int64
     chatIdVal = msg.chat.id_
 
+    chatSession :: SessionConfig
+    chatSession = fromMaybe Isolated (Map.lookup chatIdVal env.telegramSessionMap)
+
     handleClear :: IO (Maybe Text)
     handleClear = do
-      env.conversations.clearConversation (T.pack (show chatIdVal))
-      logInfo lgr "Conversation cleared" [("chat_id", T.pack (show chatIdVal))]
-      pure (Just $ formatNotify Info "Conversation cleared")
+      case sessionToConversationId chatSession of
+        Nothing -> do
+          logInfo lgr "Clear requested for isolated chat" [("chat_id", T.pack (show chatIdVal))]
+          pure (Just $ formatNotify Info "This chat has no persistent session to clear")
+        Just cid -> do
+          env.conversations.clearConversation cid
+          logInfo lgr "Conversation cleared" [("chat_id", T.pack (show chatIdVal)), ("session", cid)]
+          pure (Just $ formatNotify Info "Conversation cleared")
 
     handleMessageWithPhoto :: Text -> Maybe [Telegram.PhotoSize] -> IO (Maybe Text)
     handleMessageWithPhoto userText maybePhotos = do
@@ -473,7 +483,7 @@ handleTelegramMessage env msg =
                     payload = Null,
                     prompt = userText,
                     image = imageData,
-                    session = Named (T.pack (show chatIdVal)),
+                    session = chatSession,
                     deliveryTarget = TelegramDelivery (pure chatIdVal)
                   }
 

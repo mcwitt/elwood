@@ -2,6 +2,7 @@
 
 module Elwood.Config
   ( Config (..),
+    TelegramChatConfig (..),
     CompactionConfig (..),
     MCPServerConfig (..),
     PermissionConfig (..),
@@ -21,10 +22,12 @@ module Elwood.Config
 where
 
 import Control.Applicative ((<|>))
+import Control.Monad (when)
 import Data.Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Int (Int64)
+import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -58,8 +61,8 @@ data Config = Config
     telegramToken :: Text,
     -- | Anthropic API key (loaded from environment)
     anthropicApiKey :: Text,
-    -- | List of chat IDs allowed to interact with the bot
-    allowedChatIds :: [Int64],
+    -- | Telegram chat configurations (ID + session)
+    telegramChats :: [TelegramChatConfig],
     -- | Claude model to use (e.g., "claude-sonnet-4-20250514")
     model :: Text,
     -- | Permission configuration for tools
@@ -105,11 +108,25 @@ data MCPServerConfig = MCPServerConfig
   }
   deriving stock (Show, Generic)
 
+-- | Telegram chat configuration from YAML file
+data TelegramChatConfigFile = TelegramChatConfigFile
+  { id_ :: Int64,
+    session :: Maybe Text
+  }
+  deriving stock (Show, Generic)
+
+-- | Resolved telegram chat configuration
+data TelegramChatConfig = TelegramChatConfig
+  { id_ :: Int64,
+    session :: SessionConfig
+  }
+  deriving stock (Show, Eq, Generic)
+
 -- | YAML file configuration (without secrets)
 data ConfigFile = ConfigFile
   { stateDir :: Maybe FilePath,
     workspaceDir :: Maybe FilePath,
-    allowedChatIds :: Maybe [Int64],
+    telegramChats :: Maybe [TelegramChatConfigFile],
     model :: Maybe Text,
     permissions :: Maybe PermissionConfigFile,
     compaction :: Maybe CompactionConfigFile,
@@ -148,13 +165,20 @@ data MCPServerConfigFile = MCPServerConfigFile
   }
   deriving stock (Show, Generic)
 
+instance FromJSON TelegramChatConfigFile where
+  parseJSON = withObject "TelegramChatConfigFile" $ \v -> do
+    rejectUnknownKeys "TelegramChatConfigFile" ["id", "session"] v
+    TelegramChatConfigFile
+      <$> v .: "id"
+      <*> v .:? "session"
+
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "allowed_chat_ids", "model", "permissions", "compaction", "mcp_servers", "webhook", "thinking", "max_iterations", "tool_search", "dynamic_tool_loading", "system_prompt"] v
+    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "model", "permissions", "compaction", "mcp_servers", "webhook", "thinking", "max_iterations", "tool_search", "dynamic_tool_loading", "system_prompt"] v
     ConfigFile
       <$> v .:? "state_dir"
       <*> v .:? "workspace_dir"
-      <*> v .:? "allowed_chat_ids"
+      <*> v .:? "telegram_chats"
       <*> v .:? "model"
       <*> v .:? "permissions"
       <*> v .:? "compaction"
@@ -297,13 +321,26 @@ loadConfig path = do
         Nothing -> [WorkspaceFile "SOUL.md"]
         Just spf -> map resolvePromptInput spf
 
+  let telegramChats_ =
+        [ TelegramChatConfig
+            { id_ = tc.id_,
+              session = maybe Isolated Named tc.session
+            }
+        | tc <- fromMaybe [] configFile.telegramChats
+        ]
+
+  -- Validate no duplicate chat IDs
+  let chatIds = map (.id_) telegramChats_
+  when (nub chatIds /= chatIds) $
+    fail "telegram_chats contains duplicate chat IDs"
+
   pure
     Config
       { stateDir = fromMaybe "/var/lib/assistant" configFile.stateDir,
         workspaceDir = workspaceDir_,
         telegramToken = telegramToken_,
         anthropicApiKey = anthropicApiKey_,
-        allowedChatIds = fromMaybe [] configFile.allowedChatIds,
+        telegramChats = telegramChats_,
         model = fromMaybe "claude-sonnet-4-20250514" configFile.model,
         permissions = perms,
         compaction = compact,

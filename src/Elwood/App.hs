@@ -8,6 +8,7 @@ import Control.Concurrent.STM (newTVarIO)
 import Control.Exception (finally)
 import Data.Foldable (for_)
 import Data.Int (Int64)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -115,11 +116,12 @@ runApp config = do
     "Tool registry initialized"
     [("tool_count", T.pack (show (length (Tools.allTools reg))))]
 
-  -- Log allowed chats
+  -- Log configured chats
+  let chatIds = map (.id_) config.telegramChats
   logInfo
     logger
-    "Allowed chat IDs"
-    [("chats", T.pack (show config.allowedChatIds))]
+    "Telegram chats"
+    [("chats", T.pack (show chatIds))]
 
   -- Create base agent context (without per-chat approval function)
   let baseAgentContext =
@@ -156,7 +158,7 @@ runApp config = do
             workspaceDir = config.workspaceDir,
             model = config.model,
             thinking = config.thinking,
-            notifyChatIds = config.allowedChatIds,
+            telegramSessionMap = Map.fromList [(tc.id_, tc.session) | tc <- config.telegramChats],
             attachmentQueue = attachmentQueue_,
             maxIterations = config.maxIterations,
             metrics = mets,
@@ -197,7 +199,7 @@ runApp config = do
         Telegram.runPolling
           logger
           tg
-          config.allowedChatIds
+          chatIds
           msgHandler
           callbackHandler
 

@@ -9,10 +9,13 @@ state_dir: /var/lib/assistant
 # Default: /var/lib/assistant/workspace
 workspace_dir: /var/lib/assistant/workspace
 
-# Telegram chat IDs allowed to interact with the bot
+# Telegram chat configurations
 # Find your chat ID by messaging @userinfobot on Telegram
-allowed_chat_ids:
-  - 123456789
+# Each chat has an ID and an optional session name for persistent conversation.
+# Omit session for isolated/ephemeral mode (no conversation history).
+telegram_chats:
+  - id: 123456789
+    session: main       # persistent conversation (omit for isolated/ephemeral)
 
 # Claude model to use
 # Default: claude-sonnet-4-20250514
@@ -120,7 +123,7 @@ webhook:
       #   type: adaptive
       #   effort: low
       delivery_target:                      # where to send responses (default: telegram_broadcast)
-        type: telegram_broadcast          # broadcast to all allowed_chat_ids
+        type: telegram_broadcast          # broadcast to all telegram_chats
       # delivery_target:
       #   type: telegram
       #   chat_ids: [123456789]           # send to specific chat(s)

@@ -87,7 +87,15 @@ let
       configContent = {
         state_dir = agentCfg.stateDir;
         workspace_dir = agentCfg.workspaceDir;
-        allowed_chat_ids = agentCfg.allowedChatIds;
+        telegram_chats = map (
+          tc:
+          {
+            inherit (tc) id;
+          }
+          // lib.optionalAttrs (tc.session != null) {
+            inherit (tc) session;
+          }
+        ) agentCfg.telegramChats;
         model = agentCfg.model;
         thinking = mkThinkingConfig agentCfg.thinking;
         max_iterations = agentCfg.maxIterations;
@@ -356,6 +364,22 @@ let
     };
   };
 
+  # Submodule for telegram chat configuration
+  telegramChatModule = lib.types.submodule {
+    options = {
+      id = lib.mkOption {
+        type = lib.types.int;
+        description = "Telegram chat ID.";
+      };
+
+      session = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Session name for persistent conversation. Null means isolated (no history).";
+      };
+    };
+  };
+
   # Submodule for each agent
   agentModule = lib.types.submodule (
     { name, ... }:
@@ -390,10 +414,16 @@ let
           example = lib.literalExpression "[ pkgs.python3 pkgs.jq ]";
         };
 
-        allowedChatIds = lib.mkOption {
-          type = lib.types.listOf lib.types.int;
+        telegramChats = lib.mkOption {
+          type = lib.types.listOf telegramChatModule;
           default = [ ];
-          description = "Telegram chat IDs allowed to interact with this agent.";
+          description = "Telegram chat configurations (ID + optional session name).";
+          example = [
+            {
+              id = 123456789;
+              session = "main";
+            }
+          ];
         };
 
         model = lib.mkOption {
@@ -599,12 +629,12 @@ in
         {
           elwood = {
             enable = true;
-            allowedChatIds = [ 123456789 ];
+            telegramChats = [ { id = 123456789; session = "main"; } ];
             environmentFile = "/run/secrets/elwood-env";
           };
           career-coach = {
             enable = true;
-            allowedChatIds = [ 123456789 ];
+            telegramChats = [ { id = 123456789; } ];
             environmentFile = "/run/secrets/career-coach-env";
             model = "claude-sonnet-4-20250514";
           };
@@ -649,14 +679,14 @@ in
             }
           ];
 
-        # Each enabled agent must have at least one allowedChatId
+        # Each enabled agent must have at least one telegramChat
         chatIdAssertions = lib.mapAttrsToList (name: agent: {
-          assertion = agent.allowedChatIds != [ ];
+          assertion = agent.telegramChats != [ ];
           message = ''
-            Assistant agent '${name}' has no allowedChatIds configured.
-            At least one Telegram chat ID is required:
+            Assistant agent '${name}' has no telegramChats configured.
+            At least one Telegram chat is required:
 
-            services.assistant.agents.${name}.allowedChatIds = [ <your-chat-id> ];
+            services.assistant.agents.${name}.telegramChats = [ { id = <your-chat-id>; } ];
           '';
         }) enabledAgents;
 

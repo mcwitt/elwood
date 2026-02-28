@@ -56,8 +56,9 @@ Create a `config.yaml` file (see [`config.yaml.example`](config.yaml.example) fo
 state_dir: /var/lib/assistant
 workspace_dir: /var/lib/assistant/workspace
 
-allowed_chat_ids:
-  - 123456789
+telegram_chats:
+  - id: 123456789
+    session: main
 
 system_prompt:
   - type: workspace_file
@@ -138,7 +139,7 @@ Add the flake to your NixOS configuration:
         ({ pkgs, system, ... }: {
           services.assistant.agents.elwood = {
             enable = true;
-            allowedChatIds = [ 123456789 ];
+            telegramChats = [ { id = 123456789; session = "main"; } ];
             environmentFile = "/run/secrets/elwood-env";
             workspaceDir = "/var/lib/assistant/elwood/workspace";
 
@@ -199,7 +200,7 @@ Add the flake to your NixOS configuration:
           # Run a second agent with different config
           services.assistant.agents.career-coach = {
             enable = true;
-            allowedChatIds = [ 123456789 ];
+            telegramChats = [ { id = 123456789; } ];
             environmentFile = "/run/secrets/career-coach-env";
             model = "claude-sonnet-4-20250514";
           };

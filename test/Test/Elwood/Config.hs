@@ -6,6 +6,7 @@ import Data.Vector qualified as V
 import Elwood.Config
   ( CompactionConfig (..),
     Config (..),
+    TelegramChatConfig (..),
     ThinkingEffort (..),
     ThinkingLevel (..),
     WebhookConfig (..),
@@ -14,7 +15,7 @@ import Elwood.Config
     parseThinkingLevel,
     parseToolSearch,
   )
-import Elwood.Event.Types (DeliveryTarget (..))
+import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Paths_elwood (getDataFileName)
 import System.Environment (setEnv, unsetEnv)
 import Test.Tasty
@@ -139,7 +140,10 @@ exampleConfigTests =
         -- Verify some fields parsed correctly
         config.model @?= "claude-sonnet-4-20250514"
         config.thinking @?= ThinkingOff
-        config.allowedChatIds @?= [123456789]
+        length config.telegramChats @?= 1
+        let tc = head config.telegramChats
+        tc.id_ @?= 123456789
+        tc.session @?= Named "main"
         config.compaction.tokenThreshold @?= 50000
         -- Verify delivery target from example config
         let webhooks = config.webhook.webhooks
