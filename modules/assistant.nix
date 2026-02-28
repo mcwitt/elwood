@@ -328,9 +328,13 @@ let
   cronJobModule = lib.types.submodule {
     options = commonEndpointOptions // {
       schedule = lib.mkOption {
-        type = lib.types.str;
+        type = lib.types.either lib.types.str (lib.types.listOf lib.types.str);
         default = "hourly";
-        description = "systemd OnCalendar schedule.";
+        description = ''
+          systemd OnCalendar schedule. A single string or a list of strings.
+          Use a list for irregular times that can't be expressed as one expression
+          (e.g. [ "*-*-* 07:00" "*-*-* 11:30" ] instead of the invalid "*-*-* 07:00,11:30").
+        '';
         example = "*-*-* 09:00";
       };
     };
