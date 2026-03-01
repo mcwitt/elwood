@@ -8,7 +8,6 @@ module Elwood.Claude.Conversation
 where
 
 import Control.Concurrent.MVar
-import Control.Exception (SomeException, catch)
 import Data.Aeson (eitherDecodeFileStrict, encodeFile)
 import Data.Char (isAlphaNum)
 import Data.Map.Strict qualified as Map
@@ -98,7 +97,7 @@ fileLoadOrCreateConversation convDir cache sid = do
         result <- eitherDecodeFileStrict path
         case result of
           Right loadedConv -> pure loadedConv
-          Left _err -> createEmptyConversation sid
+          Left err -> fail $ "Failed to parse conversation file " <> path <> ": " <> err
       else createEmptyConversation sid
 
   -- Update cache
@@ -139,10 +138,6 @@ fileSaveConversation :: FilePath -> Conversation -> IO ()
 fileSaveConversation convDir conv = do
   let path = conversationPath convDir conv.sessionId
   encodeFile path conv
-    `catch` \(_ :: SomeException) ->
-      -- Silently ignore write errors for now
-      -- In a production system we'd want better error handling
-      pure ()
 
 -- ============================================================
 -- In-memory implementation

@@ -24,8 +24,6 @@ where
 import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Data.Aeson
-import Data.Aeson.Key qualified as Key
-import Data.Aeson.KeyMap qualified as KM
 import Data.Int (Int64)
 import Data.List (nub)
 import Data.Map.Strict (Map)
@@ -174,7 +172,7 @@ instance FromJSON TelegramChatConfigFile where
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "model", "permissions", "compaction", "mcp_servers", "webhook", "thinking", "max_iterations", "tool_search", "dynamic_tool_loading", "system_prompt"] v
+    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "model", "permissions", "compaction", "mcp_servers", "webhook", "thinking", "max_iterations", "tool_search", "system_prompt"] v
     ConfigFile
       <$> v .:? "state_dir"
       <*> v .:? "workspace_dir"
@@ -186,7 +184,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "webhook"
       <*> v .:? "thinking"
       <*> v .:? "max_iterations"
-      <*> (v .:? "tool_search" <|> v .:? "dynamic_tool_loading")
+      <*> v .:? "tool_search"
       <*> v .:? "system_prompt"
 
 instance FromJSON PermissionConfigFile where
@@ -358,14 +356,8 @@ loadConfig path = do
 --   false / absent         -> Nothing (disabled)
 --   true / []              -> Just [] (enabled, all tools deferred)
 --   [tool1, tool2]         -> Just [tool1, tool2] (enabled, listed tools never deferred)
---   {alwaysLoad: [...]}    -> Just [...] (backward compat with old dynamicToolLoading format)
 parseToolSearch :: Value -> Maybe [Text]
 parseToolSearch (Bool False) = Nothing
 parseToolSearch (Bool True) = Just []
 parseToolSearch (Array arr) = Just [t | String t <- V.toList arr]
-parseToolSearch (Object obj) =
-  let names = case KM.lookup (Key.fromText "alwaysLoad") obj of
-        Just (Array arr) -> [t | String t <- V.toList arr]
-        _ -> []
-   in Just names
 parseToolSearch _ = Nothing

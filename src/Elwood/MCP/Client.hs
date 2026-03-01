@@ -196,11 +196,16 @@ sendRequest server method_ params_ = do
 
 -- | Read and parse JSON-RPC response, skipping non-JSON lines
 readResponse :: MCPServer -> Int -> IO (Either MCPError Value)
-readResponse server expectedId = readJsonLine 100
+readResponse server expectedId = readJsonLine 100 Nothing
   where
-    readJsonLine :: Int -> IO (Either MCPError Value)
-    readJsonLine 0 = pure $ Left $ MCPProtocolError "No JSON response found after 100 lines"
-    readJsonLine remaining = do
+    readJsonLine :: Int -> Maybe String -> IO (Either MCPError Value)
+    readJsonLine 0 lastErr =
+      pure $
+        Left $
+          MCPProtocolError $
+            "No JSON response found after 100 lines"
+              <> maybe "" (\e -> " (last parse error: " <> T.pack e <> ")") lastErr
+    readJsonLine remaining lastErr = do
       responseResult <- try $ BS.hGetLine server.stdout
       case responseResult of
         Left (e :: SomeException) ->
@@ -208,9 +213,9 @@ readResponse server expectedId = readJsonLine 100
         Right lineBytes -> do
           let line = BL.fromStrict lineBytes
           if not (isJsonLine lineBytes)
-            then readJsonLine (remaining - 1)
+            then readJsonLine (remaining - 1) lastErr
             else case eitherDecode line of
-              Left _ -> readJsonLine (remaining - 1)
+              Left err -> readJsonLine (remaining - 1) (Just err)
               Right response -> validateResponse response
 
     validateResponse response =

@@ -1,7 +1,6 @@
 module Test.Elwood.Config (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
-import Data.Text (Text)
 import Data.Vector qualified as V
 import Elwood.Config
   ( CompactionConfig (..),
@@ -113,11 +112,8 @@ toolSearchTests =
       testCase "array with tool names parses correctly" $ do
         let val = Array (V.fromList [String "run_command", String "save_memory"])
         parseToolSearch val @?= Just ["run_command", "save_memory"],
-      testCase "object with alwaysLoad parses (backward compat)" $ do
-        let val = object ["alwaysLoad" .= (["run_command", "save_memory"] :: [Text])]
-        parseToolSearch val @?= Just ["run_command", "save_memory"],
-      testCase "object without alwaysLoad returns empty list" $ do
-        parseToolSearch (object []) @?= Just [],
+      testCase "object returns Nothing" $ do
+        parseToolSearch (object []) @?= Nothing,
       testCase "null returns Nothing" $ do
         parseToolSearch Null @?= Nothing,
       testCase "string returns Nothing" $ do

@@ -36,7 +36,7 @@ import Data.ByteString.Builder qualified as B
 import Data.ByteString.Lazy qualified as LBS
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
-import Data.List (find, nub)
+import Data.List (find, intersperse, nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -454,12 +454,6 @@ estimateMessageTokens :: [Claude.ClaudeMessage] -> Int
 estimateMessageTokens msgs =
   let jsonBytes = LBS.length $ encode msgs
    in fromIntegral jsonBytes `div` 4
-
--- | Intersperse an element between list items
-intersperse :: a -> [a] -> [a]
-intersperse _ [] = []
-intersperse _ [x] = [x]
-intersperse sep (x : xs) = x : sep : intersperse sep xs
 
 -- | Pricing per model family (all rates in $/MTok)
 data ModelPricing = ModelPricing

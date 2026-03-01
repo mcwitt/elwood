@@ -6,7 +6,7 @@ module Elwood.Telegram.Polling
 where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Exception (SomeException, catch)
+import Control.Exception (SomeException, catch, try)
 import Data.Foldable (for_)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
@@ -134,16 +134,19 @@ runPolling logger client allowedChats handler callbackHandler = do
           case reply of
             Nothing -> pure ()
             Just replyText -> do
-              sendMessage client cid replyText `catch` \(e :: SomeException) ->
-                logError
-                  logger
-                  "Failed to send reply"
-                  [ ("chat_id", T.pack (show cid)),
-                    ("error", T.pack (show e))
-                  ]
-              logInfo
-                logger
-                "Sent reply"
-                [ ("chat_id", T.pack (show cid)),
-                  ("text", T.take 50 replyText)
-                ]
+              sendResult <- try $ sendMessage client cid replyText
+              case sendResult of
+                Left (e :: SomeException) ->
+                  logError
+                    logger
+                    "Failed to send reply"
+                    [ ("chat_id", T.pack (show cid)),
+                      ("error", T.pack (show e))
+                    ]
+                Right () ->
+                  logInfo
+                    logger
+                    "Sent reply"
+                    [ ("chat_id", T.pack (show cid)),
+                      ("text", T.take 50 replyText)
+                    ]

@@ -18,7 +18,6 @@ module Elwood.Memory
   )
 where
 
-import Control.Exception (SomeException, catch)
 import Data.Char (isAlphaNum)
 import Data.List (sortOn)
 import Data.Ord (Down (..))
@@ -64,9 +63,7 @@ saveMemory store k c = do
     Nothing -> pure $ Left "Invalid memory key (must contain alphanumeric characters)"
     Just safeKey -> do
       let path = store.directory </> T.unpack safeKey <> ".md"
-      catch
-        (Right <$> TIO.writeFile path c)
-        (\(e :: SomeException) -> pure $ Left $ "Failed to save memory: " <> T.pack (show e))
+      Right <$> TIO.writeFile path c
 
 -- | Search memories by keyword
 -- Returns memories containing any of the search terms, sorted by relevance
@@ -96,10 +93,7 @@ searchMemory store query = do
 -- | List all memories with their contents
 listMemories :: MemoryStore -> IO [(Text, Text)]
 listMemories store = do
-  files <-
-    catch
-      (listDirectory store.directory)
-      (\(_ :: SomeException) -> pure [])
+  files <- listDirectory store.directory
   let mdFiles = filter (\f -> ".md" `T.isSuffixOf` T.pack f) files
   mapM readMemoryFile mdFiles
   where
@@ -107,10 +101,7 @@ listMemories store = do
     readMemoryFile filename = do
       let k = T.pack $ takeBaseName filename
           path = store.directory </> filename
-      c <-
-        catch
-          (TIO.readFile path)
-          (\(_ :: SomeException) -> pure "")
+      c <- TIO.readFile path
       pure (k, c)
 
 -- | Sanitize a key to be filesystem-safe

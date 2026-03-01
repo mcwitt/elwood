@@ -8,7 +8,6 @@ module Elwood.Prompt
   )
 where
 
-import Control.Exception (SomeException, catch)
 import Data.Aeson
 import Data.Aeson.Types (Parser)
 import Data.Maybe (catMaybes)
@@ -66,9 +65,7 @@ resolveInput dir (WorkspaceFile fp) = do
   exists <- doesFileExist fullPath
   if exists
     then do
-      c <-
-        TIO.readFile fullPath
-          `catch` \(_ :: SomeException) -> pure ""
+      c <- TIO.readFile fullPath
       pure $
         if T.null c
           then Nothing
