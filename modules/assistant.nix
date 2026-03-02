@@ -170,7 +170,8 @@ let
       null
     else
       pkgs.writeShellScript "assistant-default-content" (
-        lib.concatMapStrings mkFileCheck (lib.unique files)
+        "mkdir -p ${lib.escapeShellArg agentCfg.workspaceDir}\n"
+        + lib.concatMapStrings mkFileCheck (lib.unique files)
       );
 
   # Submodule for thinking configuration
@@ -757,8 +758,13 @@ in
         }) uniqueGroups
       );
 
-    # Create state directories
-    systemd.tmpfiles.rules = lib.concatMap (agentCfg: [
+    # Create state directories.  The shared parent must be root-owned so
+    # systemd-tmpfiles doesn't reject the root → agent-user ownership
+    # transition when multiple agents share the prefix.
+    systemd.tmpfiles.rules = [
+      "d /var/lib/assistant 0755 root root -"
+    ]
+    ++ lib.concatMap (agentCfg: [
       "d ${agentCfg.stateDir} 0750 ${agentCfg.user} ${agentCfg.group} -"
       "d ${agentCfg.workspaceDir} 0750 ${agentCfg.user} ${agentCfg.group} -"
     ]) (lib.attrValues enabledAgents);
