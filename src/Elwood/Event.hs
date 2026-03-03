@@ -67,6 +67,7 @@ import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Prompt (PromptInput, assemblePrompt)
+import Elwood.Session (SessionLocks, withSessionLock)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
 import Elwood.Tools.Attachment (isPhotoExtension)
@@ -119,7 +120,9 @@ data AppEnv = AppEnv
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
     toolSearch :: Maybe (Set Claude.ToolName),
     -- | Per-session prune horizons for tool result pruning
-    pruneHorizons :: PruneHorizons
+    pruneHorizons :: PruneHorizons,
+    -- | Per-session locks for serializing concurrent event handling
+    sessionLocks :: SessionLocks
   }
 
 -- | Callbacks wired into the agent loop for delivery during a turn
@@ -134,7 +137,9 @@ data DeliveryCallbacks = DeliveryCallbacks
 --
 -- Returns Either error message or success response text
 handleEvent :: AppEnv -> Event -> IO (Either Text Text)
-handleEvent env event = handleEventCore env event (eagerCallbacks env event)
+handleEvent env event =
+  withSessionLockIfNamed env event $
+    handleEventCore env event (eagerCallbacks env event)
 
 -- | Construct eager (immediate-delivery) callbacks from an event's delivery targets
 eagerCallbacks :: AppEnv -> Event -> DeliveryCallbacks
@@ -234,6 +239,13 @@ handleEventCore env event callbacks = do
       logError lgr "Event handling failed" [("source", formatSource src), ("error", err)]
       pure (Left err)
 
+-- | Acquire the per-session lock for named sessions; run directly for isolated ones.
+withSessionLockIfNamed :: AppEnv -> Event -> IO a -> IO a
+withSessionLockIfNamed env event action =
+  case sessionToConversationId event.session of
+    Nothing -> action
+    Just sid -> withSessionLock env.sessionLocks sid action
+
 -- | Delay in microseconds between typing indicator and message delivery
 -- during buffered flush (500ms)
 flushPacingDelay :: Int
@@ -285,7 +297,7 @@ handleEventBuffered env event targets = do
             onBeforeApiCall = Nothing,
             onResponse = \_ -> pure ()
           }
-  result <- handleEventCore env event callbacks
+  result <- withSessionLockIfNamed env event $ handleEventCore env event callbacks
   case result of
     Left err -> do
       drainAttachmentQueue env

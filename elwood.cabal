@@ -46,6 +46,7 @@ library
     Elwood.Notify
     Elwood.Permissions
     Elwood.Prompt
+    Elwood.Session
     Elwood.Telegram
     Elwood.Telegram.Client
     Elwood.Telegram.Markdown
@@ -131,6 +132,7 @@ test-suite elwood-test
     Test.Elwood.Memory
     Test.Elwood.Metrics
     Test.Elwood.Permissions
+    Test.Elwood.Session
     Test.Elwood.Telegram.Markdown
     Test.Elwood.Tools.Registry
     Test.Elwood.Webhook

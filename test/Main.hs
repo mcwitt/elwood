@@ -11,6 +11,7 @@ import Test.Elwood.MCP qualified
 import Test.Elwood.Memory qualified
 import Test.Elwood.Metrics qualified
 import Test.Elwood.Permissions qualified
+import Test.Elwood.Session qualified
 import Test.Elwood.Telegram.Markdown qualified
 import Test.Elwood.Tools.Registry qualified
 import Test.Elwood.Webhook qualified
@@ -36,5 +37,6 @@ tests =
       Test.Elwood.Attachment.tests,
       Test.Elwood.Metrics.tests,
       Test.Elwood.Tools.Registry.tests,
-      Test.Elwood.Telegram.Markdown.tests
+      Test.Elwood.Telegram.Markdown.tests,
+      Test.Elwood.Session.tests
     ]

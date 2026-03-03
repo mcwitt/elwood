@@ -32,6 +32,7 @@ import Elwood.Logging
 import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
 import Elwood.Metrics (newMetricsStore, setMCPServerCount)
+import Elwood.Session (newSessionLocks)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
 import Elwood.Webhook qualified as Webhook
@@ -76,6 +77,9 @@ runApp config = do
 
   -- Initialize prune horizons
   pruneHorizons_ <- newPruneHorizons
+
+  -- Initialize per-session locks
+  sessionLocks_ <- newSessionLocks
 
   -- Construct tools with explicit dependencies
   let builtinRegistry =
@@ -164,7 +168,8 @@ runApp config = do
             maxIterations = config.maxIterations,
             metrics = mets,
             toolSearch = toolSearch_,
-            pruneHorizons = pruneHorizons_
+            pruneHorizons = pruneHorizons_,
+            sessionLocks = sessionLocks_
           }
 
   -- Telegram message handler: inject per-chat approval into AgentContext
