@@ -74,6 +74,7 @@ import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
 import Elwood.Tools.Attachment (isPhotoExtension)
 import System.Exit (ExitCode (..))
+import Text.Printf (printf)
 
 -- | Unified event type for all sources
 data Event = Event
@@ -551,6 +552,11 @@ handleTelegramMessage env msg =
                   totalTokens = Compaction.estimateTokens msgs
                   -- Walk all messages counting tokens per category
                   (userTok, assistTok, thinkTok, toolCallTok, toolResultTok) = foldl' countMessage (0, 0, 0, 0, 0) msgs
+                  catSum = userTok + assistTok + thinkTok + toolCallTok + toolResultTok
+                  pct :: Int64 -> Text
+                  pct tok
+                    | catSum == 0 = "0%"
+                    | otherwise = T.pack (show (tok * 100 `div` catSum)) <> "%"
                   categories =
                     filter
                       (\(_, v) -> v > 0)
@@ -564,9 +570,9 @@ handleTelegramMessage env msg =
                     "Context usage ("
                       <> T.pack (show msgCount)
                       <> " messages, ~"
-                      <> T.pack (show totalTokens)
-                      <> " tokens):"
-                  catLines = map (\(label, tok) -> "• " <> label <> ": ~" <> T.pack (show tok)) categories
+                      <> formatMTok totalTokens
+                      <> " MTok):"
+                  catLines = map (\(label, tok) -> "• " <> label <> ": " <> pct tok) categories
               pure (Just $ formatNotify Info $ T.intercalate "\n" (header : catLines))
 
     countMessage :: (Int64, Int64, Int64, Int64, Int64) -> Claude.ClaudeMessage -> (Int64, Int64, Int64, Int64, Int64)
@@ -583,6 +589,9 @@ handleTelegramMessage env msg =
     countBlock _ (u, a, th, tc, tr) (Claude.ToolSearchResultBlock _ v) = (u, a, th, tc, tr + estimateJsonTokens v)
     countBlock _ acc _ = acc
 
+    formatMTok :: Int -> Text
+    formatMTok tokens = T.pack (printf "%.3g" (fromIntegral tokens / 1e6 :: Double))
+
     handleRun :: Text -> IO (Maybe Text)
     handleRun cmd = do
       logInfo lgr "Running command from Telegram" [("chat_id", T.pack (show chatIdVal)), ("command", cmd)]
@@ -590,7 +599,7 @@ handleTelegramMessage env msg =
       let prefix = case result.exitCode of
             ExitSuccess -> ""
             ExitFailure code -> "[exit " <> T.pack (show code) <> "] "
-      pure (Just $ formatNotify Info $ prefix <> "```\n$ " <> cmd <> "\n" <> result.output <> "\n```")
+      pure (Just $ formatNotify Info $ prefix <> "\n```\n$ " <> cmd <> "\n" <> result.output <> "\n```")
 
     handleMessageWithPhoto :: Text -> Maybe [Telegram.PhotoSize] -> IO (Maybe Text)
     handleMessageWithPhoto userText maybePhotos = do
