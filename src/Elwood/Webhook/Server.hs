@@ -203,6 +203,7 @@ applyOverrides env wc =
       registry = env.registry,
       agentContext = env.agentContext,
       compaction = env.compaction,
+      pruning = env.pruning,
       systemPromptInputs = env.systemPromptInputs,
       workspaceDir = env.workspaceDir,
       model = fromMaybe env.model wc.model,

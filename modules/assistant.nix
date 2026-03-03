@@ -113,6 +113,12 @@ let
           token_threshold = agentCfg.compaction.tokenThreshold;
           model = agentCfg.compaction.model;
         };
+
+        pruning = {
+          head_chars = agentCfg.pruning.headChars;
+          tail_chars = agentCfg.pruning.tailChars;
+          keep_turns = agentCfg.pruning.keepTurns;
+        };
       }
       // lib.optionalAttrs (agentCfg.toolSearch != null) {
         tool_search = agentCfg.toolSearch;
@@ -527,6 +533,26 @@ let
             type = lib.types.str;
             default = "claude-3-5-haiku-20241022";
             description = "Model to use for compaction/summarization.";
+          };
+        };
+
+        pruning = {
+          headChars = lib.mkOption {
+            type = lib.types.int;
+            default = 500;
+            description = "Characters to keep from start of pruned tool results.";
+          };
+
+          tailChars = lib.mkOption {
+            type = lib.types.int;
+            default = 500;
+            description = "Characters to keep from end of pruned tool results.";
+          };
+
+          keepTurns = lib.mkOption {
+            type = lib.types.int;
+            default = 3;
+            description = "Number of recent turns protected from pruning.";
           };
         };
 

@@ -34,7 +34,7 @@ import Elwood.Claude.Types
     Usage (..),
     stopReasonToText,
   )
-import Elwood.Config (ThinkingEffort (..), ThinkingLevel (..))
+import Elwood.Config (PruningConfig, ThinkingEffort (..), ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
@@ -95,6 +95,8 @@ data AgentConfig = AgentConfig
     onBeforeApiCall :: Maybe (IO ()),
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
     toolSearch :: Maybe (Set ToolName),
+    -- | Pruning configuration for tool results
+    pruningConfig :: PruningConfig,
     -- | Prune horizon: tool results before this index are replaced with placeholders
     pruneHorizon :: Int
   }
@@ -147,7 +149,7 @@ agentLoop cfg msgs iteration
 
       -- Always send all tool schemas (tool search handles filtering server-side)
       let schemas = toolSchemas reg
-          prunedMsgs = pruneToolResults cfg.pruneHorizon msgs
+          prunedMsgs = pruneToolResults cfg.pruningConfig cfg.pruneHorizon msgs
 
       -- Record estimated input token breakdown
       cfg.observer.onInputEstimate cfg.systemPrompt cfg.toolSearch prunedMsgs schemas

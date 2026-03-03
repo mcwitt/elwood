@@ -31,6 +31,12 @@ When adding or changing a config field in `Config.hs`, update all of:
    - The config example paths should match `config.yaml.example` defaults (e.g. `/var/lib/assistant`).
    - The NixOS deployment example should demonstrate current module options.
 
+## Terminology
+
+- **Turn** = one `runAgentTurn` invocation = human sends a message → agent processes it (possibly calling many tools) → agent returns a response.
+- **Iteration** = one step in `agentLoop`, bounded by `maxIterations` = one API call + tool execution within a turn.
+- A **turn boundary** in the message history is identified by user messages containing a `TextBlock` (human input), as opposed to user messages containing only `ToolResultBlock` (tool results from iterations).
+
 ## Architecture
 
 - `src/Elwood/App.hs` - Main application wiring

@@ -76,6 +76,15 @@ compaction:
   token_threshold: 50000             # default: 50000
   model: claude-3-5-haiku-20241022  # default: claude-3-5-haiku-20241022
 
+# Tool result pruning settings
+# When the Anthropic cache TTL expires, tool results before the horizon are
+# soft-pruned: head and tail are kept with an indicator in between. Recent
+# turns are protected from pruning entirely.
+pruning:
+  head_chars: 500       # characters to keep from start of result (default: 500)
+  tail_chars: 500       # characters to keep from end of result (default: 500)
+  keep_turns: 3         # recent turns protected from pruning (default: 3)
+
 # Tool permission settings
 permissions:
   default_policy: allow          # allow | ask | deny (default: allow)

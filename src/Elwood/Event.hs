@@ -57,7 +57,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Pruning (PruneHorizons, anthropicCacheTtl, getAndUpdateHorizon)
-import Elwood.Config (CompactionConfig, ThinkingLevel)
+import Elwood.Config (CompactionConfig, PruningConfig, ThinkingLevel)
 import Elwood.Event.Types
   ( DeliveryTarget (..),
     EventSource (..),
@@ -99,6 +99,8 @@ data AppEnv = AppEnv
     registry :: Tools.ToolRegistry,
     agentContext :: Tools.AgentContext,
     compaction :: CompactionConfig,
+    -- | Tool result pruning configuration
+    pruning :: PruningConfig,
     -- | System prompt inputs (resolved per-request from workspace files)
     systemPromptInputs :: [PromptInput],
     -- | Directory containing workspace files
@@ -199,6 +201,7 @@ handleEventCore env event callbacks = do
             onText = callbacks.onText,
             onBeforeApiCall = callbacks.onBeforeApiCall,
             toolSearch = env.toolSearch,
+            pruningConfig = env.pruning,
             pruneHorizon = pruneHorizon
           }
 

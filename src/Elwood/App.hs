@@ -154,6 +154,7 @@ runApp config = do
             registry = reg,
             agentContext = baseAgentContext,
             compaction = config.compaction,
+            pruning = config.pruning,
             systemPromptInputs = config.systemPrompt,
             workspaceDir = config.workspaceDir,
             model = config.model,

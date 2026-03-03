@@ -4,6 +4,7 @@ module Elwood.Config
   ( Config (..),
     TelegramChatConfig (..),
     CompactionConfig (..),
+    PruningConfig (..),
     MCPServerConfig (..),
     PermissionConfig (..),
     PermissionConfigFile (..),
@@ -67,6 +68,8 @@ data Config = Config
     permissions :: PermissionConfig,
     -- | Context compaction configuration
     compaction :: CompactionConfig,
+    -- | Tool result pruning configuration
+    pruning :: PruningConfig,
     -- | MCP server configurations
     mcpServers :: [MCPServerConfig],
     -- | Webhook server configuration
@@ -88,6 +91,17 @@ data CompactionConfig = CompactionConfig
     tokenThreshold :: Int,
     -- | Model to use for summarization (e.g., "claude-3-5-haiku-20241022")
     model :: Text
+  }
+  deriving stock (Show, Generic)
+
+-- | Configuration for tool result pruning
+data PruningConfig = PruningConfig
+  { -- | Characters to keep from the start of pruned content
+    headChars :: Int,
+    -- | Characters to keep from the end of pruned content
+    tailChars :: Int,
+    -- | Number of recent turns protected from pruning
+    keepTurns :: Int
   }
   deriving stock (Show, Generic)
 
@@ -128,6 +142,7 @@ data ConfigFile = ConfigFile
     model :: Maybe Text,
     permissions :: Maybe PermissionConfigFile,
     compaction :: Maybe CompactionConfigFile,
+    pruning :: Maybe PruningConfigFile,
     mcpServers :: Maybe (Map Text MCPServerConfigFile),
     webhook :: Maybe WebhookServerConfigFile,
     thinking :: Maybe ThinkingLevel,
@@ -154,6 +169,14 @@ data CompactionConfigFile = CompactionConfigFile
   }
   deriving stock (Show, Generic)
 
+-- | Pruning configuration from YAML file
+data PruningConfigFile = PruningConfigFile
+  { headChars :: Maybe Int,
+    tailChars :: Maybe Int,
+    keepTurns :: Maybe Int
+  }
+  deriving stock (Show, Generic)
+
 -- | MCP server configuration from YAML file
 data MCPServerConfigFile = MCPServerConfigFile
   { command :: Text,
@@ -172,7 +195,7 @@ instance FromJSON TelegramChatConfigFile where
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "model", "permissions", "compaction", "mcp_servers", "webhook", "thinking", "max_iterations", "tool_search", "system_prompt"] v
+    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "model", "permissions", "compaction", "pruning", "mcp_servers", "webhook", "thinking", "max_iterations", "tool_search", "system_prompt"] v
     ConfigFile
       <$> v .:? "state_dir"
       <*> v .:? "workspace_dir"
@@ -180,6 +203,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "model"
       <*> v .:? "permissions"
       <*> v .:? "compaction"
+      <*> v .:? "pruning"
       <*> v .:? "mcp_servers"
       <*> v .:? "webhook"
       <*> v .:? "thinking"
@@ -204,6 +228,14 @@ instance FromJSON CompactionConfigFile where
       <$> v .:? "token_threshold"
       <*> v .:? "model"
 
+instance FromJSON PruningConfigFile where
+  parseJSON = withObject "PruningConfigFile" $ \v -> do
+    rejectUnknownKeys "PruningConfigFile" ["head_chars", "tail_chars", "keep_turns"] v
+    PruningConfigFile
+      <$> v .:? "head_chars"
+      <*> v .:? "tail_chars"
+      <*> v .:? "keep_turns"
+
 instance FromJSON MCPServerConfigFile where
   parseJSON = withObject "MCPServerConfigFile" $ \v -> do
     rejectUnknownKeys "MCPServerConfigFile" ["command", "args", "env", "startup_delay"] v
@@ -219,6 +251,15 @@ defaultCompaction =
   CompactionConfig
     { tokenThreshold = 50000,
       model = "claude-3-5-haiku-20241022"
+    }
+
+-- | Default pruning configuration
+defaultPruning :: PruningConfig
+defaultPruning =
+  PruningConfig
+    { headChars = 500,
+      tailChars = 500,
+      keepTurns = 3
     }
 
 -- | Load configuration from a YAML file and environment variables
@@ -260,6 +301,15 @@ loadConfig path = do
           CompactionConfig
             { tokenThreshold = fromMaybe defaultCompaction.tokenThreshold ccf.tokenThreshold,
               model = fromMaybe defaultCompaction.model ccf.model
+            }
+
+  let prune = case configFile.pruning of
+        Nothing -> defaultPruning
+        Just pcf ->
+          PruningConfig
+            { headChars = fromMaybe defaultPruning.headChars pcf.headChars,
+              tailChars = fromMaybe defaultPruning.tailChars pcf.tailChars,
+              keepTurns = fromMaybe defaultPruning.keepTurns pcf.keepTurns
             }
 
   let servers = case configFile.mcpServers of
@@ -342,6 +392,7 @@ loadConfig path = do
         model = fromMaybe "claude-sonnet-4-20250514" configFile.model,
         permissions = perms,
         compaction = compact,
+        pruning = prune,
         mcpServers = servers,
         webhook = webhookCfg,
         thinking = fromMaybe ThinkingOff configFile.thinking,
