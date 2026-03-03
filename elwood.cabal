@@ -33,6 +33,7 @@ library
     Elwood.Claude.Conversation
     Elwood.Claude.Pruning
     Elwood.Claude.Types
+    Elwood.Command
     Elwood.Config
     Elwood.Event
     Elwood.Event.Types

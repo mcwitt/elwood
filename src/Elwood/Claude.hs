@@ -22,6 +22,7 @@ module Elwood.Claude
 
     -- * Compaction
     compactIfNeeded,
+    compactMessages,
 
     -- * Types
     ClaudeMessage (..),
@@ -43,6 +44,6 @@ where
 
 import Elwood.Claude.AgentLoop
 import Elwood.Claude.Client
-import Elwood.Claude.Compaction (compactIfNeeded)
+import Elwood.Claude.Compaction (compactIfNeeded, compactMessages)
 import Elwood.Claude.Conversation
 import Elwood.Claude.Types

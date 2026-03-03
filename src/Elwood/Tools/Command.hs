@@ -5,26 +5,17 @@ module Elwood.Tools.Command
   )
 where
 
-import Control.Exception (SomeException, try)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Claude.Types (ToolSchema (..))
+import Elwood.Command qualified as Cmd
 import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.Permissions (PermissionConfig, PermissionResult (..), checkCommandPermission)
 import Elwood.Tools.Types
 import System.Exit (ExitCode (..))
-import System.IO (hGetContents)
-import System.Process
-  ( CreateProcess (..),
-    StdStream (..),
-    createProcess,
-    proc,
-    waitForProcess,
-  )
-import System.Timeout (timeout)
 
 -- | Construct a tool for running shell commands
 mkRunCommandTool :: Logger -> FilePath -> PermissionConfig -> Tool
@@ -48,8 +39,19 @@ mkRunCommandTool logger workspaceDir_ perms =
               pure $ toolError $ "Permission denied: " <> reason
             Allowed -> do
               logInfo logger "Executing command" [("command", cmd)]
-              runWithTimeout cmd timeoutSecs workspaceDir_
+              toToolResult <$> Cmd.runCommandWithTimeout cmd timeoutSecs workspaceDir_
     }
+
+-- | Convert a generic command result to a tool result
+toToolResult :: Cmd.CommandResult -> ToolResult
+toToolResult r = case r.exitCode of
+  ExitSuccess -> toolSuccess r.output
+  ExitFailure code ->
+    toolError $
+      "Command failed with exit code "
+        <> T.pack (show code)
+        <> ":\n"
+        <> r.output
 
 -- | JSON Schema for command input
 commandSchema :: Value
@@ -83,69 +85,3 @@ parseInput (Aeson.Object obj) = do
         _ -> 30
   Right (cmd, timeoutSecs)
 parseInput _ = Left "Expected object input"
-
--- | Run command with timeout
-runWithTimeout :: Text -> Int -> FilePath -> IO ToolResult
-runWithTimeout cmd timeoutSecs workDir = do
-  let timeoutMicros = timeoutSecs * 1000000
-  result <- timeout timeoutMicros (runCommand cmd workDir)
-  case result of
-    Nothing -> pure $ toolError $ "Command timed out after " <> T.pack (show timeoutSecs) <> " seconds"
-    Just r -> pure r
-
--- | Actually run the command
-runCommand :: Text -> FilePath -> IO ToolResult
-runCommand cmd workDir = do
-  result <- try $ do
-    let process =
-          (proc "/bin/sh" ["-c", T.unpack cmd])
-            { cwd = Just workDir,
-              std_out = CreatePipe,
-              std_err = CreatePipe
-            }
-
-    (_, Just hOut, Just hErr, ph) <- createProcess process
-
-    -- Read output strictly (limit to avoid memory issues)
-    stdoutStr <- limitOutput 50000 <$> hGetContents hOut
-    stderrStr <- limitOutput 10000 <$> hGetContents hErr
-
-    -- Force evaluation before waiting
-    let !_ = length stdoutStr
-        !_ = length stderrStr
-
-    exitCode <- waitForProcess ph
-
-    pure (exitCode, stdoutStr, stderrStr)
-
-  case result of
-    Left (e :: SomeException) ->
-      pure $ toolError $ "Failed to execute command: " <> T.pack (show e)
-    Right (exitCode, stdoutStr, stderrStr) ->
-      let output = formatOutput exitCode stdoutStr stderrStr
-       in case exitCode of
-            ExitSuccess -> pure $ toolSuccess output
-            ExitFailure code ->
-              pure $
-                toolError $
-                  "Command failed with exit code "
-                    <> T.pack (show code)
-                    <> ":\n"
-                    <> output
-
--- | Format command output
-formatOutput :: ExitCode -> String -> String -> Text
-formatOutput _exitCode stdoutStr stderrStr =
-  let stdoutText = T.pack stdoutStr
-      stderrText = T.pack stderrStr
-   in case (T.null (T.strip stdoutText), T.null (T.strip stderrText)) of
-        (True, True) -> "(no output)"
-        (False, True) -> stdoutText
-        (True, False) -> "stderr:\n" <> stderrText
-        (False, False) -> stdoutText <> "\n\nstderr:\n" <> stderrText
-
--- | Limit output to avoid memory issues
-limitOutput :: Int -> String -> String
-limitOutput maxLen s
-  | length s <= maxLen = s
-  | otherwise = take maxLen s <> "\n... (output truncated)"

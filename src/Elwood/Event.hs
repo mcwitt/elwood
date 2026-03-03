@@ -44,7 +44,7 @@ import Data.ByteString.Base64.Lazy qualified as B64
 import Data.ByteString.Lazy qualified as LBS
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (sortOn)
+import Data.List (foldl', sortOn)
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -56,7 +56,9 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Elwood.Claude qualified as Claude
+import Elwood.Claude.Compaction qualified as Compaction
 import Elwood.Claude.Pruning (PruneHorizons, anthropicCacheTtl, getAndUpdateHorizon)
+import Elwood.Command qualified as Cmd
 import Elwood.Config (CompactionConfig, PruningConfig, ThinkingLevel)
 import Elwood.Event.Types
   ( DeliveryTarget (..),
@@ -64,13 +66,14 @@ import Elwood.Event.Types
     SessionConfig (..),
   )
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
-import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
+import Elwood.Metrics (MetricsStore, estimateJsonTokens, estimateTextTokens, metricsObserver, metricsSource, recordApiResponse, recordCompaction)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Prompt (PromptInput, assemblePrompt)
 import Elwood.Session (SessionLocks, withSessionLock)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
 import Elwood.Tools.Attachment (isPhotoExtension)
+import System.Exit (ExitCode (..))
 
 -- | Unified event type for all sources
 data Event = Event
@@ -441,6 +444,12 @@ handleTelegramMessage env msg =
   case (msg.text, msg.photo) of
     -- Handle /clear command
     (Just txt, _) | T.strip txt == "/clear" -> handleClear
+    -- Handle /compact command
+    (Just txt, _) | T.strip txt == "/compact" -> handleCompact
+    -- Handle /context command
+    (Just txt, _) | T.strip txt == "/context" -> handleContext
+    -- Handle /run <cmd>
+    (Just txt, _) | Just cmd <- T.stripPrefix "/run " (T.strip txt), not (T.null (T.strip cmd)) -> handleRun (T.strip cmd)
     -- Ignore other slash commands
     (Just txt, _) | T.isPrefixOf "/" txt -> pure Nothing
     -- Handle text with optional photo
@@ -469,6 +478,119 @@ handleTelegramMessage env msg =
           env.conversations.clearConversation cid
           logInfo lgr "Conversation cleared" [("chat_id", T.pack (show chatIdVal)), ("session", cid)]
           pure (Just $ formatNotify Info "Conversation cleared")
+
+    handleCompact :: IO (Maybe Text)
+    handleCompact = do
+      case sessionToConversationId chatSession of
+        Nothing -> do
+          logInfo lgr "Compact requested for isolated chat" [("chat_id", T.pack (show chatIdVal))]
+          pure (Just $ formatNotify Info "This chat has no persistent session to compact")
+        Just cid -> withSessionLock env.sessionLocks cid $ do
+          conv <- env.conversations.getConversation cid
+          let msgs = conv.messages
+              msgCount = length msgs
+          if null msgs
+            then do
+              logInfo lgr "Compact requested on empty conversation" [("chat_id", T.pack (show chatIdVal))]
+              pure (Just $ formatNotify Info "Conversation is empty, nothing to compact")
+            else
+              if msgCount < 4
+                then do
+                  logInfo lgr "Compact requested on short conversation" [("chat_id", T.pack (show chatIdVal)), ("message_count", T.pack (show msgCount))]
+                  pure (Just $ formatNotify Info $ "Conversation is too short to compact (" <> T.pack (show msgCount) <> " messages)")
+                else do
+                  let beforeTokens = Compaction.estimateTokens msgs
+                  result <-
+                    (Right <$> Compaction.compactMessages lgr env.claude env.compaction (recordCompaction env.metrics) (recordApiResponse env.metrics env.model "telegram") msgs)
+                      `catch` \(e :: SomeException) -> do
+                        logError lgr "Manual compaction failed" [("chat_id", T.pack (show chatIdVal)), ("error", T.pack (show e))]
+                        pure (Left e)
+                  case result of
+                    Left _ ->
+                      pure (Just $ formatNotify Error "Compaction failed")
+                    Right compacted -> do
+                      env.conversations.updateConversation cid compacted
+                      let afterTokens = Compaction.estimateTokens compacted
+                          afterCount = length compacted
+                      logInfo
+                        lgr
+                        "Manual compaction complete"
+                        [ ("chat_id", T.pack (show chatIdVal)),
+                          ("before_tokens", T.pack (show beforeTokens)),
+                          ("after_tokens", T.pack (show afterTokens)),
+                          ("before_messages", T.pack (show msgCount)),
+                          ("after_messages", T.pack (show afterCount))
+                        ]
+                      pure
+                        ( Just $
+                            formatNotify Info $
+                              "Compaction complete: ~"
+                                <> T.pack (show beforeTokens)
+                                <> " → ~"
+                                <> T.pack (show afterTokens)
+                                <> " tokens ("
+                                <> T.pack (show msgCount)
+                                <> " → "
+                                <> T.pack (show afterCount)
+                                <> " messages)"
+                        )
+
+    handleContext :: IO (Maybe Text)
+    handleContext = do
+      case sessionToConversationId chatSession of
+        Nothing -> do
+          logInfo lgr "Context requested for isolated chat" [("chat_id", T.pack (show chatIdVal))]
+          pure (Just $ formatNotify Info "This chat has no persistent session")
+        Just cid -> do
+          conv <- env.conversations.getConversation cid
+          let msgs = conv.messages
+          if null msgs
+            then pure (Just $ formatNotify Info "Conversation is empty")
+            else do
+              let msgCount = length msgs
+                  totalTokens = Compaction.estimateTokens msgs
+                  -- Walk all messages counting tokens per category
+                  (userTok, assistTok, thinkTok, toolCallTok, toolResultTok) = foldl' countMessage (0, 0, 0, 0, 0) msgs
+                  categories =
+                    filter
+                      (\(_, v) -> v > 0)
+                      [ ("User text" :: Text, userTok),
+                        ("Assistant text", assistTok),
+                        ("Thinking", thinkTok),
+                        ("Tool calls", toolCallTok),
+                        ("Tool results", toolResultTok)
+                      ]
+                  header =
+                    "Context usage ("
+                      <> T.pack (show msgCount)
+                      <> " messages, ~"
+                      <> T.pack (show totalTokens)
+                      <> " tokens):"
+                  catLines = map (\(label, tok) -> "• " <> label <> ": ~" <> T.pack (show tok)) categories
+              pure (Just $ formatNotify Info $ T.intercalate "\n" (header : catLines))
+
+    countMessage :: (Int64, Int64, Int64, Int64, Int64) -> Claude.ClaudeMessage -> (Int64, Int64, Int64, Int64, Int64)
+    countMessage acc msg_ = foldl' (countBlock msg_.role) acc msg_.content
+
+    countBlock :: Claude.Role -> (Int64, Int64, Int64, Int64, Int64) -> Claude.ContentBlock -> (Int64, Int64, Int64, Int64, Int64)
+    countBlock Claude.User (u, a, th, tc, tr) (Claude.TextBlock t) = (u + estimateTextTokens t, a, th, tc, tr)
+    countBlock Claude.Assistant (u, a, th, tc, tr) (Claude.TextBlock t) = (u, a + estimateTextTokens t, th, tc, tr)
+    countBlock _ (u, a, th, tc, tr) (Claude.ThinkingBlock t _) = (u, a, th + estimateTextTokens t, tc, tr)
+    countBlock _ (u, a, th, tc, tr) (Claude.RedactedThinkingBlock d) = (u, a, th + estimateTextTokens d, tc, tr)
+    countBlock _ (u, a, th, tc, tr) (Claude.ToolUseBlock _ _ input) = (u, a, th, tc + estimateJsonTokens input, tr)
+    countBlock _ (u, a, th, tc, tr) (Claude.ServerToolUseBlock _ _ input) = (u, a, th, tc + estimateJsonTokens input, tr)
+    countBlock _ (u, a, th, tc, tr) (Claude.ToolResultBlock _ content_ _) = (u, a, th, tc, tr + estimateTextTokens content_)
+    countBlock _ (u, a, th, tc, tr) (Claude.ToolSearchResultBlock _ v) = (u, a, th, tc, tr + estimateJsonTokens v)
+    countBlock _ acc _ = acc
+
+    handleRun :: Text -> IO (Maybe Text)
+    handleRun cmd = do
+      logInfo lgr "Running command from Telegram" [("chat_id", T.pack (show chatIdVal)), ("command", cmd)]
+      result <- Cmd.runCommandWithTimeout cmd 30 env.workspaceDir
+      let prefix = case result.exitCode of
+            ExitSuccess -> ""
+            ExitFailure code -> "[exit " <> T.pack (show code) <> "] "
+      pure (Just $ formatNotify Info $ prefix <> "```\n$ " <> cmd <> "\n" <> result.output <> "\n```")
 
     handleMessageWithPhoto :: Text -> Maybe [Telegram.PhotoSize] -> IO (Maybe Text)
     handleMessageWithPhoto userText maybePhotos = do

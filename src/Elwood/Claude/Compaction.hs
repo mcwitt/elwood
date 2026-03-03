@@ -3,6 +3,7 @@
 module Elwood.Claude.Compaction
   ( -- * Compaction
     compactIfNeeded,
+    compactMessages,
     estimateTokens,
 
     -- * Re-export config
