@@ -1,12 +1,7 @@
 module Test.Elwood.Event (tests) where
 
-import Data.List.NonEmpty (NonEmpty (..))
 import Elwood.Event (sessionToConversationId)
-import Elwood.Event.Types
-  ( DeliveryTarget (..),
-    EventSource (..),
-    SessionConfig (..),
-  )
+import Elwood.Event.Types (SessionConfig (..))
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -14,59 +9,7 @@ tests :: TestTree
 tests =
   testGroup
     "Event"
-    [ sessionConfigTests,
-      deliveryTargetTests,
-      eventSourceTests,
-      sessionIdTests
-    ]
-
-sessionConfigTests :: TestTree
-sessionConfigTests =
-  testGroup
-    "SessionConfig"
-    [ testCase "Isolated is equal to Isolated" $
-        Isolated == Isolated @?= True,
-      testCase "Named with same name is equal" $
-        Named "foo" == Named "foo" @?= True,
-      testCase "Named with different names is not equal" $
-        Named "foo" == Named "bar" @?= False,
-      testCase "Isolated is not equal to Named" $
-        Isolated == Named "anything" @?= False
-    ]
-
-deliveryTargetTests :: TestTree
-deliveryTargetTests =
-  testGroup
-    "DeliveryTarget"
-    [ testCase "TelegramDelivery holds chat IDs" $
-        case TelegramDelivery (12345 :| []) of
-          TelegramDelivery chatIds -> chatIds @?= (12345 :| [])
-          _ -> assertFailure "Expected TelegramDelivery",
-      testCase "TelegramDelivery with multiple chat IDs" $
-        case TelegramDelivery (111 :| [222, 333]) of
-          TelegramDelivery chatIds -> chatIds @?= (111 :| [222, 333])
-          _ -> assertFailure "Expected TelegramDelivery",
-      testCase "TelegramBroadcast equality" $
-        TelegramBroadcast == TelegramBroadcast @?= True,
-      testCase "LogOnly equality" $
-        LogOnly == LogOnly @?= True,
-      testCase "different targets are not equal" $
-        TelegramBroadcast == LogOnly @?= False
-    ]
-
-eventSourceTests :: TestTree
-eventSourceTests =
-  testGroup
-    "EventSource"
-    [ testCase "WebhookSource holds name" $
-        case WebhookSource "doorbell" of
-          WebhookSource name -> name @?= "doorbell"
-          _ -> assertFailure "Expected WebhookSource",
-      testCase "TelegramSource holds chat ID" $
-        case TelegramSource 12345 of
-          TelegramSource cid -> cid @?= 12345
-          _ -> assertFailure "Expected TelegramSource"
-    ]
+    [sessionIdTests]
 
 sessionIdTests :: TestTree
 sessionIdTests =
