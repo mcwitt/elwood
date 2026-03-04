@@ -10,6 +10,7 @@ where
 import Control.Exception (SomeException, try)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Elwood.Claude.Pruning (softPrune)
 import System.Exit (ExitCode (..))
 import System.IO (hGetContents)
 import System.Process
@@ -50,9 +51,9 @@ runCommand cmd workDir = do
 
     (_, Just hOut, Just hErr, ph) <- createProcess process
 
-    -- Read output strictly (limit to avoid memory issues)
-    stdoutStr <- limitOutput 50000 <$> hGetContents hOut
-    stderrStr <- limitOutput 10000 <$> hGetContents hErr
+    -- Read output strictly
+    stdoutStr <- hGetContents hOut
+    stderrStr <- hGetContents hErr
 
     -- Force evaluation before waiting
     let !_ = length stdoutStr
@@ -60,27 +61,23 @@ runCommand cmd workDir = do
 
     ec <- waitForProcess ph
 
-    pure (ec, stdoutStr, stderrStr)
+    -- Pack to Text and limit size
+    let stdoutText = softPrune 5000 5000 (T.pack stdoutStr)
+        stderrText = softPrune 2500 2500 (T.pack stderrStr)
+
+    pure (ec, stdoutText, stderrText)
 
   case result of
     Left (e :: SomeException) ->
       pure $ CommandResult (ExitFailure 1) $ "Failed to execute command: " <> T.pack (show e)
-    Right (ec, stdoutStr, stderrStr) ->
-      pure $ CommandResult ec (formatOutput stdoutStr stderrStr)
+    Right (ec, stdoutText, stderrText) ->
+      pure $ CommandResult ec (formatOutput stdoutText stderrText)
 
 -- | Format command output combining stdout and stderr
-formatOutput :: String -> String -> Text
-formatOutput stdoutStr stderrStr =
-  let stdoutText = T.pack stdoutStr
-      stderrText = T.pack stderrStr
-   in case (T.null (T.strip stdoutText), T.null (T.strip stderrText)) of
-        (True, True) -> "(no output)"
-        (False, True) -> stdoutText
-        (True, False) -> "stderr:\n" <> stderrText
-        (False, False) -> stdoutText <> "\n\nstderr:\n" <> stderrText
-
--- | Limit output to avoid memory issues
-limitOutput :: Int -> String -> String
-limitOutput maxLen s
-  | length s <= maxLen = s
-  | otherwise = take maxLen s <> "\n... (output truncated)"
+formatOutput :: Text -> Text -> Text
+formatOutput stdoutText stderrText =
+  case (T.null (T.strip stdoutText), T.null (T.strip stderrText)) of
+    (True, True) -> "(no output)"
+    (False, True) -> stdoutText
+    (True, False) -> "stderr:\n" <> stderrText
+    (False, False) -> stdoutText <> "\n\nstderr:\n" <> stderrText

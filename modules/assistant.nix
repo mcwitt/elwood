@@ -542,13 +542,13 @@ let
           headChars = lib.mkOption {
             type = lib.types.int;
             default = 500;
-            description = "Characters to keep from start of pruned tool results.";
+            description = "Characters to keep from start of pruned content.";
           };
 
           tailChars = lib.mkOption {
             type = lib.types.int;
             default = 500;
-            description = "Characters to keep from end of pruned tool results.";
+            description = "Characters to keep from end of pruned content.";
           };
 
           keepTurns = lib.mkOption {
