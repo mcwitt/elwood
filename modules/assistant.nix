@@ -118,6 +118,8 @@ let
           head_chars = agentCfg.pruning.headChars;
           tail_chars = agentCfg.pruning.tailChars;
           keep_turns = agentCfg.pruning.keepTurns;
+          thinking_keep_turns = agentCfg.pruning.thinkingKeepTurns;
+          tool_input_threshold = agentCfg.pruning.toolInputThreshold;
         };
       }
       // lib.optionalAttrs (agentCfg.toolSearch != null) {
@@ -553,6 +555,18 @@ let
             type = lib.types.int;
             default = 3;
             description = "Number of recent turns protected from pruning.";
+          };
+
+          thinkingKeepTurns = lib.mkOption {
+            type = lib.types.nullOr lib.types.int;
+            default = 1;
+            description = "Keep thinking blocks for last N turns. Null keeps all thinking blocks.";
+          };
+
+          toolInputThreshold = lib.mkOption {
+            type = lib.types.nullOr lib.types.int;
+            default = 5000;
+            description = "Prune tool use inputs exceeding this many characters. Null disables pruning.";
           };
         };
 

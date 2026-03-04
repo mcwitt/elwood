@@ -18,7 +18,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
-import Elwood.Claude.Pruning (pruneToolResults)
+import Elwood.Claude.Pruning (pruneThinkingBlocks, pruneToolInputs, pruneToolResults)
 import Elwood.Claude.Types
   ( ClaudeError (..),
     ClaudeMessage (..),
@@ -34,7 +34,7 @@ import Elwood.Claude.Types
     Usage (..),
     stopReasonToText,
   )
-import Elwood.Config (PruningConfig, ThinkingEffort (..), ThinkingLevel (..))
+import Elwood.Config (PruningConfig (..), ThinkingEffort (..), ThinkingLevel (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
@@ -149,7 +149,10 @@ agentLoop cfg msgs iteration
 
       -- Always send all tool schemas (tool search handles filtering server-side)
       let schemas = toolSchemas reg
-          prunedMsgs = pruneToolResults cfg.pruningConfig cfg.pruneHorizon msgs
+          prunedMsgs =
+            pruneThinkingBlocks cfg.pruningConfig.thinkingKeepTurns
+              . pruneToolInputs cfg.pruningConfig cfg.pruneHorizon
+              $ pruneToolResults cfg.pruningConfig cfg.pruneHorizon msgs
 
       -- Record estimated input token breakdown
       cfg.observer.onInputEstimate cfg.systemPrompt cfg.toolSearch prunedMsgs schemas

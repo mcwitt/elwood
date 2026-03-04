@@ -3,6 +3,8 @@
 module Elwood.Claude.Pruning
   ( -- * Pruning
     pruneToolResults,
+    pruneThinkingBlocks,
+    pruneToolInputs,
     softPrune,
     protectedBoundary,
 
@@ -17,10 +19,13 @@ module Elwood.Claude.Pruning
 where
 
 import Control.Concurrent.STM (TVar, atomically, newTVarIO, readTVar, writeTVar)
+import Data.Aeson (encode, object, (.=))
+import Data.ByteString.Lazy qualified as LBS
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding (decodeUtf8)
 import Data.Time (NominalDiffTime)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..))
 import Elwood.Config (PruningConfig (..))
@@ -97,6 +102,65 @@ pruneBlock :: PruningConfig -> ContentBlock -> ContentBlock
 pruneBlock cfg (ToolResultBlock tid content False) =
   ToolResultBlock tid (softPrune cfg.headChars cfg.tailChars content) False
 pruneBlock _ block = block
+
+-- ---------------------------------------------------------------------------
+-- Thinking block pruning
+-- ---------------------------------------------------------------------------
+
+-- | Strip thinking blocks from assistant messages before the protected
+-- boundary.  Messages within the last @keepN@ turns are left untouched.
+--
+-- NOTE: Anthropic's context editing API beta (context-management-2025-06-27)
+-- offers a server-side @clear_thinking_20251015@ strategy that does the same
+-- thing.  We prune client-side to avoid the beta dependency for now.
+pruneThinkingBlocks :: Maybe Int -> [ClaudeMessage] -> [ClaudeMessage]
+pruneThinkingBlocks Nothing msgs = msgs
+pruneThinkingBlocks (Just keepN) msgs =
+  let boundary = protectedBoundary keepN msgs
+      (prefix, suffix) = splitAt boundary msgs
+   in map stripThinking prefix ++ suffix
+
+-- | Remove thinking blocks from a single assistant message.
+stripThinking :: ClaudeMessage -> ClaudeMessage
+stripThinking (ClaudeMessage Assistant blocks) =
+  ClaudeMessage Assistant (filter (not . isThinking) blocks)
+stripThinking msg = msg
+
+isThinking :: ContentBlock -> Bool
+isThinking (ThinkingBlock _ _) = True
+isThinking (RedactedThinkingBlock _) = True
+isThinking _ = False
+
+-- ---------------------------------------------------------------------------
+-- Tool input pruning
+-- ---------------------------------------------------------------------------
+
+-- | Soft-prune large tool use inputs in assistant messages before the
+-- protected boundary.  Inputs exceeding @threshold@ characters (when
+-- serialized to JSON text) are replaced with a soft-pruned text summary.
+pruneToolInputs :: PruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
+pruneToolInputs cfg n msgs =
+  case cfg.toolInputThreshold of
+    Nothing -> msgs
+    Just threshold ->
+      let boundary = protectedBoundary cfg.keepTurns msgs
+          effectiveHorizon = max 0 (min n boundary)
+          (prefix, suffix) = splitAt effectiveHorizon msgs
+       in map (pruneAssistantInputs cfg threshold) prefix ++ suffix
+
+pruneAssistantInputs :: PruningConfig -> Int -> ClaudeMessage -> ClaudeMessage
+pruneAssistantInputs cfg threshold (ClaudeMessage Assistant blocks) =
+  ClaudeMessage Assistant (map (pruneToolInput cfg threshold) blocks)
+pruneAssistantInputs _ _ msg = msg
+
+pruneToolInput :: PruningConfig -> Int -> ContentBlock -> ContentBlock
+pruneToolInput cfg threshold (ToolUseBlock tid name input)
+  | let serialized = decodeUtf8 (LBS.toStrict (encode input)),
+    T.length serialized > threshold =
+      -- Wrap in an object to preserve the JSON type contract (API expects object for input)
+      let pruned = softPrune cfg.headChars cfg.tailChars serialized
+       in ToolUseBlock tid name (object ["_pruned" .= pruned])
+pruneToolInput _ _ block = block
 
 -- ---------------------------------------------------------------------------
 -- Horizon state

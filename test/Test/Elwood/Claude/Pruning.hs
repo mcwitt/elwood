@@ -2,15 +2,15 @@ module Test.Elwood.Claude.Pruning (tests) where
 
 import Data.Aeson qualified as Aeson
 import Data.Text qualified as T
-import Elwood.Claude.Pruning (getAndUpdateHorizon, newPruneHorizons, protectedBoundary, pruneToolResults, softPrune)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolUseId (..))
+import Elwood.Claude.Pruning (getAndUpdateHorizon, newPruneHorizons, protectedBoundary, pruneThinkingBlocks, pruneToolInputs, pruneToolResults, softPrune)
+import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolUseId (..))
 import Elwood.Config (PruningConfig (..))
 import Test.Tasty
 import Test.Tasty.HUnit
 
 -- | Small config for easy test verification
 testConfig :: PruningConfig
-testConfig = PruningConfig {headChars = 10, tailChars = 10, keepTurns = 3}
+testConfig = PruningConfig {headChars = 10, tailChars = 10, keepTurns = 3, thinkingKeepTurns = Just 1, toolInputThreshold = Just 5000}
 
 tests :: TestTree
 tests =
@@ -39,7 +39,20 @@ tests =
       -- recency protection tests
       recencyProtectsRecentTurns,
       recencyClipsHorizon,
-      shortResultsUnchanged
+      shortResultsUnchanged,
+      -- thinking pruning tests
+      thinkingPruneDisabled,
+      thinkingPruneStripsOldTurns,
+      thinkingPruneProtectsRecentTurn,
+      thinkingPruneKeepsNonThinkingBlocks,
+      -- thinking pruning edge case
+      thinkingPruneKeepZeroStripsAll,
+      -- tool input pruning tests
+      toolInputPruneDisabled,
+      toolInputPruneLargeInputs,
+      toolInputPruneProtectsRecent,
+      toolInputPruneSmallInputUnchanged,
+      toolInputPruneStructuredJson
     ]
 
 -- ---------------------------------------------------------------------------
@@ -378,3 +391,166 @@ shortResultsUnchanged =
         result = pruneToolResults cfg 2 msgs
     -- "small" is shorter than headChars + tailChars + overhead, so unchanged
     result @?= msgs
+
+-- ---------------------------------------------------------------------------
+-- Thinking block pruning tests
+-- ---------------------------------------------------------------------------
+
+-- | Nothing disables thinking pruning
+thinkingPruneDisabled :: TestTree
+thinkingPruneDisabled =
+  testCase "pruneThinkingBlocks: Nothing keeps all thinking" $ do
+    let msgs =
+          [ ClaudeMessage Assistant [ThinkingBlock "deep thought" "sig1", TextBlock "reply"]
+          ]
+    pruneThinkingBlocks Nothing msgs @?= msgs
+
+-- | Strips thinking from old turns
+thinkingPruneStripsOldTurns :: TestTree
+thinkingPruneStripsOldTurns =
+  testCase "pruneThinkingBlocks: strips thinking from old turns" $ do
+    let msgs =
+          [ ClaudeMessage User [TextBlock "turn 1"],
+            ClaudeMessage Assistant [ThinkingBlock "thought 1" "sig1", TextBlock "reply 1"],
+            ClaudeMessage User [TextBlock "turn 2"],
+            ClaudeMessage Assistant [ThinkingBlock "thought 2" "sig2", TextBlock "reply 2"]
+          ]
+        result = pruneThinkingBlocks (Just 1) msgs
+    -- Turn 1 thinking should be stripped (before boundary at index 2)
+    (result !! 1).content @?= [TextBlock "reply 1"]
+    -- Turn 2 thinking should be kept (protected)
+    (result !! 3).content @?= [ThinkingBlock "thought 2" "sig2", TextBlock "reply 2"]
+
+-- | Protects the last N turns
+thinkingPruneProtectsRecentTurn :: TestTree
+thinkingPruneProtectsRecentTurn =
+  testCase "pruneThinkingBlocks: protects recent turns" $ do
+    let msgs =
+          [ ClaudeMessage User [TextBlock "turn 1"],
+            ClaudeMessage Assistant [ThinkingBlock "t1" "s1", TextBlock "r1"],
+            ClaudeMessage User [TextBlock "turn 2"],
+            ClaudeMessage Assistant [ThinkingBlock "t2" "s2", TextBlock "r2"],
+            ClaudeMessage User [TextBlock "turn 3"],
+            ClaudeMessage Assistant [ThinkingBlock "t3" "s3", TextBlock "r3"]
+          ]
+        -- keepN = 2 protects turns 2 and 3
+        result = pruneThinkingBlocks (Just 2) msgs
+    -- Turn 1 thinking stripped
+    (result !! 1).content @?= [TextBlock "r1"]
+    -- Turns 2 and 3 thinking kept
+    (result !! 3).content @?= [ThinkingBlock "t2" "s2", TextBlock "r2"]
+    (result !! 5).content @?= [ThinkingBlock "t3" "s3", TextBlock "r3"]
+
+-- | Non-thinking blocks in assistant messages are preserved
+thinkingPruneKeepsNonThinkingBlocks :: TestTree
+thinkingPruneKeepsNonThinkingBlocks =
+  testCase "pruneThinkingBlocks: keeps non-thinking blocks" $ do
+    let msgs =
+          [ ClaudeMessage User [TextBlock "turn 1"],
+            ClaudeMessage Assistant [ThinkingBlock "thought" "sig", RedactedThinkingBlock "data", TextBlock "reply", ToolUseBlock (ToolUseId "t1") (ToolName "tool") (Aeson.object [])],
+            ClaudeMessage User [TextBlock "turn 2"],
+            ClaudeMessage Assistant [TextBlock "reply 2"]
+          ]
+        result = pruneThinkingBlocks (Just 1) msgs
+    -- ThinkingBlock and RedactedThinkingBlock stripped, others kept
+    (result !! 1).content @?= [TextBlock "reply", ToolUseBlock (ToolUseId "t1") (ToolName "tool") (Aeson.object [])]
+
+-- | keepN = 0 strips all thinking blocks
+thinkingPruneKeepZeroStripsAll :: TestTree
+thinkingPruneKeepZeroStripsAll =
+  testCase "pruneThinkingBlocks: Just 0 strips all thinking" $ do
+    let msgs =
+          [ ClaudeMessage User [TextBlock "turn 1"],
+            ClaudeMessage Assistant [ThinkingBlock "t1" "s1", TextBlock "r1"],
+            ClaudeMessage User [TextBlock "turn 2"],
+            ClaudeMessage Assistant [ThinkingBlock "t2" "s2", TextBlock "r2"]
+          ]
+        result = pruneThinkingBlocks (Just 0) msgs
+    (result !! 1).content @?= [TextBlock "r1"]
+    (result !! 3).content @?= [TextBlock "r2"]
+
+-- ---------------------------------------------------------------------------
+-- Tool input pruning tests
+-- ---------------------------------------------------------------------------
+
+-- | Nothing threshold disables tool input pruning
+toolInputPruneDisabled :: TestTree
+toolInputPruneDisabled =
+  testCase "pruneToolInputs: Nothing disables pruning" $ do
+    let bigInput = Aeson.String (T.replicate 10000 "x")
+        msgs =
+          [ ClaudeMessage Assistant [ToolUseBlock (ToolUseId "t1") (ToolName "tool") bigInput],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "result" False]
+          ]
+        cfg = testConfig {keepTurns = 0, toolInputThreshold = Nothing}
+    pruneToolInputs cfg 100 msgs @?= msgs
+
+-- | Large tool inputs are soft-pruned
+toolInputPruneLargeInputs :: TestTree
+toolInputPruneLargeInputs =
+  testCase "pruneToolInputs: prunes large inputs" $ do
+    let bigInput = Aeson.String (T.replicate 10000 "x")
+        msgs =
+          [ ClaudeMessage Assistant [ToolUseBlock (ToolUseId "t1") (ToolName "tool") bigInput],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "result" False],
+            ClaudeMessage User [TextBlock "question"]
+          ]
+        cfg = testConfig {keepTurns = 0, toolInputThreshold = Just 100}
+        result = pruneToolInputs cfg 100 msgs
+    case result of
+      (m1 : _) -> case m1.content of
+        [ToolUseBlock _ _ pruned] ->
+          assertBool "contains pruning indicator" (T.isInfixOf "pruned" (T.pack (show pruned)))
+        other -> assertFailure $ "Expected pruned ToolUseBlock, got: " <> show other
+      _ -> assertFailure "Expected at least one message"
+
+-- | Tool inputs in protected turns are not pruned
+toolInputPruneProtectsRecent :: TestTree
+toolInputPruneProtectsRecent =
+  testCase "pruneToolInputs: protects recent turns" $ do
+    let bigInput = Aeson.String (T.replicate 10000 "x")
+        msgs =
+          [ ClaudeMessage User [TextBlock "turn 1"],
+            ClaudeMessage Assistant [ToolUseBlock (ToolUseId "t1") (ToolName "tool") bigInput],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "result" False]
+          ]
+        cfg = testConfig {keepTurns = 1, toolInputThreshold = Just 100}
+        result = pruneToolInputs cfg 100 msgs
+    -- All within protected turn, so input should be unchanged
+    result @?= msgs
+
+-- | Small tool inputs are left unchanged even before horizon
+toolInputPruneSmallInputUnchanged :: TestTree
+toolInputPruneSmallInputUnchanged =
+  testCase "pruneToolInputs: small inputs unchanged" $ do
+    let smallInput = Aeson.object [("key", "value")]
+        msgs =
+          [ ClaudeMessage Assistant [ToolUseBlock (ToolUseId "t1") (ToolName "tool") smallInput],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "result" False]
+          ]
+        cfg = testConfig {keepTurns = 0, toolInputThreshold = Just 5000}
+        result = pruneToolInputs cfg 100 msgs
+    result @?= msgs
+
+-- | Structured JSON tool inputs are pruned correctly
+toolInputPruneStructuredJson :: TestTree
+toolInputPruneStructuredJson =
+  testCase "pruneToolInputs: structured JSON inputs pruned" $ do
+    let bigInput = Aeson.object [("code", Aeson.String (T.replicate 10000 "x"))]
+        msgs =
+          [ ClaudeMessage Assistant [ToolUseBlock (ToolUseId "t1") (ToolName "write_file") bigInput],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "ok" False],
+            ClaudeMessage User [TextBlock "question"]
+          ]
+        cfg = testConfig {keepTurns = 0, toolInputThreshold = Just 100}
+        result = pruneToolInputs cfg 100 msgs
+    case result of
+      (m1 : _) -> case m1.content of
+        [ToolUseBlock _ _ pruned] -> do
+          assertBool "contains pruning indicator" (T.isInfixOf "pruned" (T.pack (show pruned)))
+          -- Should be an Object, not a String (API expects object for input)
+          case pruned of
+            Aeson.Object _ -> pure ()
+            other -> assertFailure $ "Expected Object, got: " <> show other
+        other -> assertFailure $ "Expected pruned ToolUseBlock, got: " <> show other
+      _ -> assertFailure "Expected at least one message"

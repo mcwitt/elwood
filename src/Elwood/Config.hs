@@ -101,7 +101,11 @@ data PruningConfig = PruningConfig
     -- | Characters to keep from the end of pruned content
     tailChars :: Int,
     -- | Number of recent turns protected from pruning
-    keepTurns :: Int
+    keepTurns :: Int,
+    -- | How many recent turns to keep thinking blocks for (Nothing = keep all)
+    thinkingKeepTurns :: Maybe Int,
+    -- | Prune tool use inputs exceeding this character count (Nothing = disabled)
+    toolInputThreshold :: Maybe Int
   }
   deriving stock (Show, Generic)
 
@@ -173,7 +177,9 @@ data CompactionConfigFile = CompactionConfigFile
 data PruningConfigFile = PruningConfigFile
   { headChars :: Maybe Int,
     tailChars :: Maybe Int,
-    keepTurns :: Maybe Int
+    keepTurns :: Maybe Int,
+    thinkingKeepTurns :: Maybe (Maybe Int),
+    toolInputThreshold :: Maybe (Maybe Int)
   }
   deriving stock (Show, Generic)
 
@@ -230,11 +236,13 @@ instance FromJSON CompactionConfigFile where
 
 instance FromJSON PruningConfigFile where
   parseJSON = withObject "PruningConfigFile" $ \v -> do
-    rejectUnknownKeys "PruningConfigFile" ["head_chars", "tail_chars", "keep_turns"] v
+    rejectUnknownKeys "PruningConfigFile" ["head_chars", "tail_chars", "keep_turns", "thinking_keep_turns", "tool_input_threshold"] v
     PruningConfigFile
       <$> v .:? "head_chars"
       <*> v .:? "tail_chars"
       <*> v .:? "keep_turns"
+      <*> v .:? "thinking_keep_turns"
+      <*> v .:? "tool_input_threshold"
 
 instance FromJSON MCPServerConfigFile where
   parseJSON = withObject "MCPServerConfigFile" $ \v -> do
@@ -259,7 +267,9 @@ defaultPruning =
   PruningConfig
     { headChars = 500,
       tailChars = 500,
-      keepTurns = 3
+      keepTurns = 3,
+      thinkingKeepTurns = Just 1,
+      toolInputThreshold = Just 5000
     }
 
 -- | Load configuration from a YAML file and environment variables
@@ -309,7 +319,9 @@ loadConfig path = do
           PruningConfig
             { headChars = fromMaybe defaultPruning.headChars pcf.headChars,
               tailChars = fromMaybe defaultPruning.tailChars pcf.tailChars,
-              keepTurns = fromMaybe defaultPruning.keepTurns pcf.keepTurns
+              keepTurns = fromMaybe defaultPruning.keepTurns pcf.keepTurns,
+              thinkingKeepTurns = fromMaybe defaultPruning.thinkingKeepTurns pcf.thinkingKeepTurns,
+              toolInputThreshold = fromMaybe defaultPruning.toolInputThreshold pcf.toolInputThreshold
             }
 
   let servers = case configFile.mcpServers of
