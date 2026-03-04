@@ -101,7 +101,8 @@ webhookConfigTests =
                   deliveryTarget = LogOnly,
                   suppressIfContains = Nothing,
                   model = Nothing,
-                  thinking = Nothing
+                  thinking = Nothing,
+                  maxIterations = Nothing
                 }
         config.name @?= "test-hook"
         config.prompt @?= [InlineText "Hello"]
@@ -115,7 +116,8 @@ webhookConfigTests =
                   deliveryTarget = TelegramDelivery (123 :| [456, 789]),
                   suppressIfContains = Nothing,
                   model = Nothing,
-                  thinking = Nothing
+                  thinking = Nothing,
+                  maxIterations = Nothing
                 }
         config.deliveryTarget @?= TelegramDelivery (123 :| [456, 789]),
       testCase "can have suppressIfContains" $ do
@@ -127,7 +129,8 @@ webhookConfigTests =
                   deliveryTarget = TelegramBroadcast,
                   suppressIfContains = Just "HEARTBEAT_OK",
                   model = Nothing,
-                  thinking = Nothing
+                  thinking = Nothing,
+                  maxIterations = Nothing
                 }
         config.suppressIfContains @?= Just "HEARTBEAT_OK",
       testCase "can have empty prompt" $ do
@@ -139,7 +142,8 @@ webhookConfigTests =
                   deliveryTarget = LogOnly,
                   suppressIfContains = Nothing,
                   model = Nothing,
-                  thinking = Nothing
+                  thinking = Nothing,
+                  maxIterations = Nothing
                 }
         config.prompt @?= []
     ]
@@ -167,7 +171,8 @@ webhookServerConfigTests =
                   deliveryTarget = LogOnly,
                   suppressIfContains = Nothing,
                   model = Nothing,
-                  thinking = Nothing
+                  thinking = Nothing,
+                  maxIterations = Nothing
                 }
             config =
               WebhookServerConfig

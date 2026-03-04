@@ -53,6 +53,9 @@ let
         }
         // lib.optionalAttrs (epCfg.thinking != null) {
           thinking = mkThinkingConfig epCfg.thinking;
+        }
+        // lib.optionalAttrs (epCfg.maxIterations != null) {
+          max_iterations = epCfg.maxIterations;
         };
 
       allWebhookEndpoints =
@@ -94,6 +97,15 @@ let
           }
           // lib.optionalAttrs (tc.session != null) {
             inherit (tc) session;
+          }
+          // lib.optionalAttrs (tc.model != null) {
+            inherit (tc) model;
+          }
+          // lib.optionalAttrs (tc.thinking != null) {
+            thinking = mkThinkingConfig tc.thinking;
+          }
+          // lib.optionalAttrs (tc.maxIterations != null) {
+            max_iterations = tc.maxIterations;
           }
         ) agentCfg.telegramChats;
         model = agentCfg.model;
@@ -326,6 +338,12 @@ let
       default = null;
       description = "Thinking override for this endpoint. Null means use the agent's global thinking.";
     };
+
+    maxIterations = lib.mkOption {
+      type = lib.types.nullOr lib.types.int;
+      default = null;
+      description = "Max iterations override for this endpoint. Null means use the agent's global value.";
+    };
   };
 
   # Submodule for webhook endpoints
@@ -389,6 +407,25 @@ let
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Session name for persistent conversation. Null means isolated (no history).";
+      };
+
+      model = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Model override for this chat. Null means use the agent's global model.";
+        example = "claude-haiku-4-20250414";
+      };
+
+      thinking = lib.mkOption {
+        type = lib.types.nullOr thinkingModule;
+        default = null;
+        description = "Thinking override for this chat. Null means use the agent's global thinking.";
+      };
+
+      maxIterations = lib.mkOption {
+        type = lib.types.nullOr lib.types.int;
+        default = null;
+        description = "Max iterations override for this chat. Null means use the agent's global value.";
       };
     };
   };

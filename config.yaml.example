@@ -16,6 +16,11 @@ workspace_dir: /var/lib/assistant/workspace
 telegram_chats:
   - id: 123456789
     session: main       # persistent conversation (omit for isolated/ephemeral)
+    # model: claude-haiku-4-20250414    # per-chat model override (default: use global model)
+    # thinking:                         # per-chat thinking override (default: use global thinking)
+    #   type: adaptive
+    #   effort: low
+    # max_iterations: 10                # per-chat max iterations override (default: use global)
 
 # Claude model to use
 # Default: claude-sonnet-4-20250514
@@ -133,6 +138,7 @@ webhook:
       # thinking:                         # per-endpoint thinking override (default: use global thinking)
       #   type: adaptive
       #   effort: low
+      # max_iterations: 5                 # per-endpoint max iterations override (default: use global)
       delivery_target:                      # where to send responses (default: telegram_broadcast)
         type: telegram_broadcast          # broadcast to all telegram_chats
       # delivery_target:

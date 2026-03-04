@@ -127,14 +127,20 @@ data MCPServerConfig = MCPServerConfig
 -- | Telegram chat configuration from YAML file
 data TelegramChatConfigFile = TelegramChatConfigFile
   { id_ :: Int64,
-    session :: Maybe Text
+    session :: Maybe Text,
+    model :: Maybe Text,
+    thinking :: Maybe Value,
+    maxIterations :: Maybe Int
   }
   deriving stock (Show, Generic)
 
 -- | Resolved telegram chat configuration
 data TelegramChatConfig = TelegramChatConfig
   { id_ :: Int64,
-    session :: SessionConfig
+    session :: SessionConfig,
+    model :: Maybe Text,
+    thinking :: Maybe ThinkingLevel,
+    maxIterations :: Maybe Int
   }
   deriving stock (Show, Eq, Generic)
 
@@ -194,10 +200,13 @@ data MCPServerConfigFile = MCPServerConfigFile
 
 instance FromJSON TelegramChatConfigFile where
   parseJSON = withObject "TelegramChatConfigFile" $ \v -> do
-    rejectUnknownKeys "TelegramChatConfigFile" ["id", "session"] v
+    rejectUnknownKeys "TelegramChatConfigFile" ["id", "session", "model", "thinking", "max_iterations"] v
     TelegramChatConfigFile
       <$> v .: "id"
       <*> v .:? "session"
+      <*> v .:? "model"
+      <*> v .:? "thinking"
+      <*> v .:? "max_iterations"
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
@@ -371,7 +380,8 @@ loadConfig path = do
                         deliveryTarget = maybe TelegramBroadcast resolveDeliveryTarget ep.deliveryTarget,
                         suppressIfContains = ep.suppressIfContains,
                         model = ep.model,
-                        thinking = parseThinkingLevel <$> ep.thinking
+                        thinking = parseThinkingLevel <$> ep.thinking,
+                        maxIterations = ep.maxIterations
                       }
                   | ep <- eps
                   ]
@@ -384,7 +394,10 @@ loadConfig path = do
   let telegramChats_ =
         [ TelegramChatConfig
             { id_ = tc.id_,
-              session = maybe Isolated Named tc.session
+              session = maybe Isolated Named tc.session,
+              model = tc.model,
+              thinking = parseThinkingLevel <$> tc.thinking,
+              maxIterations = tc.maxIterations
             }
         | tc <- fromMaybe [] configFile.telegramChats
         ]

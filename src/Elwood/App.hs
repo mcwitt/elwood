@@ -9,7 +9,7 @@ import Control.Exception (finally)
 import Data.Foldable (for_)
 import Data.Int (Int64)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -163,7 +163,7 @@ runApp config = do
             workspaceDir = config.workspaceDir,
             model = config.model,
             thinking = config.thinking,
-            telegramSessionMap = Map.fromList [(tc.id_, tc.session) | tc <- config.telegramChats],
+            telegramChatMap = Map.fromList [(tc.id_, tc) | tc <- config.telegramChats],
             attachmentQueue = attachmentQueue_,
             maxIterations = config.maxIterations,
             metrics = mets,
@@ -172,10 +172,17 @@ runApp config = do
             sessionLocks = sessionLocks_
           }
 
-  -- Telegram message handler: inject per-chat approval into AgentContext
+  -- Telegram message handler: inject per-chat approval and overrides
   let msgHandler msg =
         let cid = msg.chat.id_
-            envForChat = appEnv {agentContext = mkAgentContextWithApproval cid}
+            chatCfg = Map.lookup cid appEnv.telegramChatMap
+            envForChat =
+              appEnv
+                { agentContext = mkAgentContextWithApproval cid,
+                  model = maybe appEnv.model (fromMaybe appEnv.model . (.model)) chatCfg,
+                  thinking = maybe appEnv.thinking (fromMaybe appEnv.thinking . (.thinking)) chatCfg,
+                  maxIterations = maybe appEnv.maxIterations (fromMaybe appEnv.maxIterations . (.maxIterations)) chatCfg
+                }
          in handleTelegramMessage envForChat msg
 
   -- Log webhook configuration

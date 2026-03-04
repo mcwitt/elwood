@@ -59,7 +59,7 @@ import Elwood.Claude qualified as Claude
 import Elwood.Claude.Compaction qualified as Compaction
 import Elwood.Claude.Pruning (PruneHorizons, anthropicCacheTtl, getAndUpdateHorizon)
 import Elwood.Command qualified as Cmd
-import Elwood.Config (CompactionConfig, PruningConfig, ThinkingLevel)
+import Elwood.Config (CompactionConfig, PruningConfig, TelegramChatConfig (..), ThinkingLevel)
 import Elwood.Event.Types
   ( DeliveryTarget (..),
     EventSource (..),
@@ -113,8 +113,8 @@ data AppEnv = AppEnv
     model :: Text,
     -- | Extended thinking level
     thinking :: ThinkingLevel,
-    -- | Telegram chat ID to session config mapping (source of truth for allowed chats)
-    telegramSessionMap :: Map Int64 SessionConfig,
+    -- | Telegram chat ID to full chat config (source of truth for allowed chats)
+    telegramChatMap :: Map Int64 TelegramChatConfig,
     -- | Attachment queue
     attachmentQueue :: TVar [Tools.Attachment],
     -- | Maximum agent loop iterations per turn
@@ -346,7 +346,7 @@ deliverTextOnly env target msg = case target of
   TelegramDelivery chatIds ->
     mapM_ (\cid -> notifySafe env cid msg) chatIds
   TelegramBroadcast ->
-    mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramSessionMap)
+    mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramChatMap)
   LogOnly ->
     logInfo env.logger "Event response (log only)" [("response", T.take 100 msg)]
 
@@ -368,7 +368,7 @@ deliverToTargets env target msg = do
 -- | Resolve a delivery target to its Telegram chat IDs
 targetChatIds :: AppEnv -> DeliveryTarget -> [Int64]
 targetChatIds _ (TelegramDelivery chatIds) = NE.toList chatIds
-targetChatIds env TelegramBroadcast = Map.keys env.telegramSessionMap
+targetChatIds env TelegramBroadcast = Map.keys env.telegramChatMap
 targetChatIds _ LogOnly = []
 
 -- | Send a single attachment to a chat, choosing photo vs document
@@ -418,7 +418,7 @@ mkRateLimitCallback env event attemptNum waitSecs = do
     TelegramDelivery chatIds ->
       mapM_ (\cid -> notifySafe env cid msg) chatIds
     TelegramBroadcast ->
-      mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramSessionMap)
+      mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramChatMap)
     LogOnly ->
       logInfo env.logger "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
 
@@ -428,7 +428,7 @@ sendTypingToTargets env target = case target of
   TelegramDelivery chatIds ->
     mapM_ (Telegram.sendChatAction env.telegram) chatIds
   TelegramBroadcast ->
-    mapM_ (Telegram.sendChatAction env.telegram) (Map.keys env.telegramSessionMap)
+    mapM_ (Telegram.sendChatAction env.telegram) (Map.keys env.telegramChatMap)
   LogOnly -> pure ()
 
 -- | Create before-API-call callback to send typing indicators
@@ -466,8 +466,11 @@ handleTelegramMessage env msg =
     chatIdVal :: Int64
     chatIdVal = msg.chat.id_
 
+    chatConfig :: Maybe TelegramChatConfig
+    chatConfig = Map.lookup chatIdVal env.telegramChatMap
+
     chatSession :: SessionConfig
-    chatSession = fromMaybe Isolated (Map.lookup chatIdVal env.telegramSessionMap)
+    chatSession = maybe Isolated (.session) chatConfig
 
     handleClear :: IO (Maybe Text)
     handleClear = do

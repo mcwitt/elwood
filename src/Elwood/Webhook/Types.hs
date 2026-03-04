@@ -39,7 +39,9 @@ data WebhookConfig = WebhookConfig
     -- | Model override for this endpoint (Nothing = use global)
     model :: Maybe Text,
     -- | Thinking level override for this endpoint (Nothing = use global)
-    thinking :: Maybe ThinkingLevel
+    thinking :: Maybe ThinkingLevel,
+    -- | Max iterations override for this endpoint (Nothing = use global)
+    maxIterations :: Maybe Int
   }
   deriving stock (Show, Eq, Generic)
 
@@ -73,7 +75,8 @@ data WebhookConfigFile = WebhookConfigFile
     deliveryTarget :: Maybe DeliveryTargetFile,
     suppressIfContains :: Maybe Text,
     model :: Maybe Text,
-    thinking :: Maybe Value
+    thinking :: Maybe Value,
+    maxIterations :: Maybe Int
   }
   deriving stock (Show, Generic)
 
@@ -110,7 +113,7 @@ instance FromJSON WebhookServerConfigFile where
 
 instance FromJSON WebhookConfigFile where
   parseJSON = withObject "WebhookConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookConfigFile" ["name", "prompt", "session", "delivery_target", "suppress_if_contains", "model", "thinking"] v
+    rejectUnknownKeys "WebhookConfigFile" ["name", "prompt", "session", "delivery_target", "suppress_if_contains", "model", "thinking", "max_iterations"] v
     WebhookConfigFile
       <$> v .: "name"
       <*> v .:? "prompt"
@@ -119,3 +122,4 @@ instance FromJSON WebhookConfigFile where
       <*> v .:? "suppress_if_contains"
       <*> v .:? "model"
       <*> v .:? "thinking"
+      <*> v .:? "max_iterations"
