@@ -111,6 +111,7 @@ let
         model = agentCfg.model;
         thinking = mkThinkingConfig agentCfg.thinking;
         max_iterations = agentCfg.maxIterations;
+        tool_use_messages = agentCfg.toolUseMessages;
         system_prompt = map mkPromptInputYaml agentCfg.systemPrompt;
 
         permissions = {
@@ -498,6 +499,12 @@ let
           type = lib.types.int;
           default = 20;
           description = "Maximum agent loop iterations per turn (prevents infinite tool-use loops).";
+        };
+
+        toolUseMessages = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = "Send notification messages when the agent uses tools.";
         };
 
         systemPrompt = lib.mkOption {

@@ -214,7 +214,8 @@ applyOverrides env wc =
       metrics = env.metrics,
       toolSearch = env.toolSearch,
       pruneHorizons = env.pruneHorizons,
-      sessionLocks = env.sessionLocks
+      sessionLocks = env.sessionLocks,
+      toolUseMessages = env.toolUseMessages
     }
 
 -- | status400 for bad request

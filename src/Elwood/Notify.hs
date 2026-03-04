@@ -2,6 +2,7 @@ module Elwood.Notify
   ( Severity (..),
     formatNotify,
     sanitizeBackticks,
+    escapeUnderscores,
   )
 where
 

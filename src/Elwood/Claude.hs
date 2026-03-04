@@ -13,6 +13,7 @@ module Elwood.Claude
     AgentObserver (..),
     RateLimitCallback,
     TextCallback,
+    ToolUseCallback,
     runAgentTurn,
 
     -- * Conversation

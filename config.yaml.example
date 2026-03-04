@@ -46,6 +46,10 @@ thinking: off
 # Default: 30
 max_iterations: 20
 
+# Send notification messages when the agent uses tools (e.g. "🔧 Using bash")
+# Default: true
+tool_use_messages: true
+
 # Tool search: null | [] | [tool1, ...]
 # Uses Anthropic's server-side tool search for on-demand tool discovery.
 # All tools are sent in every request (enabling prompt caching), with most

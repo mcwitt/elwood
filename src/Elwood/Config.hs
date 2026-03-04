@@ -81,7 +81,9 @@ data Config = Config
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled)
     toolSearch :: Maybe [Text],
     -- | System prompt inputs (assembled at startup)
-    systemPrompt :: [PromptInput]
+    systemPrompt :: [PromptInput],
+    -- | Send notification messages when the agent uses tools
+    toolUseMessages :: Bool
   }
   deriving stock (Show, Generic)
 
@@ -160,7 +162,8 @@ data ConfigFile = ConfigFile
     thinking :: Maybe ThinkingLevel,
     maxIterations :: Maybe Int,
     toolSearch :: Maybe Value,
-    systemPrompt :: Maybe [PromptInputFile]
+    systemPrompt :: Maybe [PromptInputFile],
+    toolUseMessages :: Maybe Bool
   }
   deriving stock (Show, Generic)
 
@@ -213,7 +216,7 @@ instance FromJSON TelegramChatConfigFile where
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "model", "permissions", "compaction", "pruning", "mcp_servers", "webhook", "thinking", "max_iterations", "tool_search", "system_prompt"] v
+    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "model", "permissions", "compaction", "pruning", "mcp_servers", "webhook", "thinking", "max_iterations", "tool_search", "system_prompt", "tool_use_messages"] v
     ConfigFile
       <$> v .:? "state_dir"
       <*> v .:? "workspace_dir"
@@ -228,6 +231,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "max_iterations"
       <*> v .:? "tool_search"
       <*> v .:? "system_prompt"
+      <*> v .:? "tool_use_messages"
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v -> do
@@ -429,7 +433,8 @@ loadConfig path = do
         thinking = fromMaybe ThinkingOff configFile.thinking,
         maxIterations = fromMaybe 20 configFile.maxIterations,
         toolSearch = parseToolSearch =<< configFile.toolSearch,
-        systemPrompt = systemPrompt_
+        systemPrompt = systemPrompt_,
+        toolUseMessages = fromMaybe True configFile.toolUseMessages
       }
 
 -- | Parse tool search configuration from a YAML value

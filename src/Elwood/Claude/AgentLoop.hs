@@ -7,6 +7,7 @@ module Elwood.Claude.AgentLoop
     AgentObserver (..),
     RateLimitCallback,
     TextCallback,
+    ToolUseCallback,
   )
 where
 
@@ -60,6 +61,9 @@ type RateLimitCallback = Int -> Int -> IO ()
 -- | Callback for intermediate text content produced during tool-use turns
 type TextCallback = Text -> IO ()
 
+-- | Callback for tool use notifications (receives list of tool names)
+type ToolUseCallback = [Text] -> IO ()
+
 -- | Observer callbacks for metrics and telemetry.
 -- The agent loop fires these at key points without knowing the underlying
 -- recording mechanism.
@@ -91,6 +95,8 @@ data AgentConfig = AgentConfig
     onRateLimit :: Maybe RateLimitCallback,
     -- | Optional callback for intermediate text produced during tool-use turns
     onText :: Maybe TextCallback,
+    -- | Optional callback for tool use notifications
+    onToolUse :: Maybe ToolUseCallback,
     -- | Optional callback fired before each API call (e.g., typing indicator)
     onBeforeApiCall :: Maybe (IO ()),
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
@@ -275,6 +281,12 @@ handleResponse cfg msgs response iteration =
       -- Send any intermediate text to the user immediately
       case cfg.onText of
         Just cb | not (T.null intermediateText) -> cb intermediateText
+        _ -> pure ()
+
+      -- Notify about tool use
+      let toolNames = [tn | ToolUseBlock _ (ToolName tn) _ <- toolUses]
+      case cfg.onToolUse of
+        Just cb | not (null toolNames) -> cb toolNames
         _ -> pure ()
 
       -- Record tool call metrics

@@ -67,7 +67,7 @@ import Elwood.Event.Types
   )
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, estimateJsonTokens, estimateTextTokens, metricsObserver, metricsSource, recordApiResponse, recordCompaction)
-import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
+import Elwood.Notify (Severity (..), escapeUnderscores, formatNotify, sanitizeBackticks)
 import Elwood.Prompt (PromptInput, assemblePrompt)
 import Elwood.Session (SessionLocks, withSessionLock)
 import Elwood.Telegram qualified as Telegram
@@ -125,12 +125,15 @@ data AppEnv = AppEnv
     -- | Per-session prune horizons for tool result pruning
     pruneHorizons :: PruneHorizons,
     -- | Per-session locks for serializing concurrent event handling
-    sessionLocks :: SessionLocks
+    sessionLocks :: SessionLocks,
+    -- | Send notification messages when the agent uses tools
+    toolUseMessages :: Bool
   }
 
 -- | Callbacks wired into the agent loop for delivery during a turn
 data DeliveryCallbacks = DeliveryCallbacks
   { onText :: Maybe Claude.TextCallback,
+    onToolUse :: Maybe Claude.ToolUseCallback,
     onRateLimit :: Maybe Claude.RateLimitCallback,
     onBeforeApiCall :: Maybe (IO ()),
     onResponse :: Text -> IO ()
@@ -149,6 +152,7 @@ eagerCallbacks :: AppEnv -> Event -> DeliveryCallbacks
 eagerCallbacks env event =
   DeliveryCallbacks
     { onText = Just (mkTextCallback env event),
+      onToolUse = if env.toolUseMessages then Just (mkToolUseCallback env event) else Nothing,
       onRateLimit = Just (mkRateLimitCallback env event),
       onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
       onResponse = deliverResponse env event
@@ -207,6 +211,7 @@ handleEventCore env event callbacks = do
             observer = metricsObserver env.metrics env.model (metricsSource src),
             onRateLimit = callbacks.onRateLimit,
             onText = callbacks.onText,
+            onToolUse = callbacks.onToolUse,
             onBeforeApiCall = callbacks.onBeforeApiCall,
             toolSearch = env.toolSearch,
             pruningConfig = env.pruning,
@@ -291,6 +296,12 @@ handleEventBuffered env event targets = do
                 writeTVar env.attachmentQueue []
                 pure a
               modifyIORef' bufRef (BufferedText t atts :),
+            onToolUse =
+              if env.toolUseMessages
+                then Just $ \names -> do
+                  let m = formatToolUseMessage names
+                  modifyIORef' bufRef (BufferedText m [] :)
+                else Nothing,
             onRateLimit =
               Just
                 ( \n s -> do
@@ -420,6 +431,25 @@ mkRateLimitCallback env event attemptNum waitSecs = do
       mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramChatMap)
     LogOnly ->
       logInfo env.logger "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
+
+-- | Format a tool use notification message
+formatToolUseMessage :: [Text] -> Text
+formatToolUseMessage [] = ""
+formatToolUseMessage (first : rest)
+  | length rest < 5 = "\128295 _Using " <> escapeUnderscores (T.intercalate ", " (first : rest)) <> "_"
+  | otherwise = "\128295 _Using " <> escapeUnderscores first <> " + " <> T.pack (show (length rest)) <> " others_"
+
+-- | Create tool use notification callback based on event delivery targets
+mkToolUseCallback :: AppEnv -> Event -> Claude.ToolUseCallback
+mkToolUseCallback env event names = do
+  let msg = formatToolUseMessage names
+  case event.deliveryTarget of
+    TelegramDelivery chatIds ->
+      mapM_ (\cid -> notifySafe env cid msg) chatIds
+    TelegramBroadcast ->
+      mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramChatMap)
+    LogOnly ->
+      logInfo env.logger "Tool use" [("tools", T.intercalate ", " names)]
 
 -- | Send typing indicator to a delivery target
 sendTypingToTargets :: AppEnv -> DeliveryTarget -> IO ()
