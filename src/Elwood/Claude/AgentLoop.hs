@@ -4,10 +4,6 @@ module Elwood.Claude.AgentLoop
   ( runAgentTurn,
     AgentConfig (..),
     AgentResult (..),
-    AgentObserver (..),
-    RateLimitCallback,
-    TextCallback,
-    ToolUseCallback,
   )
 where
 
@@ -20,6 +16,7 @@ import Data.Text.Encoding (decodeUtf8)
 import Elwood.AgentSettings (AgentSettings (..))
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
+import Elwood.Claude.Observer (AgentObserver (..), RateLimitCallback, TextCallback, ToolUseCallback)
 import Elwood.Claude.Pruning (pruneThinkingBlocks, pruneToolInputs, pruneToolResults)
 import Elwood.Claude.Types
   ( ClaudeError (..),
@@ -31,7 +28,6 @@ import Elwood.Claude.Types
     StopReason (..),
     ThinkingConfig (..),
     ToolName (..),
-    ToolSchema (..),
     ToolUseId (..),
     Usage (..),
     stopReasonToText,
@@ -55,30 +51,6 @@ data AgentResult
   | -- | Error that should be shown to user
     AgentError Text
   deriving stock (Show)
-
--- | Callback for rate limit notifications
--- Arguments: retry attempt number, wait seconds
-type RateLimitCallback = Int -> Int -> IO ()
-
--- | Callback for intermediate text content produced during tool-use turns
-type TextCallback = Text -> IO ()
-
--- | Callback for tool use notifications (receives list of tool names)
-type ToolUseCallback = [Text] -> IO ()
-
--- | Observer callbacks for metrics and telemetry.
--- The agent loop fires these at key points without knowing the underlying
--- recording mechanism.
-data AgentObserver = AgentObserver
-  { -- | Estimated input token breakdown (system prompt, tool search, messages, schemas)
-    onInputEstimate :: Maybe Text -> Maybe (Set ToolName) -> [ClaudeMessage] -> [ToolSchema] -> IO (),
-    -- | API response received (stop reason, usage)
-    onApiResponse :: StopReason -> Usage -> IO (),
-    -- | Tool call about to be executed (tool name)
-    onToolCall :: Text -> IO (),
-    -- | Context compaction triggered
-    onCompaction :: IO ()
-  }
 
 -- | Configuration for the agent loop (all environment/config params)
 data AgentConfig = AgentConfig

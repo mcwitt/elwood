@@ -47,4 +47,5 @@ import Elwood.Claude.AgentLoop
 import Elwood.Claude.Client
 import Elwood.Claude.Compaction (compactIfNeeded, compactMessages)
 import Elwood.Claude.Conversation
+import Elwood.Claude.Observer
 import Elwood.Claude.Types

@@ -46,8 +46,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
-import Elwood.Claude.AgentLoop (AgentObserver (..))
 import Elwood.Claude.Conversation qualified as Claude
+import Elwood.Claude.Observer (AgentObserver (..))
 import Elwood.Claude.Types qualified as Claude
 import Elwood.Event.Types (EventSource (..))
 import Elwood.Tools.Registry qualified as Tools

@@ -32,6 +32,7 @@ library
     Elwood.Claude.Client
     Elwood.Claude.Compaction
     Elwood.Claude.Conversation
+    Elwood.Claude.Observer
     Elwood.Claude.Pruning
     Elwood.Claude.Types
     Elwood.Command
