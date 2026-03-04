@@ -31,9 +31,7 @@ delegateDefaults = AgentOverrides Nothing Nothing (Just 10)
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
   { task :: Text,
-    modelParam :: Maybe Text,
-    thinkingParam :: Maybe ThinkingLevel,
-    maxIterParam :: Maybe Int
+    overrides :: AgentOverrides
   }
 
 -- | Construct a delegate_task tool that spawns a sub-agent with an isolated
@@ -74,13 +72,7 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
       Right di -> do
         -- Layering: parent settings < delegate defaults < config overrides < tool params
         let baseOverrides = toOverrides agentSettings <> delegateDefaults <> configOverrides
-            toolOverrides =
-              AgentOverrides
-                { model = di.modelParam,
-                  thinking = di.thinkingParam,
-                  maxIterations = di.maxIterParam
-                }
-            subSettings = resolveAgent (baseOverrides <> toolOverrides)
+            subSettings = resolveAgent (baseOverrides <> di.overrides)
 
         logInfo
           logger
@@ -182,7 +174,7 @@ parseDelegateInput allowedModels (Aeson.Object obj) = do
   modelParam <- case KM.lookup "model" obj of
     Just (Aeson.String m)
       | null allowedModels ->
-          Left "Model selection is not enabled (configure agent.delegate.allowed_models)"
+          Left "Model selection is not enabled (configure delegate.allowed_models)"
       | m `notElem` allowedModels ->
           Left $ "Invalid model '" <> m <> "'. Allowed: " <> T.intercalate ", " allowedModels
       | otherwise -> Right (Just m)
@@ -204,5 +196,6 @@ parseDelegateInput allowedModels (Aeson.Object obj) = do
             else Right (Just i)
     Just _ -> Left "Invalid 'max_iterations' parameter (must be an integer)"
     Nothing -> Right Nothing
-  Right DelegateInput {task, modelParam, thinkingParam, maxIterParam}
+  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam}
+  Right DelegateInput {task, overrides = ovr}
 parseDelegateInput _ _ = Left "Expected object input"

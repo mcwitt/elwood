@@ -108,31 +108,11 @@ let
           }
           // mkAgentOverrides tc.agent
         ) agentCfg.telegramChats;
-        agent =
-          let
-            delegateAttrs =
-              { }
-              // lib.optionalAttrs (agentCfg.agent.delegate.model != null) {
-                model = agentCfg.agent.delegate.model;
-              }
-              // lib.optionalAttrs (agentCfg.agent.delegate.thinking != null) {
-                thinking = mkThinkingConfig agentCfg.agent.delegate.thinking;
-              }
-              // lib.optionalAttrs (agentCfg.agent.delegate.maxIterations != null) {
-                max_iterations = agentCfg.agent.delegate.maxIterations;
-              }
-              // lib.optionalAttrs (agentCfg.agent.delegate.allowedModels != null) {
-                allowed_models = agentCfg.agent.delegate.allowedModels;
-              };
-          in
-          {
-            model = agentCfg.agent.model;
-            thinking = mkThinkingConfig agentCfg.agent.thinking;
-            max_iterations = agentCfg.agent.maxIterations;
-          }
-          // lib.optionalAttrs (delegateAttrs != { }) {
-            delegate = delegateAttrs;
-          };
+        agent = {
+          model = agentCfg.agent.model;
+          thinking = mkThinkingConfig agentCfg.agent.thinking;
+          max_iterations = agentCfg.agent.maxIterations;
+        };
         tool_use_messages = agentCfg.toolUseMessages;
         system_prompt = map mkPromptInputYaml agentCfg.systemPrompt;
 
@@ -174,7 +154,19 @@ let
         // lib.optionalAttrs (allWebhookEndpoints != [ ]) {
           endpoints = allWebhookEndpoints;
         };
-      };
+      }
+      // (
+        let
+          delegateAttrs =
+            mkAgentOverrides agentCfg.delegate.agent
+            // lib.optionalAttrs (agentCfg.delegate.allowedModels != null) {
+              allowed_models = agentCfg.delegate.allowedModels;
+            };
+        in
+        lib.optionalAttrs (delegateAttrs != { }) {
+          delegate = delegateAttrs;
+        }
+      );
     in
     pkgs.writeText "assistant-${name}-config.yaml" (lib.generators.toYAML { } configContent);
 
@@ -511,36 +503,19 @@ let
             default = 20;
             description = "Maximum agent loop iterations per turn (prevents infinite tool-use loops).";
           };
+        };
 
-          delegate = {
-            model = lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
-              default = null;
-              description = "Model override for delegate sub-agents. Null means inherit from parent agent.";
-              example = "claude-haiku-4-20250414";
-            };
+        delegate = {
+          agent = agentOverrideOptions;
 
-            thinking = lib.mkOption {
-              type = lib.types.nullOr thinkingModule;
-              default = null;
-              description = "Thinking override for delegate sub-agents. Null means inherit from parent agent.";
-            };
-
-            maxIterations = lib.mkOption {
-              type = lib.types.nullOr lib.types.int;
-              default = null;
-              description = "Max iterations override for delegate sub-agents. Null means use default (10).";
-            };
-
-            allowedModels = lib.mkOption {
-              type = lib.types.nullOr (lib.types.listOf lib.types.str);
-              default = null;
-              description = "Models the main agent can choose from via the delegate_task tool parameter. Null uses built-in defaults.";
-              example = [
-                "claude-haiku-4-20250414"
-                "claude-sonnet-4-20250514"
-              ];
-            };
+          allowedModels = lib.mkOption {
+            type = lib.types.nullOr (lib.types.listOf lib.types.str);
+            default = null;
+            description = "Models the main agent can choose from via the delegate_task tool parameter. Null disables model selection.";
+            example = [
+              "claude-haiku-4-20250414"
+              "claude-sonnet-4-20250514"
+            ];
           };
         };
 

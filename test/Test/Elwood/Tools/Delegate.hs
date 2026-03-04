@@ -68,7 +68,7 @@ modelValidationTests =
       testCase "model rejected when allowed_models is empty" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "model" .= ("any-model" :: Text)])
-        result @?= ToolError "Model selection is not enabled (configure agent.delegate.allowed_models)"
+        result @?= ToolError "Model selection is not enabled (configure delegate.allowed_models)"
     ]
 
 thinkingValidationTests :: TestTree
