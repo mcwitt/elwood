@@ -194,12 +194,27 @@ handleEventCore env event callbacks = do
           [Claude.TextBlock event.prompt]
       userMsg = Claude.ClaudeMessage Claude.User contentBlocks
 
+  -- Build registry with delegate tool (base registry has no delegate_task,
+  -- preventing recursive nesting)
+  let delegateTool =
+        Tools.mkDelegateTaskTool
+          lgr
+          env.claude
+          env.registry
+          env.agentContext
+          env.agentSettings
+          env.compaction
+          env.pruning
+          systemPrompt
+          env.metrics
+      registryWithDelegate = Tools.registerTool delegateTool env.registry
+
   -- Build agent config from environment
   let agentConfig =
         Claude.AgentConfig
           { logger = lgr,
             client = env.claude,
-            registry = env.registry,
+            registry = registryWithDelegate,
             context = env.agentContext,
             compaction = env.compaction,
             systemPrompt = systemPrompt,

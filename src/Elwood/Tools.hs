@@ -21,11 +21,13 @@ module Elwood.Tools
     mkQueueAttachmentTool,
     mkSaveMemoryTool,
     mkSearchMemoryTool,
+    mkDelegateTaskTool,
   )
 where
 
 import Elwood.Tools.Attachment (mkQueueAttachmentTool)
 import Elwood.Tools.Command (mkRunCommandTool)
+import Elwood.Tools.Delegate (mkDelegateTaskTool)
 import Elwood.Tools.Memory (mkSaveMemoryTool, mkSearchMemoryTool)
 import Elwood.Tools.Registry
 import Elwood.Tools.Types

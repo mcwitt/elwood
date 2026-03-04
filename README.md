@@ -19,6 +19,7 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Tool approval flow** — Approve sensitive operations via inline keyboard (Telegram only; webhook-triggered runs deny `ask` tools)
 - **Image support** — Send photos and Claude can see them
 - **Extended thinking** — Configurable reasoning budget for complex tasks
+- **Task delegation** — Spawn sub-agents with isolated context for tool-heavy tasks
 - **Context compaction** — Automatic summarization for long conversations
 - **Server-side tool search** — On-demand tool discovery via Anthropic's tool search with deferred loading
 - **Typing indicator** — Shows "typing..." in Telegram while the agent works
@@ -222,6 +223,7 @@ Each agent runs as a separate systemd service (`assistant-<name>.service`) with 
 | `save_memory` | Persist knowledge across sessions |
 | `search_memory` | Search saved memories |
 | `queue_attachment` | Queue files to send as Telegram attachments |
+| `delegate_task` | Spawn a sub-agent with isolated context for multi-step tasks |
 
 ## Monitoring
 

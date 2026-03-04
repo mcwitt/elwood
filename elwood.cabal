@@ -58,6 +58,7 @@ library
     Elwood.Tools
     Elwood.Tools.Attachment
     Elwood.Tools.Command
+    Elwood.Tools.Delegate
     Elwood.Tools.Memory
     Elwood.Tools.Registry
     Elwood.Tools.Types
@@ -137,6 +138,7 @@ test-suite elwood-test
     Test.Elwood.Permissions
     Test.Elwood.Session
     Test.Elwood.Telegram.Markdown
+    Test.Elwood.Tools.Delegate
     Test.Elwood.Tools.Registry
     Test.Elwood.Webhook
 

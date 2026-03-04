@@ -102,6 +102,12 @@ pruning:
   thinking_keep_turns: 1  # keep thinking blocks for last N turns, independent of keep_turns (default: 1, null = keep all)
   tool_input_threshold: 5000  # prune tool inputs exceeding this many chars (default: 5000, null = disabled)
 
+# Built-in meta-tool: delegate_task
+# Always available. Spawns a sub-agent with an isolated conversation to handle
+# multi-step tasks without bloating the main context. The sub-agent has access
+# to all tools except delegate_task (no recursive nesting). Default max
+# iterations: 10 (overridable per-call via the tool's max_iterations parameter).
+
 # Tool permission settings
 permissions:
   default_policy: allow          # allow | ask | deny (default: allow)
