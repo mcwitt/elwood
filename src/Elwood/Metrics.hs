@@ -238,7 +238,6 @@ recordInputBreakdown store model source systemPrompt toolSearch msgs schemas = d
 metricsSource :: EventSource -> Text
 metricsSource (TelegramSource _) = "telegram"
 metricsSource (WebhookSource n) = "webhook:" <> n
-metricsSource (CronSource n) = "cron:" <> n
 
 -- | Build an 'AgentObserver' that records metrics to a 'MetricsStore'.
 -- The @model@ and @source@ labels are baked in at construction time.

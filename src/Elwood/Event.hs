@@ -761,5 +761,4 @@ handleTelegramMessage env msg =
 -- | Format event source for logging
 formatSource :: EventSource -> Text
 formatSource (WebhookSource n) = "webhook:" <> n
-formatSource (CronSource n) = "cron:" <> n
 formatSource (TelegramSource chatId_) = "telegram:" <> T.pack (show chatId_)

@@ -117,9 +117,7 @@ metricsSourceTests =
     [ testCase "telegram source strips chat ID" $
         metricsSource (TelegramSource 12345) @?= "telegram",
       testCase "webhook source includes name" $
-        metricsSource (WebhookSource "deploy") @?= "webhook:deploy",
-      testCase "cron source includes name" $
-        metricsSource (CronSource "heartbeat") @?= "cron:heartbeat"
+        metricsSource (WebhookSource "deploy") @?= "webhook:deploy"
     ]
 
 -- | Check if a substring is contained in a string

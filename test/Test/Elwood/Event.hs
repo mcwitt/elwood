@@ -62,10 +62,6 @@ eventSourceTests =
         case WebhookSource "doorbell" of
           WebhookSource name -> name @?= "doorbell"
           _ -> assertFailure "Expected WebhookSource",
-      testCase "CronSource holds name" $
-        case CronSource "daily" of
-          CronSource name -> name @?= "daily"
-          _ -> assertFailure "Expected CronSource",
       testCase "TelegramSource holds chat ID" $
         case TelegramSource 12345 of
           TelegramSource cid -> cid @?= 12345

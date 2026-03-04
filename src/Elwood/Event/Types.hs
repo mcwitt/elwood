@@ -22,8 +22,6 @@ import Data.Text (Text)
 data EventSource
   = -- | Webhook with name
     WebhookSource Text
-  | -- | Cron job with name
-    CronSource Text
   | -- | Telegram message from chat ID
     TelegramSource Int64
   deriving stock (Show, Eq)
