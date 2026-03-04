@@ -11,6 +11,11 @@ module Elwood.Event.Types
 
     -- * Delivery Targets
     DeliveryTarget (..),
+
+    -- * Image Data
+    ImageData (..),
+    MediaType (..),
+    Base64Data (..),
   )
 where
 
@@ -32,6 +37,21 @@ data SessionConfig
     Isolated
   | -- | Named persistent session
     Named Text
+  deriving stock (Show, Eq)
+
+-- | MIME type (e.g., "image/jpeg", "image/png")
+newtype MediaType = MediaType {unMediaType :: Text}
+  deriving stock (Show, Eq)
+
+-- | Base64-encoded binary data
+newtype Base64Data = Base64Data {unBase64Data :: Text}
+  deriving stock (Show, Eq)
+
+-- | Image data with media type and base64-encoded content
+data ImageData = ImageData
+  { mediaType :: MediaType,
+    base64Data :: Base64Data
+  }
   deriving stock (Show, Eq)
 
 -- | Where to deliver event responses

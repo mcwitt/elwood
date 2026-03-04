@@ -28,7 +28,10 @@ import Elwood.Command qualified as Cmd
 import Elwood.Config (TelegramChatConfig (..))
 import Elwood.Event
   ( AppEnv (..),
+    Base64Data (..),
     Event (..),
+    ImageData (..),
+    MediaType (..),
     handleEvent,
     sessionToConversationId,
   )
@@ -268,8 +271,8 @@ handleTelegramMessage env msg =
               -- since the event system only delivers on success
               pure (Just errorMsg)
 
-    -- Fetch the largest photo and return (mediaType, base64Data)
-    fetchImageData :: [Telegram.PhotoSize] -> IO (Maybe (Text, Text))
+    -- Fetch the largest photo and return ImageData
+    fetchImageData :: [Telegram.PhotoSize] -> IO (Maybe ImageData)
     fetchImageData photos = do
       let tg = env.telegram
       -- Get the largest photo (sort by file size descending, take first)
@@ -308,20 +311,20 @@ handleTelegramMessage env msg =
                   else do
                     -- Determine media type from file extension
                     let mt = guessMediaType fp
-                        base64Data = TE.decodeUtf8 $ LBS.toStrict $ B64.encode rawImageData
+                        b64 = Base64Data $ TE.decodeUtf8 $ LBS.toStrict $ B64.encode rawImageData
                     logInfo
                       lgr
                       "Photo downloaded and encoded"
-                      [ ("media_type", mt),
+                      [ ("media_type", mt.unMediaType),
                         ("size_bytes", T.pack (show (LBS.length rawImageData)))
                       ]
-                    pure $ Just (mt, base64Data)
+                    pure $ Just ImageData {mediaType = mt, base64Data = b64}
 
     -- Guess media type from file path
-    guessMediaType :: Text -> Text
+    guessMediaType :: Text -> MediaType
     guessMediaType path
-      | T.isSuffixOf ".jpg" path || T.isSuffixOf ".jpeg" path = "image/jpeg"
-      | T.isSuffixOf ".png" path = "image/png"
-      | T.isSuffixOf ".gif" path = "image/gif"
-      | T.isSuffixOf ".webp" path = "image/webp"
-      | otherwise = "image/jpeg" -- Default to JPEG for Telegram photos
+      | T.isSuffixOf ".jpg" path || T.isSuffixOf ".jpeg" path = MediaType "image/jpeg"
+      | T.isSuffixOf ".png" path = MediaType "image/png"
+      | T.isSuffixOf ".gif" path = MediaType "image/gif"
+      | T.isSuffixOf ".webp" path = MediaType "image/webp"
+      | otherwise = MediaType "image/jpeg" -- Default to JPEG for Telegram photos

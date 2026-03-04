@@ -8,6 +8,9 @@ module Elwood.Event
     EventSource (..),
     SessionConfig (..),
     DeliveryTarget (..),
+    ImageData (..),
+    MediaType (..),
+    Base64Data (..),
 
     -- * Event Environment
     AppEnv (..),
@@ -53,8 +56,11 @@ import Elwood.Claude qualified as Claude
 import Elwood.Claude.Pruning (PruneHorizons, anthropicCacheTtl, getAndUpdateHorizon)
 import Elwood.Config (CompactionConfig, PruningConfig, TelegramChatConfig (..))
 import Elwood.Event.Types
-  ( DeliveryTarget (..),
+  ( Base64Data (..),
+    DeliveryTarget (..),
     EventSource (..),
+    ImageData (..),
+    MediaType (..),
     SessionConfig (..),
   )
 import Elwood.Logging (Logger, logError, logInfo)
@@ -76,8 +82,8 @@ data Event = Event
     payload :: Value,
     -- | Rendered prompt for the agent
     prompt :: Text,
-    -- | Optional image data (media type, base64 data)
-    image :: Maybe (Text, Text),
+    -- | Optional image data
+    image :: Maybe ImageData,
     -- | Session configuration
     session :: SessionConfig,
     -- | Where to deliver responses
@@ -178,8 +184,8 @@ handleEventCore env event callbacks = do
 
   -- Build user message with optional image
   let contentBlocks = case event.image of
-        Just (mt, imageData) ->
-          [Claude.ImageBlock mt imageData, Claude.TextBlock event.prompt]
+        Just img ->
+          [Claude.ImageBlock img.mediaType.unMediaType img.base64Data.unBase64Data, Claude.TextBlock event.prompt]
         Nothing ->
           [Claude.TextBlock event.prompt]
       userMsg = Claude.ClaudeMessage Claude.User contentBlocks
