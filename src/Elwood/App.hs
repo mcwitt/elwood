@@ -28,13 +28,14 @@ import Elwood.Approval
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Pruning (newPruneHorizons)
 import Elwood.Config
-import Elwood.Event (AppEnv (..), handleTelegramMessage)
+import Elwood.Event (AppEnv (..))
 import Elwood.Logging
 import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
 import Elwood.Metrics (newMetricsStore, setMCPServerCount)
 import Elwood.Session (newSessionLocks)
 import Elwood.Telegram qualified as Telegram
+import Elwood.Telegram.Handler (handleTelegramMessage)
 import Elwood.Tools qualified as Tools
 import Elwood.Webhook qualified as Webhook
 import System.Directory (createDirectoryIfMissing)

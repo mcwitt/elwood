@@ -52,6 +52,7 @@ library
     Elwood.Session
     Elwood.Telegram
     Elwood.Telegram.Client
+    Elwood.Telegram.Handler
     Elwood.Telegram.Markdown
     Elwood.Telegram.Polling
     Elwood.Telegram.Types
