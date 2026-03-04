@@ -68,6 +68,10 @@ system_prompt:
 agent:
   model: claude-sonnet-4-20250514
   thinking: off  # off | {type: adaptive, effort: medium} | {type: fixed, budget_tokens: 4096}
+  # delegate:                    # sub-agent defaults for delegate_task
+  #   model: claude-haiku-4-20250414
+  #   thinking: off
+  #   max_iterations: 10
 
 compaction:
   token_threshold: 50000

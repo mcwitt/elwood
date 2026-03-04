@@ -16,6 +16,7 @@ where
 import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Data.Aeson
+import Data.Aeson.KeyMap qualified as KM
 import Data.Int (Int64)
 import Data.List (nub)
 import Data.Map.Strict (Map)
@@ -75,7 +76,11 @@ data Config = Config
     -- | System prompt inputs (assembled at startup)
     systemPrompt :: [PromptInput],
     -- | Send notification messages when the agent uses tools
-    toolUseMessages :: Bool
+    toolUseMessages :: Bool,
+    -- | Delegate sub-agent overrides (model, thinking, max_iterations)
+    delegateOverrides :: AgentOverrides,
+    -- | Allowed models for delegate_task tool parameter
+    delegateAllowedModels :: [Text]
   }
   deriving stock (Show, Generic)
 
@@ -149,7 +154,9 @@ data ConfigFile = ConfigFile
     webhook :: Maybe WebhookServerConfigFile,
     toolSearch :: Maybe Value,
     systemPrompt :: Maybe [PromptInputFile],
-    toolUseMessages :: Maybe Bool
+    toolUseMessages :: Maybe Bool,
+    delegateOverrides :: AgentOverrides,
+    delegateAllowedModels :: Maybe [Text]
   }
   deriving stock (Show, Generic)
 
@@ -296,11 +303,32 @@ instance FromJSON TelegramChatConfigFile where
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
     rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "agent", "permissions", "compaction", "pruning", "mcp_servers", "webhook", "tool_search", "system_prompt", "tool_use_messages"] v
+
+    -- Parse agent section: main overrides + nested delegate sub-object.
+    -- We strip "delegate" before passing to AgentOverrides parser to avoid
+    -- its rejectUnknownKeys rejecting the nested key.
+    mAgentObj <- v .:? "agent" :: Yaml.Parser (Maybe (KM.KeyMap Value))
+    let (mainAgentVal, mDelegateVal) = case mAgentObj of
+          Nothing -> (Object KM.empty, Nothing)
+          Just ao -> (Object (KM.delete "delegate" ao), KM.lookup "delegate" ao)
+    mainOverrides <- parseJSON mainAgentVal
+    (delOverrides, delAllowedModels) <- case mDelegateVal of
+      Nothing -> pure (mempty, Nothing)
+      Just dv -> flip (withObject "delegate") dv $ \d -> do
+        rejectUnknownKeys "delegate" ["model", "thinking", "max_iterations", "allowed_models"] d
+        ovr <-
+          AgentOverrides
+            <$> d .:? "model"
+            <*> d .:? "thinking"
+            <*> d .:? "max_iterations"
+        models <- d .:? "allowed_models"
+        pure (ovr, models)
+
     ConfigFile
       <$> v .:? "state_dir"
       <*> v .:? "workspace_dir"
       <*> v .:? "telegram_chats"
-      <*> v .:? "agent" .!= mempty
+      <*> pure mainOverrides
       <*> v .:? "permissions"
       <*> v .:? "compaction"
       <*> v .:? "pruning"
@@ -309,6 +337,8 @@ instance FromJSON ConfigFile where
       <*> v .:? "tool_search"
       <*> v .:? "system_prompt"
       <*> v .:? "tool_use_messages"
+      <*> pure delOverrides
+      <*> pure delAllowedModels
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v -> do
@@ -444,6 +474,8 @@ loadConfig path = do
   when (nub chatIds /= chatIds) $
     fail "telegram_chats contains duplicate chat IDs"
 
+  let delegateModels = fromMaybe [] configFile.delegateAllowedModels
+
   pure
     Config
       { stateDir = fromMaybe "/var/lib/assistant" configFile.stateDir,
@@ -459,7 +491,9 @@ loadConfig path = do
         webhook = webhookCfg,
         toolSearch = parseToolSearch =<< configFile.toolSearch,
         systemPrompt = systemPrompt_,
-        toolUseMessages = fromMaybe True configFile.toolUseMessages
+        toolUseMessages = fromMaybe True configFile.toolUseMessages,
+        delegateOverrides = configFile.delegateOverrides,
+        delegateAllowedModels = delegateModels
       }
 
 -- | Parse tool search configuration from a YAML value

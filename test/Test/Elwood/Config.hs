@@ -2,7 +2,7 @@ module Test.Elwood.Config (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
 import Data.Vector qualified as V
-import Elwood.AgentSettings (AgentSettings (..))
+import Elwood.AgentSettings (AgentOverrides (..), AgentSettings (..))
 import Elwood.Config
   ( CompactionConfig (..),
     Config (..),
@@ -145,4 +145,7 @@ exampleConfigTests =
         length webhooks @?= 1
         let wh = head webhooks
         wh.deliveryTarget @?= TelegramBroadcast
+        -- Verify delegate defaults
+        config.delegateOverrides @?= AgentOverrides Nothing Nothing Nothing
+        null config.delegateAllowedModels @?= True
     ]

@@ -170,7 +170,9 @@ runApp config = do
             toolSearch = toolSearch_,
             pruneHorizons = pruneHorizons_,
             sessionLocks = sessionLocks_,
-            toolUseMessages = config.toolUseMessages
+            toolUseMessages = config.toolUseMessages,
+            delegateOverrides = config.delegateOverrides,
+            delegateAllowedModels = config.delegateAllowedModels
           }
 
   -- Telegram message handler: inject per-chat approval and overrides

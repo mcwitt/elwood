@@ -51,7 +51,7 @@ import Data.Set (Set)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
-import Elwood.AgentSettings (AgentSettings (..))
+import Elwood.AgentSettings (AgentOverrides, AgentSettings (..))
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Pruning (PruneHorizons, anthropicCacheTtl, getAndUpdateHorizon)
 import Elwood.Config (CompactionConfig, PruningConfig, TelegramChatConfig (..))
@@ -121,7 +121,11 @@ data AppEnv = AppEnv
     -- | Per-session locks for serializing concurrent event handling
     sessionLocks :: SessionLocks,
     -- | Send notification messages when the agent uses tools
-    toolUseMessages :: Bool
+    toolUseMessages :: Bool,
+    -- | Delegate sub-agent overrides (model, thinking, max_iterations)
+    delegateOverrides :: AgentOverrides,
+    -- | Allowed models for delegate_task tool parameter
+    delegateAllowedModels :: [Text]
   }
 
 -- | Callbacks wired into the agent loop for delivery during a turn
@@ -203,6 +207,8 @@ handleEventCore env event callbacks = do
           env.pruning
           systemPrompt
           env.metrics
+          env.delegateOverrides
+          env.delegateAllowedModels
       registryWithDelegate = Tools.registerTool delegateTool env.registry
 
   -- Build agent config from environment

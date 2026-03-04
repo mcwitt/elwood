@@ -49,6 +49,18 @@ agent:
   # Default: 20
   max_iterations: 20
 
+  # Sub-agent defaults for delegate_task (overrides parent agent settings).
+  # The main agent can further override model, thinking, and max_iterations
+  # per-call via tool parameters.
+  # Omit fields to inherit from parent agent.
+  # delegate:
+  #   model: claude-haiku-4-20250414
+  #   thinking: off
+  #   max_iterations: 10        # default: 10
+  #   allowed_models:            # models the main agent can choose from
+  #     - claude-haiku-4-20250414
+  #     - claude-sonnet-4-20250514
+
 # Send notification messages when the agent uses tools (e.g. "🔧 Using bash")
 # Default: true
 tool_use_messages: true
@@ -105,8 +117,9 @@ pruning:
 # Built-in meta-tool: delegate_task
 # Always available. Spawns a sub-agent with an isolated conversation to handle
 # multi-step tasks without bloating the main context. The sub-agent has access
-# to all tools except delegate_task (no recursive nesting). Default max
-# iterations: 10 (overridable per-call via the tool's max_iterations parameter).
+# to all tools except delegate_task (no recursive nesting).
+# The main agent can override model, thinking, and max_iterations per-call
+# via tool parameters. Configure defaults under agent.delegate above.
 
 # Tool permission settings
 permissions:
