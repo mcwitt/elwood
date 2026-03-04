@@ -17,6 +17,7 @@ import Data.Set (Set)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
+import Elwood.AgentSettings (AgentSettings (..))
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Pruning (pruneThinkingBlocks, pruneToolInputs, pruneToolResults)
@@ -86,9 +87,7 @@ data AgentConfig = AgentConfig
     context :: AgentContext,
     compaction :: CompactionConfig,
     systemPrompt :: Maybe Text,
-    model :: Text,
-    thinking :: ThinkingLevel,
-    maxIterations :: Int,
+    agentSettings :: AgentSettings,
     -- | Observer for metrics and telemetry
     observer :: AgentObserver,
     -- | Optional callback for rate limit notifications
@@ -144,14 +143,14 @@ agentLoop ::
   Int ->
   IO AgentResult
 agentLoop cfg msgs iteration
-  | iteration >= cfg.maxIterations = do
+  | iteration >= cfg.agentSettings.maxIterations = do
       logError cfg.logger "Agent loop exceeded max iterations" []
       pure $ AgentError $ formatNotify Error "**Agent loop:** `exceeded max iterations`"
   | otherwise = do
       let lgr = cfg.logger
           reg = cfg.registry
-          mdl = cfg.model
-          thk = cfg.thinking
+          mdl = cfg.agentSettings.model
+          thk = cfg.agentSettings.thinking
 
       -- Always send all tool schemas (tool search handles filtering server-side)
       let schemas = toolSchemas reg

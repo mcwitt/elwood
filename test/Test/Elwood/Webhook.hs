@@ -100,9 +100,7 @@ webhookConfigTests =
                   session = Isolated,
                   deliveryTarget = LogOnly,
                   suppressIfContains = Nothing,
-                  model = Nothing,
-                  thinking = Nothing,
-                  maxIterations = Nothing
+                  overrides = mempty
                 }
         config.name @?= "test-hook"
         config.prompt @?= [InlineText "Hello"]
@@ -115,9 +113,7 @@ webhookConfigTests =
                   session = Isolated,
                   deliveryTarget = TelegramDelivery (123 :| [456, 789]),
                   suppressIfContains = Nothing,
-                  model = Nothing,
-                  thinking = Nothing,
-                  maxIterations = Nothing
+                  overrides = mempty
                 }
         config.deliveryTarget @?= TelegramDelivery (123 :| [456, 789]),
       testCase "can have suppressIfContains" $ do
@@ -128,9 +124,7 @@ webhookConfigTests =
                   session = Isolated,
                   deliveryTarget = TelegramBroadcast,
                   suppressIfContains = Just "HEARTBEAT_OK",
-                  model = Nothing,
-                  thinking = Nothing,
-                  maxIterations = Nothing
+                  overrides = mempty
                 }
         config.suppressIfContains @?= Just "HEARTBEAT_OK",
       testCase "can have empty prompt" $ do
@@ -141,9 +135,7 @@ webhookConfigTests =
                   session = Isolated,
                   deliveryTarget = LogOnly,
                   suppressIfContains = Nothing,
-                  model = Nothing,
-                  thinking = Nothing,
-                  maxIterations = Nothing
+                  overrides = mempty
                 }
         config.prompt @?= []
     ]
@@ -170,9 +162,7 @@ webhookServerConfigTests =
                   session = Isolated,
                   deliveryTarget = LogOnly,
                   suppressIfContains = Nothing,
-                  model = Nothing,
-                  thinking = Nothing,
-                  maxIterations = Nothing
+                  overrides = mempty
                 }
             config =
               WebhookServerConfig

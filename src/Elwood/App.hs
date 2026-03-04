@@ -9,11 +9,12 @@ import Control.Exception (finally)
 import Data.Foldable (for_)
 import Data.Int (Int64)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (isJust)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
+import Elwood.AgentSettings (resolveAgent, toOverrides)
 import Elwood.Approval
   ( ApprovalCoordinator,
     ApprovalResult (..),
@@ -56,7 +57,7 @@ runApp config = do
 
   -- Initialize Claude client
   claude <- Claude.newClient config.anthropicApiKey
-  logInfo logger "Claude client initialized" [("model", config.model)]
+  logInfo logger "Claude client initialized" [("model", config.agentSettings.model)]
 
   -- Initialize conversation store
   convs <- Claude.newConversationStore config.stateDir
@@ -161,11 +162,9 @@ runApp config = do
             pruning = config.pruning,
             systemPromptInputs = config.systemPrompt,
             workspaceDir = config.workspaceDir,
-            model = config.model,
-            thinking = config.thinking,
+            agentSettings = config.agentSettings,
             telegramChatMap = Map.fromList [(tc.id_, tc) | tc <- config.telegramChats],
             attachmentQueue = attachmentQueue_,
-            maxIterations = config.maxIterations,
             metrics = mets,
             toolSearch = toolSearch_,
             pruneHorizons = pruneHorizons_,
@@ -180,9 +179,7 @@ runApp config = do
             envForChat =
               appEnv
                 { agentContext = mkAgentContextWithApproval cid,
-                  model = maybe appEnv.model (fromMaybe appEnv.model . (.model)) chatCfg,
-                  thinking = maybe appEnv.thinking (fromMaybe appEnv.thinking . (.thinking)) chatCfg,
-                  maxIterations = maybe appEnv.maxIterations (fromMaybe appEnv.maxIterations . (.maxIterations)) chatCfg
+                  agentSettings = resolveAgent (toOverrides appEnv.agentSettings <> maybe mempty (.overrides) chatCfg)
                 }
          in handleTelegramMessage envForChat msg
 

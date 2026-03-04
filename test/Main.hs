@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Test.Elwood.AgentSettings qualified
 import Test.Elwood.Attachment qualified
 import Test.Elwood.Claude.Client qualified
 import Test.Elwood.Claude.Compaction qualified
@@ -24,7 +25,8 @@ tests :: TestTree
 tests =
   testGroup
     "Elwood Tests"
-    [ Test.Elwood.Memory.tests,
+    [ Test.Elwood.AgentSettings.tests,
+      Test.Elwood.Memory.tests,
       Test.Elwood.Permissions.tests,
       Test.Elwood.Config.tests,
       Test.Elwood.Claude.Types.tests,

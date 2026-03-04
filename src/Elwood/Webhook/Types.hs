@@ -19,9 +19,9 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Aeson (rejectUnknownKeys)
+import Elwood.AgentSettings (AgentOverrides (..))
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Prompt (PromptInput (..), PromptInputFile (..))
-import Elwood.Thinking (ThinkingLevel)
 import GHC.Generics (Generic)
 
 -- | Configuration for a single webhook endpoint
@@ -36,12 +36,8 @@ data WebhookConfig = WebhookConfig
     deliveryTarget :: DeliveryTarget,
     -- | Suppress notification if response contains this string
     suppressIfContains :: Maybe Text,
-    -- | Model override for this endpoint (Nothing = use global)
-    model :: Maybe Text,
-    -- | Thinking level override for this endpoint (Nothing = use global)
-    thinking :: Maybe ThinkingLevel,
-    -- | Max iterations override for this endpoint (Nothing = use global)
-    maxIterations :: Maybe Int
+    -- | Per-endpoint agent overrides (model, thinking, maxIterations)
+    overrides :: AgentOverrides
   }
   deriving stock (Show, Eq, Generic)
 
@@ -74,9 +70,7 @@ data WebhookConfigFile = WebhookConfigFile
     session :: Maybe Text,
     deliveryTarget :: Maybe DeliveryTargetFile,
     suppressIfContains :: Maybe Text,
-    model :: Maybe Text,
-    thinking :: Maybe Value,
-    maxIterations :: Maybe Int
+    overrides :: AgentOverrides
   }
   deriving stock (Show, Generic)
 
@@ -113,13 +107,11 @@ instance FromJSON WebhookServerConfigFile where
 
 instance FromJSON WebhookConfigFile where
   parseJSON = withObject "WebhookConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookConfigFile" ["name", "prompt", "session", "delivery_target", "suppress_if_contains", "model", "thinking", "max_iterations"] v
+    rejectUnknownKeys "WebhookConfigFile" ["name", "prompt", "session", "delivery_target", "suppress_if_contains", "agent"] v
     WebhookConfigFile
       <$> v .: "name"
       <*> v .:? "prompt"
       <*> v .:? "session"
       <*> v .:? "delivery_target"
       <*> v .:? "suppress_if_contains"
-      <*> v .:? "model"
-      <*> v .:? "thinking"
-      <*> v .:? "max_iterations"
+      <*> v .:? "agent" .!= mempty

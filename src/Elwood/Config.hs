@@ -12,6 +12,8 @@ module Elwood.Config
     parseToolSearch,
 
     -- * Re-exports
+    AgentOverrides (..),
+    AgentSettings (..),
     ThinkingLevel (..),
     ThinkingEffort (..),
     parseThinkingLevel,
@@ -35,6 +37,12 @@ import Data.Text qualified as T
 import Data.Vector qualified as V
 import Data.Yaml qualified as Yaml
 import Elwood.Aeson (rejectUnknownKeys)
+import Elwood.AgentSettings
+  ( AgentOverrides (..),
+    AgentSettings (..),
+    agentDefaults,
+    resolveAgent,
+  )
 import Elwood.Claude.Types (ToolName)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), ToolPolicy (..), defaultPermissionConfig)
@@ -62,8 +70,8 @@ data Config = Config
     anthropicApiKey :: Text,
     -- | Telegram chat configurations (ID + session)
     telegramChats :: [TelegramChatConfig],
-    -- | Claude model to use (e.g., "claude-sonnet-4-20250514")
-    model :: Text,
+    -- | Resolved agent settings (model, thinking, maxIterations)
+    agentSettings :: AgentSettings,
     -- | Permission configuration for tools
     permissions :: PermissionConfig,
     -- | Context compaction configuration
@@ -74,10 +82,6 @@ data Config = Config
     mcpServers :: [MCPServerConfig],
     -- | Webhook server configuration
     webhook :: WebhookServerConfig,
-    -- | Extended thinking level
-    thinking :: ThinkingLevel,
-    -- | Maximum agent loop iterations per turn (prevents infinite tool-use loops)
-    maxIterations :: Int,
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled)
     toolSearch :: Maybe [Text],
     -- | System prompt inputs (assembled at startup)
@@ -132,9 +136,7 @@ data MCPServerConfig = MCPServerConfig
 data TelegramChatConfigFile = TelegramChatConfigFile
   { id_ :: Int64,
     session :: Maybe Text,
-    model :: Maybe Text,
-    thinking :: Maybe Value,
-    maxIterations :: Maybe Int
+    overrides :: AgentOverrides
   }
   deriving stock (Show, Generic)
 
@@ -142,9 +144,7 @@ data TelegramChatConfigFile = TelegramChatConfigFile
 data TelegramChatConfig = TelegramChatConfig
   { id_ :: Int64,
     session :: SessionConfig,
-    model :: Maybe Text,
-    thinking :: Maybe ThinkingLevel,
-    maxIterations :: Maybe Int
+    overrides :: AgentOverrides
   }
   deriving stock (Show, Eq, Generic)
 
@@ -153,14 +153,12 @@ data ConfigFile = ConfigFile
   { stateDir :: Maybe FilePath,
     workspaceDir :: Maybe FilePath,
     telegramChats :: Maybe [TelegramChatConfigFile],
-    model :: Maybe Text,
+    agentOverrides :: AgentOverrides,
     permissions :: Maybe PermissionConfigFile,
     compaction :: Maybe CompactionConfigFile,
     pruning :: Maybe PruningConfigFile,
     mcpServers :: Maybe (Map Text MCPServerConfigFile),
     webhook :: Maybe WebhookServerConfigFile,
-    thinking :: Maybe ThinkingLevel,
-    maxIterations :: Maybe Int,
     toolSearch :: Maybe Value,
     systemPrompt :: Maybe [PromptInputFile],
     toolUseMessages :: Maybe Bool
@@ -177,6 +175,31 @@ data PermissionConfigFile = PermissionConfigFile
   }
   deriving stock (Show, Generic)
 
+-- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
+instance Semigroup PermissionConfigFile where
+  a <> b =
+    PermissionConfigFile
+      { safePatterns = b.safePatterns <|> a.safePatterns,
+        dangerousPatterns = b.dangerousPatterns <|> a.dangerousPatterns,
+        toolPolicies = b.toolPolicies <|> a.toolPolicies,
+        defaultPolicy = b.defaultPolicy <|> a.defaultPolicy,
+        approvalTimeoutSeconds = b.approvalTimeoutSeconds <|> a.approvalTimeoutSeconds
+      }
+
+instance Monoid PermissionConfigFile where
+  mempty = PermissionConfigFile Nothing Nothing Nothing Nothing Nothing
+
+-- | Resolve a partial permission config using 'defaultPermissionConfig' as fallback.
+resolvePermissions :: PermissionConfigFile -> PermissionConfig
+resolvePermissions pcf =
+  PermissionConfig
+    { safePatterns = fromMaybe defaultPermissionConfig.safePatterns pcf.safePatterns,
+      dangerousPatterns = fromMaybe defaultPermissionConfig.dangerousPatterns pcf.dangerousPatterns,
+      toolPolicies = fromMaybe Map.empty pcf.toolPolicies,
+      defaultPolicy = fromMaybe defaultPermissionConfig.defaultPolicy pcf.defaultPolicy,
+      approvalTimeoutSeconds = fromMaybe defaultPermissionConfig.approvalTimeoutSeconds pcf.approvalTimeoutSeconds
+    }
+
 -- | Compaction configuration from YAML file
 data CompactionConfigFile = CompactionConfigFile
   { tokenThreshold :: Maybe Int,
@@ -185,15 +208,85 @@ data CompactionConfigFile = CompactionConfigFile
   }
   deriving stock (Show, Generic)
 
+-- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
+instance Semigroup CompactionConfigFile where
+  a <> b =
+    CompactionConfigFile
+      { tokenThreshold = b.tokenThreshold <|> a.tokenThreshold,
+        model = b.model <|> a.model,
+        prompt = b.prompt <|> a.prompt
+      }
+
+instance Monoid CompactionConfigFile where
+  mempty = CompactionConfigFile Nothing Nothing Nothing
+
+-- | Default compaction overrides (all 'Just' with hardcoded defaults).
+compactionDefaults :: CompactionConfigFile
+compactionDefaults =
+  CompactionConfigFile
+    { tokenThreshold = Just 50000,
+      model = Just "claude-3-5-haiku-20241022",
+      prompt = Nothing
+    }
+
+-- | Resolve a partial compaction config to concrete values.
+resolveCompaction :: CompactionConfigFile -> CompactionConfig
+resolveCompaction ccf =
+  CompactionConfig
+    { tokenThreshold = fromMaybe 50000 ccf.tokenThreshold,
+      model = fromMaybe "claude-3-5-haiku-20241022" ccf.model,
+      prompt = ccf.prompt
+    }
+
 -- | Pruning configuration from YAML file
 data PruningConfigFile = PruningConfigFile
   { headChars :: Maybe Int,
     tailChars :: Maybe Int,
     keepTurns :: Maybe Int,
+    -- | Outer 'Maybe' = "not specified in this layer";
+    -- inner 'Maybe' = "explicitly set to null/disabled".
+    -- Works correctly with '<|>' for layering.
     thinkingKeepTurns :: Maybe (Maybe Int),
+    -- | Same dual-Maybe semantics as 'thinkingKeepTurns'.
     toolInputThreshold :: Maybe (Maybe Int)
   }
   deriving stock (Show, Generic)
+
+-- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
+instance Semigroup PruningConfigFile where
+  a <> b =
+    PruningConfigFile
+      { headChars = b.headChars <|> a.headChars,
+        tailChars = b.tailChars <|> a.tailChars,
+        keepTurns = b.keepTurns <|> a.keepTurns,
+        thinkingKeepTurns = b.thinkingKeepTurns <|> a.thinkingKeepTurns,
+        toolInputThreshold = b.toolInputThreshold <|> a.toolInputThreshold
+      }
+
+instance Monoid PruningConfigFile where
+  mempty = PruningConfigFile Nothing Nothing Nothing Nothing Nothing
+
+-- | Default pruning overrides (all 'Just' with hardcoded defaults).
+pruningDefaults :: PruningConfigFile
+pruningDefaults =
+  PruningConfigFile
+    { headChars = Just 500,
+      tailChars = Just 500,
+      keepTurns = Just 3,
+      thinkingKeepTurns = Just (Just 1),
+      toolInputThreshold = Just (Just 5000)
+    }
+
+-- | Resolve a partial pruning config to concrete values.
+resolvePruning :: PruningConfigFile -> PruningConfig
+resolvePruning pcf =
+  PruningConfig
+    { headChars = fromMaybe 500 pcf.headChars,
+      tailChars = fromMaybe 500 pcf.tailChars,
+      keepTurns = fromMaybe 3 pcf.keepTurns,
+      thinkingKeepTurns = fromMaybe (Just 1) pcf.thinkingKeepTurns,
+      toolInputThreshold = fromMaybe (Just 5000) pcf.toolInputThreshold
+    }
 
 -- | MCP server configuration from YAML file
 data MCPServerConfigFile = MCPServerConfigFile
@@ -206,29 +299,25 @@ data MCPServerConfigFile = MCPServerConfigFile
 
 instance FromJSON TelegramChatConfigFile where
   parseJSON = withObject "TelegramChatConfigFile" $ \v -> do
-    rejectUnknownKeys "TelegramChatConfigFile" ["id", "session", "model", "thinking", "max_iterations"] v
+    rejectUnknownKeys "TelegramChatConfigFile" ["id", "session", "agent"] v
     TelegramChatConfigFile
       <$> v .: "id"
       <*> v .:? "session"
-      <*> v .:? "model"
-      <*> v .:? "thinking"
-      <*> v .:? "max_iterations"
+      <*> v .:? "agent" .!= mempty
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "model", "permissions", "compaction", "pruning", "mcp_servers", "webhook", "thinking", "max_iterations", "tool_search", "system_prompt", "tool_use_messages"] v
+    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "agent", "permissions", "compaction", "pruning", "mcp_servers", "webhook", "tool_search", "system_prompt", "tool_use_messages"] v
     ConfigFile
       <$> v .:? "state_dir"
       <*> v .:? "workspace_dir"
       <*> v .:? "telegram_chats"
-      <*> v .:? "model"
+      <*> v .:? "agent" .!= mempty
       <*> v .:? "permissions"
       <*> v .:? "compaction"
       <*> v .:? "pruning"
       <*> v .:? "mcp_servers"
       <*> v .:? "webhook"
-      <*> v .:? "thinking"
-      <*> v .:? "max_iterations"
       <*> v .:? "tool_search"
       <*> v .:? "system_prompt"
       <*> v .:? "tool_use_messages"
@@ -270,26 +359,6 @@ instance FromJSON MCPServerConfigFile where
       <*> v .:? "env"
       <*> v .:? "startup_delay"
 
--- | Default compaction configuration
-defaultCompaction :: CompactionConfig
-defaultCompaction =
-  CompactionConfig
-    { tokenThreshold = 50000,
-      model = "claude-3-5-haiku-20241022",
-      prompt = Nothing
-    }
-
--- | Default pruning configuration
-defaultPruning :: PruningConfig
-defaultPruning =
-  PruningConfig
-    { headChars = 500,
-      tailChars = 500,
-      keepTurns = 3,
-      thinkingKeepTurns = Just 1,
-      toolInputThreshold = Just 5000
-    }
-
 -- | Load configuration from a YAML file and environment variables
 loadConfig :: FilePath -> IO Config
 loadConfig path = do
@@ -311,37 +380,11 @@ loadConfig path = do
   -- Load webhook secret from environment (optional, overrides config file)
   webhookSecretEnv <- fmap T.pack <$> lookupEnv "WEBHOOK_SECRET"
 
-  -- Build final config with defaults
-  let perms = case configFile.permissions of
-        Nothing -> defaultPermissionConfig
-        Just pcf ->
-          PermissionConfig
-            { safePatterns = fromMaybe defaultPermissionConfig.safePatterns pcf.safePatterns,
-              dangerousPatterns = fromMaybe defaultPermissionConfig.dangerousPatterns pcf.dangerousPatterns,
-              toolPolicies = fromMaybe Map.empty pcf.toolPolicies,
-              defaultPolicy = fromMaybe defaultPermissionConfig.defaultPolicy pcf.defaultPolicy,
-              approvalTimeoutSeconds = fromMaybe defaultPermissionConfig.approvalTimeoutSeconds pcf.approvalTimeoutSeconds
-            }
-
-  let compact = case configFile.compaction of
-        Nothing -> defaultCompaction
-        Just ccf ->
-          CompactionConfig
-            { tokenThreshold = fromMaybe defaultCompaction.tokenThreshold ccf.tokenThreshold,
-              model = fromMaybe defaultCompaction.model ccf.model,
-              prompt = ccf.prompt
-            }
-
-  let prune = case configFile.pruning of
-        Nothing -> defaultPruning
-        Just pcf ->
-          PruningConfig
-            { headChars = fromMaybe defaultPruning.headChars pcf.headChars,
-              tailChars = fromMaybe defaultPruning.tailChars pcf.tailChars,
-              keepTurns = fromMaybe defaultPruning.keepTurns pcf.keepTurns,
-              thinkingKeepTurns = fromMaybe defaultPruning.thinkingKeepTurns pcf.thinkingKeepTurns,
-              toolInputThreshold = fromMaybe defaultPruning.toolInputThreshold pcf.toolInputThreshold
-            }
+  -- Resolve sub-configs via monoid layering
+  let perms = resolvePermissions (fromMaybe mempty configFile.permissions)
+  let compact = resolveCompaction (compactionDefaults <> fromMaybe mempty configFile.compaction)
+  let prune = resolvePruning (pruningDefaults <> fromMaybe mempty configFile.pruning)
+  let agent = resolveAgent (agentDefaults <> configFile.agentOverrides)
 
   let servers = case configFile.mcpServers of
         Nothing -> []
@@ -389,9 +432,7 @@ loadConfig path = do
                         session = maybe Isolated Named ep.session,
                         deliveryTarget = maybe TelegramBroadcast resolveDeliveryTarget ep.deliveryTarget,
                         suppressIfContains = ep.suppressIfContains,
-                        model = ep.model,
-                        thinking = parseThinkingLevel <$> ep.thinking,
-                        maxIterations = ep.maxIterations
+                        overrides = ep.overrides
                       }
                   | ep <- eps
                   ]
@@ -405,9 +446,7 @@ loadConfig path = do
         [ TelegramChatConfig
             { id_ = tc.id_,
               session = maybe Isolated Named tc.session,
-              model = tc.model,
-              thinking = parseThinkingLevel <$> tc.thinking,
-              maxIterations = tc.maxIterations
+              overrides = tc.overrides
             }
         | tc <- fromMaybe [] configFile.telegramChats
         ]
@@ -424,14 +463,12 @@ loadConfig path = do
         telegramToken = telegramToken_,
         anthropicApiKey = anthropicApiKey_,
         telegramChats = telegramChats_,
-        model = fromMaybe "claude-sonnet-4-20250514" configFile.model,
+        agentSettings = agent,
         permissions = perms,
         compaction = compact,
         pruning = prune,
         mcpServers = servers,
         webhook = webhookCfg,
-        thinking = fromMaybe ThinkingOff configFile.thinking,
-        maxIterations = fromMaybe 20 configFile.maxIterations,
         toolSearch = parseToolSearch =<< configFile.toolSearch,
         systemPrompt = systemPrompt_,
         toolUseMessages = fromMaybe True configFile.toolUseMessages

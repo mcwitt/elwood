@@ -245,7 +245,7 @@ in
             { id = 111; }
             { id = 222; }
           ];
-          model = "claude-test-model";
+          agent.model = "claude-test-model";
 
           # Heartbeat is now handled via systemd timer, not in config
           # We still need webhook enabled for it to work

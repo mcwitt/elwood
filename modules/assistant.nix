@@ -36,6 +36,22 @@ let
           inherit (pi) content;
         };
 
+      # Serialize agent overrides to a nested `agent` attrset (omitted when empty)
+      mkAgentOverrides =
+        agentOvr:
+        let
+          attrs =
+            { }
+            // lib.optionalAttrs (agentOvr.model != null) { model = agentOvr.model; }
+            // lib.optionalAttrs (agentOvr.thinking != null) {
+              thinking = mkThinkingConfig agentOvr.thinking;
+            }
+            // lib.optionalAttrs (agentOvr.maxIterations != null) {
+              max_iterations = agentOvr.maxIterations;
+            };
+        in
+        lib.optionalAttrs (attrs != { }) { agent = attrs; };
+
       # Serialize common endpoint fields to a YAML-ready attrset
       mkEndpointYaml =
         epName: epCfg:
@@ -48,15 +64,7 @@ let
         // lib.optionalAttrs (epCfg.suppressIfContains != null) {
           suppress_if_contains = epCfg.suppressIfContains;
         }
-        // lib.optionalAttrs (epCfg.model != null) {
-          model = epCfg.model;
-        }
-        // lib.optionalAttrs (epCfg.thinking != null) {
-          thinking = mkThinkingConfig epCfg.thinking;
-        }
-        // lib.optionalAttrs (epCfg.maxIterations != null) {
-          max_iterations = epCfg.maxIterations;
-        };
+        // mkAgentOverrides epCfg.agent;
 
       allWebhookEndpoints =
         let
@@ -98,19 +106,13 @@ let
           // lib.optionalAttrs (tc.session != null) {
             inherit (tc) session;
           }
-          // lib.optionalAttrs (tc.model != null) {
-            inherit (tc) model;
-          }
-          // lib.optionalAttrs (tc.thinking != null) {
-            thinking = mkThinkingConfig tc.thinking;
-          }
-          // lib.optionalAttrs (tc.maxIterations != null) {
-            max_iterations = tc.maxIterations;
-          }
+          // mkAgentOverrides tc.agent
         ) agentCfg.telegramChats;
-        model = agentCfg.model;
-        thinking = mkThinkingConfig agentCfg.thinking;
-        max_iterations = agentCfg.maxIterations;
+        agent = {
+          model = agentCfg.agent.model;
+          thinking = mkThinkingConfig agentCfg.agent.thinking;
+          max_iterations = agentCfg.agent.maxIterations;
+        };
         tool_use_messages = agentCfg.toolUseMessages;
         system_prompt = map mkPromptInputYaml agentCfg.systemPrompt;
 
@@ -302,6 +304,28 @@ let
     };
   };
 
+  # Agent override options shared between per-chat, endpoint, and cron contexts
+  agentOverrideOptions = {
+    model = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Model override. Null means use the agent's global model.";
+      example = "claude-haiku-4-20250414";
+    };
+
+    thinking = lib.mkOption {
+      type = lib.types.nullOr thinkingModule;
+      default = null;
+      description = "Thinking override. Null means use the agent's global thinking.";
+    };
+
+    maxIterations = lib.mkOption {
+      type = lib.types.nullOr lib.types.int;
+      default = null;
+      description = "Max iterations override. Null means use the agent's global value.";
+    };
+  };
+
   # Options shared between webhook endpoints and cron jobs
   commonEndpointOptions = {
     prompt = lib.mkOption {
@@ -330,24 +354,7 @@ let
       example = "HEARTBEAT_OK";
     };
 
-    model = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = "Model override for this endpoint. Null means use the agent's global model.";
-      example = "claude-haiku-4-20250414";
-    };
-
-    thinking = lib.mkOption {
-      type = lib.types.nullOr thinkingModule;
-      default = null;
-      description = "Thinking override for this endpoint. Null means use the agent's global thinking.";
-    };
-
-    maxIterations = lib.mkOption {
-      type = lib.types.nullOr lib.types.int;
-      default = null;
-      description = "Max iterations override for this endpoint. Null means use the agent's global value.";
-    };
+    agent = agentOverrideOptions;
   };
 
   # Submodule for webhook endpoints
@@ -413,24 +420,7 @@ let
         description = "Session name for persistent conversation. Null means isolated (no history).";
       };
 
-      model = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Model override for this chat. Null means use the agent's global model.";
-        example = "claude-haiku-4-20250414";
-      };
-
-      thinking = lib.mkOption {
-        type = lib.types.nullOr thinkingModule;
-        default = null;
-        description = "Thinking override for this chat. Null means use the agent's global thinking.";
-      };
-
-      maxIterations = lib.mkOption {
-        type = lib.types.nullOr lib.types.int;
-        default = null;
-        description = "Max iterations override for this chat. Null means use the agent's global value.";
-      };
+      agent = agentOverrideOptions;
     };
   };
 
@@ -480,25 +470,27 @@ let
           ];
         };
 
-        model = lib.mkOption {
-          type = lib.types.str;
-          default = "claude-sonnet-4-20250514";
-          description = "Claude model to use.";
-        };
+        agent = {
+          model = lib.mkOption {
+            type = lib.types.str;
+            default = "claude-sonnet-4-20250514";
+            description = "Claude model to use.";
+          };
 
-        thinking = lib.mkOption {
-          type = thinkingModule;
-          default = { };
-          description = ''
-            Extended thinking configuration. Default is off.
-            Set type to "adaptive" with an effort level, or "fixed" with budgetTokens.
-          '';
-        };
+          thinking = lib.mkOption {
+            type = thinkingModule;
+            default = { };
+            description = ''
+              Extended thinking configuration. Default is off.
+              Set type to "adaptive" with an effort level, or "fixed" with budgetTokens.
+            '';
+          };
 
-        maxIterations = lib.mkOption {
-          type = lib.types.int;
-          default = 20;
-          description = "Maximum agent loop iterations per turn (prevents infinite tool-use loops).";
+          maxIterations = lib.mkOption {
+            type = lib.types.int;
+            default = 20;
+            description = "Maximum agent loop iterations per turn (prevents infinite tool-use loops).";
+          };
         };
 
         toolUseMessages = lib.mkOption {
@@ -734,7 +726,7 @@ in
             enable = true;
             telegramChats = [ { id = 123456789; } ];
             environmentFile = "/run/secrets/career-coach-env";
-            model = "claude-sonnet-4-20250514";
+            agent.model = "claude-sonnet-4-20250514";
           };
         }
       '';

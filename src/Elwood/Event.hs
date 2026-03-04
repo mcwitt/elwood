@@ -55,11 +55,12 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
+import Elwood.AgentSettings (AgentSettings (..))
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Compaction qualified as Compaction
 import Elwood.Claude.Pruning (PruneHorizons, anthropicCacheTtl, getAndUpdateHorizon)
 import Elwood.Command qualified as Cmd
-import Elwood.Config (CompactionConfig, PruningConfig, TelegramChatConfig (..), ThinkingLevel)
+import Elwood.Config (CompactionConfig, PruningConfig, TelegramChatConfig (..))
 import Elwood.Event.Types
   ( DeliveryTarget (..),
     EventSource (..),
@@ -109,15 +110,12 @@ data AppEnv = AppEnv
     systemPromptInputs :: [PromptInput],
     -- | Directory containing workspace files
     workspaceDir :: FilePath,
-    model :: Text,
-    -- | Extended thinking level
-    thinking :: ThinkingLevel,
+    -- | Resolved agent settings (model, thinking, maxIterations)
+    agentSettings :: AgentSettings,
     -- | Telegram chat ID to full chat config (source of truth for allowed chats)
     telegramChatMap :: Map Int64 TelegramChatConfig,
     -- | Attachment queue
     attachmentQueue :: TVar [Tools.Attachment],
-    -- | Maximum agent loop iterations per turn
-    maxIterations :: Int,
     -- | Metrics store for Prometheus counters
     metrics :: MetricsStore,
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
@@ -205,10 +203,8 @@ handleEventCore env event callbacks = do
             context = env.agentContext,
             compaction = env.compaction,
             systemPrompt = systemPrompt,
-            model = env.model,
-            thinking = env.thinking,
-            maxIterations = env.maxIterations,
-            observer = metricsObserver env.metrics env.model (metricsSource src),
+            agentSettings = env.agentSettings,
+            observer = metricsObserver env.metrics env.agentSettings.model (metricsSource src),
             onRateLimit = callbacks.onRateLimit,
             onText = callbacks.onText,
             onToolUse = callbacks.onToolUse,
@@ -534,7 +530,7 @@ handleTelegramMessage env msg =
                 else do
                   let beforeTokens = Compaction.estimateTokens msgs
                   result <-
-                    (Right <$> Compaction.compactMessages lgr env.claude env.compaction (recordCompaction env.metrics) (recordApiResponse env.metrics env.model "telegram") msgs)
+                    (Right <$> Compaction.compactMessages lgr env.claude env.compaction (recordCompaction env.metrics) (recordApiResponse env.metrics env.agentSettings.model "telegram") msgs)
                       `catch` \(e :: SomeException) -> do
                         logError lgr "Manual compaction failed" [("chat_id", T.pack (show chatIdVal)), ("error", T.pack (show e))]
                         pure (Left e)

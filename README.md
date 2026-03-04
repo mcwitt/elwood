@@ -64,8 +64,9 @@ system_prompt:
   - type: workspace_file
     path: SOUL.md
 
-model: claude-sonnet-4-20250514
-thinking: off  # off | {type: adaptive, effort: medium} | {type: fixed, budget_tokens: 4096}
+agent:
+  model: claude-sonnet-4-20250514
+  thinking: off  # off | {type: adaptive, effort: medium} | {type: fixed, budget_tokens: 4096}
 
 compaction:
   token_threshold: 50000
@@ -202,7 +203,7 @@ Add the flake to your NixOS configuration:
             enable = true;
             telegramChats = [ { id = 123456789; } ];
             environmentFile = "/run/secrets/career-coach-env";
-            model = "claude-sonnet-4-20250514";
+            agent.model = "claude-sonnet-4-20250514";
           };
         })
       ];

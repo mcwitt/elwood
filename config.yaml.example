@@ -16,35 +16,38 @@ workspace_dir: /var/lib/assistant/workspace
 telegram_chats:
   - id: 123456789
     session: main       # persistent conversation (omit for isolated/ephemeral)
-    # model: claude-haiku-4-20250414    # per-chat model override (default: use global model)
-    # thinking:                         # per-chat thinking override (default: use global thinking)
-    #   type: adaptive
-    #   effort: low
-    # max_iterations: 10                # per-chat max iterations override (default: use global)
+    # agent:                             # per-chat agent overrides (default: use global settings)
+    #   model: claude-haiku-4-20250414
+    #   thinking:
+    #     type: adaptive
+    #     effort: low
+    #   max_iterations: 10
 
-# Claude model to use
-# Default: claude-sonnet-4-20250514
-model: claude-sonnet-4-20250514
+# Agent settings (model, thinking, iteration limit)
+agent:
+  # Claude model to use
+  # Default: claude-sonnet-4-20250514
+  model: claude-sonnet-4-20250514
 
-# Extended thinking configuration
-# Controls Claude's internal reasoning before responding.
-# Default: off (omit or set to "off" to disable)
-#
-# Adaptive thinking (recommended for newer models):
-#   thinking:
-#     type: adaptive
-#     effort: medium          # low | medium | high
-#     # max_tokens by effort: low=4096, medium=16000, high=32768
-#
-# Fixed budget (for older models):
-#   thinking:
-#     type: fixed
-#     budget_tokens: 4096      # explicit budget_tokens value
-thinking: off
+  # Extended thinking configuration
+  # Controls Claude's internal reasoning before responding.
+  # Default: off (omit or set to "off" to disable)
+  #
+  # Adaptive thinking (recommended for newer models):
+  #   thinking:
+  #     type: adaptive
+  #     effort: medium          # low | medium | high
+  #     # max_tokens by effort: low=4096, medium=16000, high=32768
+  #
+  # Fixed budget (for older models):
+  #   thinking:
+  #     type: fixed
+  #     budget_tokens: 4096      # explicit budget_tokens value
+  thinking: off
 
-# Maximum agent loop iterations per turn (prevents infinite tool-use loops)
-# Default: 30
-max_iterations: 20
+  # Maximum agent loop iterations per turn (prevents infinite tool-use loops)
+  # Default: 20
+  max_iterations: 20
 
 # Send notification messages when the agent uses tools (e.g. "🔧 Using bash")
 # Default: true
@@ -141,11 +144,12 @@ webhook:
         - type: text
           content: "Deploy event: {{.repo}} {{.branch}}"
       # session: "123456789"    # session name for persistent conversation (default: null = isolated)
-      # model: claude-haiku-4-20250414    # per-endpoint model override (default: use global model)
-      # thinking:                         # per-endpoint thinking override (default: use global thinking)
-      #   type: adaptive
-      #   effort: low
-      # max_iterations: 5                 # per-endpoint max iterations override (default: use global)
+      # agent:                            # per-endpoint agent overrides (default: use global settings)
+      #   model: claude-haiku-4-20250414
+      #   thinking:
+      #     type: adaptive
+      #     effort: low
+      #   max_iterations: 5
       delivery_target:                      # where to send responses (default: telegram_broadcast)
         type: telegram_broadcast          # broadcast to all telegram_chats
       # delivery_target:

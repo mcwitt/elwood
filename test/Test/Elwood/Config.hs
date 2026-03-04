@@ -3,7 +3,8 @@ module Test.Elwood.Config (tests) where
 import Data.Aeson (Value (..), object, (.=))
 import Data.Vector qualified as V
 import Elwood.Config
-  ( CompactionConfig (..),
+  ( AgentSettings (..),
+    CompactionConfig (..),
     Config (..),
     TelegramChatConfig (..),
     ThinkingEffort (..),
@@ -135,8 +136,8 @@ exampleConfigTests =
         unsetEnv "TELEGRAM_BOT_TOKEN"
         unsetEnv "ANTHROPIC_API_KEY"
         -- Verify some fields parsed correctly
-        config.model @?= "claude-sonnet-4-20250514"
-        config.thinking @?= ThinkingOff
+        config.agentSettings.model @?= "claude-sonnet-4-20250514"
+        config.agentSettings.thinking @?= ThinkingOff
         length config.telegramChats @?= 1
         let tc = head config.telegramChats
         tc.id_ @?= 123456789

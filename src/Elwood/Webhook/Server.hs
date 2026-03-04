@@ -17,11 +17,11 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as LBS
 import Data.List (find)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (getCurrentTime)
+import Elwood.AgentSettings (resolveAgent, toOverrides)
 import Elwood.Event (AppEnv (..), BufferedResult (..), DeliveryTarget (..), Event (..), EventSource (..), handleEvent, handleEventBuffered)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (renderMetrics)
@@ -192,31 +192,10 @@ handleWebhookRequest lgr webhookCfg env request respond = do
                   logError lgr "Webhook processing failed" [("name", webhookCfg.name), ("error", err)]
                   respond $ jsonResponse status500 $ errorJson err
 
--- | Apply per-endpoint model/thinking overrides to the environment
+-- | Apply per-endpoint agent overrides to the environment
 applyOverrides :: AppEnv -> WebhookConfig -> AppEnv
 applyOverrides env wc =
-  AppEnv
-    { logger = env.logger,
-      telegram = env.telegram,
-      claude = env.claude,
-      conversations = env.conversations,
-      registry = env.registry,
-      agentContext = env.agentContext,
-      compaction = env.compaction,
-      pruning = env.pruning,
-      systemPromptInputs = env.systemPromptInputs,
-      workspaceDir = env.workspaceDir,
-      model = fromMaybe env.model wc.model,
-      thinking = fromMaybe env.thinking wc.thinking,
-      maxIterations = fromMaybe env.maxIterations wc.maxIterations,
-      telegramChatMap = env.telegramChatMap,
-      attachmentQueue = env.attachmentQueue,
-      metrics = env.metrics,
-      toolSearch = env.toolSearch,
-      pruneHorizons = env.pruneHorizons,
-      sessionLocks = env.sessionLocks,
-      toolUseMessages = env.toolUseMessages
-    }
+  env {agentSettings = resolveAgent (toOverrides env.agentSettings <> wc.overrides)}
 
 -- | status400 for bad request
 status400 :: Status

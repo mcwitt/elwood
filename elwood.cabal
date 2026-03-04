@@ -24,6 +24,7 @@ library
   import:             warnings
   exposed-modules:
     Elwood.Aeson
+    Elwood.AgentSettings
     Elwood.App
     Elwood.Approval
     Elwood.Claude
@@ -122,6 +123,7 @@ test-suite elwood-test
   main-is:            Main.hs
   other-modules:
     Paths_elwood
+    Test.Elwood.AgentSettings
     Test.Elwood.Attachment
     Test.Elwood.Claude.Client
     Test.Elwood.Claude.Compaction
