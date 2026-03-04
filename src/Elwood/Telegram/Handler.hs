@@ -47,6 +47,21 @@ import Elwood.Session (withSessionLock)
 import Elwood.Telegram qualified as Telegram
 import System.Exit (ExitCode (..))
 
+-- | Token count breakdown by category for /context display
+data TokenBreakdown = TokenBreakdown
+  { userTokens :: Int64,
+    assistantTokens :: Int64,
+    thinkingTokens :: Int64,
+    toolCallTokens :: Int64,
+    toolResultTokens :: Int64
+  }
+
+emptyBreakdown :: TokenBreakdown
+emptyBreakdown = TokenBreakdown 0 0 0 0 0
+
+breakdownTotal :: TokenBreakdown -> Int64
+breakdownTotal tb = tb.userTokens + tb.assistantTokens + tb.thinkingTokens + tb.toolCallTokens + tb.toolResultTokens
+
 -- | Handle a Telegram message: commands, image fetching, and event dispatch.
 --
 -- Returns 'Nothing' on success (the event system delivers via Telegram),
@@ -165,8 +180,8 @@ handleTelegramMessage env msg =
               let msgCount = length msgs
                   totalTokens = Compaction.estimateTokens msgs
                   -- Walk all messages counting tokens per category
-                  (userTok, assistTok, thinkTok, toolCallTok, toolResultTok) = foldl' countMessage (0, 0, 0, 0, 0) msgs
-                  catSum = userTok + assistTok + thinkTok + toolCallTok + toolResultTok
+                  tb = foldl' countMessage emptyBreakdown msgs
+                  catSum = breakdownTotal tb
                   pct :: Int64 -> Text
                   pct tok
                     | catSum == 0 = "0%"
@@ -174,11 +189,11 @@ handleTelegramMessage env msg =
                   categories =
                     filter
                       (\(_, v) -> v > 0)
-                      [ ("User text" :: Text, userTok),
-                        ("Assistant text", assistTok),
-                        ("Thinking", thinkTok),
-                        ("Tool calls", toolCallTok),
-                        ("Tool results", toolResultTok)
+                      [ ("User text" :: Text, tb.userTokens),
+                        ("Assistant text", tb.assistantTokens),
+                        ("Thinking", tb.thinkingTokens),
+                        ("Tool calls", tb.toolCallTokens),
+                        ("Tool results", tb.toolResultTokens)
                       ]
                   header =
                     "Context usage ("
@@ -189,19 +204,19 @@ handleTelegramMessage env msg =
                   catLines = map (\(label, tok) -> "• " <> label <> ": " <> pct tok) categories
               pure (Just $ formatNotify Info $ T.intercalate "\n" (header : catLines))
 
-    countMessage :: (Int64, Int64, Int64, Int64, Int64) -> Claude.ClaudeMessage -> (Int64, Int64, Int64, Int64, Int64)
+    countMessage :: TokenBreakdown -> Claude.ClaudeMessage -> TokenBreakdown
     countMessage acc msg_ = foldl' (countBlock msg_.role) acc msg_.content
 
-    countBlock :: Claude.Role -> (Int64, Int64, Int64, Int64, Int64) -> Claude.ContentBlock -> (Int64, Int64, Int64, Int64, Int64)
-    countBlock Claude.User (u, a, th, tc, tr) (Claude.TextBlock t) = (u + estimateTextTokens t, a, th, tc, tr)
-    countBlock Claude.Assistant (u, a, th, tc, tr) (Claude.TextBlock t) = (u, a + estimateTextTokens t, th, tc, tr)
-    countBlock _ (u, a, th, tc, tr) (Claude.ThinkingBlock t _) = (u, a, th + estimateTextTokens t, tc, tr)
-    countBlock _ (u, a, th, tc, tr) (Claude.RedactedThinkingBlock d) = (u, a, th + estimateTextTokens d, tc, tr)
-    countBlock _ (u, a, th, tc, tr) (Claude.ToolUseBlock _ _ input) = (u, a, th, tc + estimateJsonTokens input, tr)
-    countBlock _ (u, a, th, tc, tr) (Claude.ServerToolUseBlock _ _ input) = (u, a, th, tc + estimateJsonTokens input, tr)
-    countBlock _ (u, a, th, tc, tr) (Claude.ToolResultBlock _ content_ _) = (u, a, th, tc, tr + estimateTextTokens content_)
-    countBlock _ (u, a, th, tc, tr) (Claude.ToolSearchResultBlock _ v) = (u, a, th, tc, tr + estimateJsonTokens v)
-    countBlock _ acc _ = acc
+    countBlock :: Claude.Role -> TokenBreakdown -> Claude.ContentBlock -> TokenBreakdown
+    countBlock Claude.User tb (Claude.TextBlock t) = tb {userTokens = tb.userTokens + estimateTextTokens t}
+    countBlock Claude.Assistant tb (Claude.TextBlock t) = tb {assistantTokens = tb.assistantTokens + estimateTextTokens t}
+    countBlock _ tb (Claude.ThinkingBlock t _) = tb {thinkingTokens = tb.thinkingTokens + estimateTextTokens t}
+    countBlock _ tb (Claude.RedactedThinkingBlock d) = tb {thinkingTokens = tb.thinkingTokens + estimateTextTokens d}
+    countBlock _ tb (Claude.ToolUseBlock _ _ input) = tb {toolCallTokens = tb.toolCallTokens + estimateJsonTokens input}
+    countBlock _ tb (Claude.ServerToolUseBlock _ _ input) = tb {toolCallTokens = tb.toolCallTokens + estimateJsonTokens input}
+    countBlock _ tb (Claude.ToolResultBlock _ content_ _) = tb {toolResultTokens = tb.toolResultTokens + estimateTextTokens content_}
+    countBlock _ tb (Claude.ToolSearchResultBlock _ v) = tb {toolResultTokens = tb.toolResultTokens + estimateJsonTokens v}
+    countBlock _ tb _ = tb
 
     formatKTok :: Int -> Text
     formatKTok tokens = T.pack (show (round (fromIntegral tokens / 1e3 :: Double) :: Int)) <> "k"
