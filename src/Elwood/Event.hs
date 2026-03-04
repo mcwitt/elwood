@@ -74,7 +74,6 @@ import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
 import Elwood.Tools.Attachment (isPhotoExtension)
 import System.Exit (ExitCode (..))
-import Text.Printf (printf)
 
 -- | Unified event type for all sources
 data Event = Event
@@ -573,8 +572,8 @@ handleTelegramMessage env msg =
                     "Context usage ("
                       <> T.pack (show msgCount)
                       <> " messages, ~"
-                      <> formatMTok totalTokens
-                      <> " MTok):"
+                      <> formatKTok totalTokens
+                      <> " tokens):"
                   catLines = map (\(label, tok) -> "• " <> label <> ": " <> pct tok) categories
               pure (Just $ formatNotify Info $ T.intercalate "\n" (header : catLines))
 
@@ -592,8 +591,8 @@ handleTelegramMessage env msg =
     countBlock _ (u, a, th, tc, tr) (Claude.ToolSearchResultBlock _ v) = (u, a, th, tc, tr + estimateJsonTokens v)
     countBlock _ acc _ = acc
 
-    formatMTok :: Int -> Text
-    formatMTok tokens = T.pack (printf "%.3g" (fromIntegral tokens / 1e6 :: Double))
+    formatKTok :: Int -> Text
+    formatKTok tokens = T.pack (show (round (fromIntegral tokens / 1e3 :: Double) :: Int)) <> "k"
 
     handleRun :: Text -> IO (Maybe Text)
     handleRun cmd = do
