@@ -36,10 +36,11 @@ import Elwood.Claude.Types
     Usage (..),
     stopReasonToText,
   )
-import Elwood.Config (PruningConfig (..), ThinkingEffort (..), ThinkingLevel (..))
+import Elwood.Config (PruningConfig (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
+import Elwood.Thinking (ThinkingEffort (..), ThinkingLevel (..))
 import Elwood.Tools.Registry
   ( ToolRegistry,
     lookupTool,

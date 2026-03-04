@@ -2,20 +2,17 @@ module Test.Elwood.Config (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
 import Data.Vector qualified as V
+import Elwood.AgentSettings (AgentSettings (..))
 import Elwood.Config
-  ( AgentSettings (..),
-    CompactionConfig (..),
+  ( CompactionConfig (..),
     Config (..),
     TelegramChatConfig (..),
-    ThinkingEffort (..),
-    ThinkingLevel (..),
-    WebhookConfig (..),
-    WebhookServerConfig (..),
     loadConfig,
-    parseThinkingLevel,
     parseToolSearch,
   )
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
+import Elwood.Thinking (ThinkingEffort (..), ThinkingLevel (..), parseThinkingLevel)
+import Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..))
 import Paths_elwood (getDataFileName)
 import System.Environment (setEnv, unsetEnv)
 import Test.Tasty

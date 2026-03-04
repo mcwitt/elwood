@@ -10,17 +10,6 @@ module Elwood.Config
     PermissionConfigFile (..),
     loadConfig,
     parseToolSearch,
-
-    -- * Re-exports
-    AgentOverrides (..),
-    AgentSettings (..),
-    ThinkingLevel (..),
-    ThinkingEffort (..),
-    parseThinkingLevel,
-    WebhookServerConfig (..),
-    WebhookConfig (..),
-    PromptInput (..),
-    PromptInputFile (..),
   )
 where
 
@@ -47,7 +36,6 @@ import Elwood.Claude.Types (ToolName)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), ToolPolicy (..), defaultPermissionConfig)
 import Elwood.Prompt (PromptInput (..), PromptInputFile (..), resolvePromptInput)
-import Elwood.Thinking (ThinkingEffort (..), ThinkingLevel (..), parseThinkingLevel)
 import Elwood.Webhook.Types
   ( DeliveryTargetFile (..),
     WebhookConfig (..),

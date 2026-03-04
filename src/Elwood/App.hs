@@ -14,7 +14,7 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
-import Elwood.AgentSettings (resolveAgent, toOverrides)
+import Elwood.AgentSettings (AgentSettings (..), resolveAgent, toOverrides)
 import Elwood.Approval
   ( ApprovalCoordinator,
     ApprovalResult (..),
