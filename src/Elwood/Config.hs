@@ -90,7 +90,9 @@ data CompactionConfig = CompactionConfig
   { -- | Compact when estimated tokens exceed this
     tokenThreshold :: Int,
     -- | Model to use for summarization (e.g., "claude-3-5-haiku-20241022")
-    model :: Text
+    model :: Text,
+    -- | Custom compaction prompt (Nothing = use built-in structured default)
+    prompt :: Maybe Text
   }
   deriving stock (Show, Generic)
 
@@ -175,7 +177,8 @@ data PermissionConfigFile = PermissionConfigFile
 -- | Compaction configuration from YAML file
 data CompactionConfigFile = CompactionConfigFile
   { tokenThreshold :: Maybe Int,
-    model :: Maybe Text
+    model :: Maybe Text,
+    prompt :: Maybe Text
   }
   deriving stock (Show, Generic)
 
@@ -238,10 +241,11 @@ instance FromJSON PermissionConfigFile where
 
 instance FromJSON CompactionConfigFile where
   parseJSON = withObject "CompactionConfigFile" $ \v -> do
-    rejectUnknownKeys "CompactionConfigFile" ["token_threshold", "model"] v
+    rejectUnknownKeys "CompactionConfigFile" ["token_threshold", "model", "prompt"] v
     CompactionConfigFile
       <$> v .:? "token_threshold"
       <*> v .:? "model"
+      <*> v .:? "prompt"
 
 instance FromJSON PruningConfigFile where
   parseJSON = withObject "PruningConfigFile" $ \v -> do
@@ -267,7 +271,8 @@ defaultCompaction :: CompactionConfig
 defaultCompaction =
   CompactionConfig
     { tokenThreshold = 50000,
-      model = "claude-3-5-haiku-20241022"
+      model = "claude-3-5-haiku-20241022",
+      prompt = Nothing
     }
 
 -- | Default pruning configuration
@@ -319,7 +324,8 @@ loadConfig path = do
         Just ccf ->
           CompactionConfig
             { tokenThreshold = fromMaybe defaultCompaction.tokenThreshold ccf.tokenThreshold,
-              model = fromMaybe defaultCompaction.model ccf.model
+              model = fromMaybe defaultCompaction.model ccf.model,
+              prompt = ccf.prompt
             }
 
   let prune = case configFile.pruning of

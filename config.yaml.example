@@ -80,6 +80,9 @@ max_iterations: 20
 compaction:
   token_threshold: 50000             # default: 50000
   model: claude-3-5-haiku-20241022  # default: claude-3-5-haiku-20241022
+  # Custom compaction prompt (conversation text is appended automatically).
+  # Default: built-in structured prompt with Intent/State/Files/Progress/Constraints sections.
+  # prompt: "Summarize the conversation concisely, preserving key facts and decisions."
 
 # Tool result pruning settings
 # When the Anthropic cache TTL expires, tool results before the horizon are

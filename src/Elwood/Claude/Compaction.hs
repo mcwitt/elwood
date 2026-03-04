@@ -10,6 +10,7 @@ module Elwood.Claude.Compaction
     CompactionConfig (..),
 
     -- * Exported for testing
+    defaultCompactionPrompt,
     extractText,
     formatMessagesForSummary,
     safeSplit,
@@ -18,6 +19,7 @@ where
 
 import Data.Aeson (encode)
 import Data.ByteString.Lazy qualified as LBS
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Claude.Client (ClaudeClient, sendMessages)
@@ -108,6 +110,30 @@ compactMessages logger client config onCompaction onApiResponse msgs = do
               }
       pure $ summaryMsg : recentMsgs
 
+-- | Default structured compaction prompt
+defaultCompactionPrompt :: Text
+defaultCompactionPrompt =
+  T.unlines
+    [ "Summarize the following conversation using exactly these sections:",
+      "",
+      "## Intent",
+      "What is the user's current goal or request?",
+      "",
+      "## State",
+      "Key facts, decisions made, and preferences expressed.",
+      "",
+      "## Files",
+      "Files mentioned or modified, with full paths.",
+      "",
+      "## Progress",
+      "What was accomplished and what remains.",
+      "",
+      "## Constraints",
+      "Rules, preferences, or boundaries the user established.",
+      "",
+      "Be concise but preserve all information needed to continue the conversation."
+    ]
+
 -- | Summarize a list of messages using a fast model
 summarizeMessages ::
   ClaudeClient ->
@@ -118,16 +144,12 @@ summarizeMessages ::
 summarizeMessages client config onApiResponse msgs = do
   -- Build a prompt asking for a summary
   let conversationText = formatMessagesForSummary msgs
+      promptText = fromMaybe defaultCompactionPrompt config.prompt
       summaryRequest =
         ClaudeMessage
           { role = User,
             content =
-              [ TextBlock $
-                  "Please summarize the following conversation concisely. "
-                    <> "Focus on key facts, decisions, and context that would be important "
-                    <> "for continuing the conversation. Be brief but comprehensive.\n\n"
-                    <> "Conversation:\n"
-                    <> conversationText
+              [ TextBlock $ promptText <> "\nConversation:\n" <> conversationText
               ]
           }
       request =

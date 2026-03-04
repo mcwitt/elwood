@@ -124,6 +124,9 @@ let
         compaction = {
           token_threshold = agentCfg.compaction.tokenThreshold;
           model = agentCfg.compaction.model;
+        }
+        // lib.optionalAttrs (agentCfg.compaction.prompt != null) {
+          prompt = agentCfg.compaction.prompt;
         };
 
         pruning = {
@@ -572,6 +575,12 @@ let
             type = lib.types.str;
             default = "claude-3-5-haiku-20241022";
             description = "Model to use for compaction/summarization.";
+          };
+
+          prompt = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Custom compaction prompt. Null uses the built-in structured prompt.";
           };
         };
 
