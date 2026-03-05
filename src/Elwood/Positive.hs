@@ -1,6 +1,5 @@
 module Elwood.Positive
   ( Positive,
-    mkPositive,
     unPositive,
     unsafePositive,
   )
@@ -8,15 +7,9 @@ where
 
 import Data.Aeson (FromJSON (..), withScientific)
 
--- | A positive integer (>= 1). Constructor not exported; use 'mkPositive' or 'unsafePositive'.
+-- | A positive integer (>= 1). Constructor not exported; use 'unsafePositive'.
 newtype Positive = UnsafePositive Int
   deriving stock (Show, Eq, Ord)
-
--- | Smart constructor: returns 'Nothing' for values <= 0.
-mkPositive :: Int -> Maybe Positive
-mkPositive n
-  | n >= 1 = Just (UnsafePositive n)
-  | otherwise = Nothing
 
 -- | Unwrap to 'Int'.
 unPositive :: Positive -> Int
