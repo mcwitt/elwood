@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 -- | Observer callbacks for agent loop metrics and telemetry.
 -- Extracted from AgentLoop to break the dependency cycle where
 -- Metrics imports AgentLoop just for the observer type.

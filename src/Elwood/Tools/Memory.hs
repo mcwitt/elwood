@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 module Elwood.Tools.Memory
   ( mkSaveMemoryTool,
     mkSearchMemoryTool,

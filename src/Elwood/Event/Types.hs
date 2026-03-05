@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 -- | Core event types that don't depend on other Elwood modules.
 -- This module breaks the import cycle between Event, Config, and Webhook.Types.
 module Elwood.Event.Types

@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 module Elwood.AgentSettings
   ( -- * Partial (monoidal) type for layering overrides
     AgentOverrides (..),

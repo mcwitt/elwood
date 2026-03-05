@@ -1,4 +1,3 @@
-{-# LANGUAGE StrictData #-}
 {-# LANGUAGE TupleSections #-}
 
 module Elwood.MCP.Client
@@ -16,7 +15,7 @@ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.Exception (SomeException, catch, try)
 import Control.Monad (forever, void, when)
 import Data.Aeson (Value (..), eitherDecode, encode, object, (.=))
-import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Map.Strict qualified as Map
@@ -241,8 +240,8 @@ responseReader logger server =
 
 -- | Check if a line looks like it could be JSON (starts with '{')
 isJsonLine :: BS.ByteString -> Bool
-isJsonLine bs = case BS.uncons (BS.dropWhile (== 0x20) bs) of
-  Just (0x7B, _) -> True
+isJsonLine bs = case BS.uncons (BS.dropWhile (== ' ') bs) of
+  Just ('{', _) -> True
   _ -> False
 
 -- | Handle a parsed JSON-RPC response

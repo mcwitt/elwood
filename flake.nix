@@ -2,7 +2,7 @@
   description = "Elwood - Self-hosted personal AI assistant";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     git-hooks.url = "github:cachix/git-hooks.nix";
     weeder-nix.url = "github:NorfairKing/weeder-nix";
@@ -23,7 +23,7 @@
         haskellOverlay = final: prev: {
           haskell = prev.haskell // {
             packages = prev.haskell.packages // {
-              ghc96 = prev.haskell.packages.ghc96.extend (
+              ghc910 = prev.haskell.packages.ghc910.extend (
                 hfinal: hprev: {
                   elwood = hfinal.callCabal2nix "elwood" ./. { };
                 }
@@ -40,7 +40,7 @@
           ];
         };
 
-        haskellPackages = pkgs.haskell.packages.ghc96;
+        haskellPackages = pkgs.haskell.packages.ghc910;
 
         elwood = haskellPackages.elwood;
 

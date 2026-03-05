@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 module Elwood.Command
   ( CommandResult (..),
     runCommand,

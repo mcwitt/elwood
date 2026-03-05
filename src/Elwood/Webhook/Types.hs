@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 module Elwood.Webhook.Types
   ( -- * Configuration Types
     WebhookConfig (..),

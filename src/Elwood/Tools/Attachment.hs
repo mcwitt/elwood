@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 module Elwood.Tools.Attachment
   ( mkQueueAttachmentTool,
     isPhotoExtension,

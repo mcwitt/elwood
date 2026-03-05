@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 module Elwood.Webhook.Server
   ( -- * Server
     runWebhookServer,

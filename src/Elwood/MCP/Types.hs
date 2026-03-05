@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 module Elwood.MCP.Types
   ( -- * MCP Server Types
     MCPServer (..),

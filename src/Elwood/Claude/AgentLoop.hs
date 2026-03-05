@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 module Elwood.Claude.AgentLoop
   ( runAgentTurn,
     AgentConfig (..),

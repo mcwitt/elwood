@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 -- | Telegram-specific message and command handling.
 -- Dispatches /clear, /compact, /context, /run commands and
 -- converts Telegram messages into events for the generic pipeline.
@@ -14,7 +12,7 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as LBS
 import Data.Int (Int64)
-import Data.List (foldl', sortOn)
+import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Ord (Down (..))

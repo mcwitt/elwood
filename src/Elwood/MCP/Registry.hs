@@ -1,5 +1,3 @@
-{-# LANGUAGE StrictData #-}
-
 module Elwood.MCP.Registry
   ( -- * Tool Discovery
     discoverTools,
