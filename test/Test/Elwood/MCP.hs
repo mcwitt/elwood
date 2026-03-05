@@ -1,9 +1,18 @@
 module Test.Elwood.MCP (tests) where
 
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (finally)
 import Data.Aeson
 import Data.Aeson.KeyMap qualified as KM
+import Data.Text qualified as T
 import Elwood.Config (MCPServerConfig (..))
+import Elwood.Logging (newLogger)
+import Elwood.Logging qualified as Log
+import Elwood.MCP.Client (sendRequest, spawnServer, stopServer)
 import Elwood.MCP.Types
+import System.IO (hClose, hPutStr)
+import System.IO.Temp (withSystemTempFile)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -14,7 +23,8 @@ tests =
     [ jsonRpcTests,
       mcpToolTests,
       mcpErrorTests,
-      mcpServerConfigTests
+      mcpServerConfigTests,
+      concurrentRequestTests
     ]
 
 jsonRpcTests :: TestTree
@@ -161,4 +171,69 @@ mcpServerConfigTests =
                 }
         config.env @?= Nothing
         config.startupDelay @?= 0
+    ]
+
+-- | Regression test for issue #33: concurrent sendRequest calls to the same
+-- MCP server must each receive their own response. Before the fix, threads
+-- raced on reading stdout directly, causing "Response ID mismatch" errors.
+concurrentRequestTests :: TestTree
+concurrentRequestTests =
+  testGroup
+    "Concurrent Requests"
+    [ testCase "concurrent requests dispatched correctly" $ do
+        logger <- newLogger Log.Error
+        withSystemTempFile "fake-mcp.sh" $ \scriptPath scriptH -> do
+          -- Fake MCP server that responds out of order: higher IDs respond
+          -- first (shorter delay) so the first thread blocked on hGetLine
+          -- reads a response meant for a later thread.
+          hPutStr scriptH $
+            unlines
+              [ "while IFS= read -r line; do",
+                "  id=$(echo \"$line\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')",
+                "  if [ -n \"$id\" ]; then",
+                "    if [ \"$id\" -le 1 ]; then",
+                "      printf '{\"jsonrpc\":\"2.0\",\"result\":{\"echo_id\":%d},\"id\":%d}\\n' \"$id\" \"$id\"",
+                "    else",
+                "      {",
+                "        sleep \"0.$(printf '%03d' $((150 - id * 10)))\"",
+                "        printf '{\"jsonrpc\":\"2.0\",\"result\":{\"echo_id\":%d},\"id\":%d}\\n' \"$id\" \"$id\"",
+                "      } &",
+                "    fi",
+                "  fi",
+                "done"
+              ]
+          hClose scriptH
+
+          let cfg =
+                MCPServerConfig
+                  { name = "test-echo",
+                    command = "bash",
+                    args = [T.pack scriptPath],
+                    env = Nothing,
+                    startupDelay = 0
+                  }
+
+          serverResult <- spawnServer logger cfg
+          case serverResult of
+            Left err -> assertFailure $ "spawnServer failed: " ++ show err
+            Right server -> flip finally (stopServer server) $ do
+              let n = 10 :: Int
+              mvars <-
+                mapM
+                  ( \i -> do
+                      mv <- newEmptyMVar
+                      _ <- forkIO $ do
+                        r <- sendRequest server "echo" (Just (object ["n" .= i]))
+                        putMVar mv r
+                      pure mv
+                  )
+                  [1 .. n]
+              results <- mapM takeMVar mvars
+              mapM_
+                ( \(i, r) -> case r of
+                    Left err ->
+                      assertFailure $ "Request " ++ show i ++ " failed: " ++ show err
+                    Right _ -> pure ()
+                )
+                (zip [(1 :: Int) ..] results)
     ]

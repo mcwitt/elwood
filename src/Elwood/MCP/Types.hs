@@ -13,8 +13,10 @@ module Elwood.MCP.Types
   )
 where
 
+import Control.Concurrent.MVar (MVar)
 import Data.Aeson
 import Data.IORef (IORef)
+import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Elwood.Config (MCPServerConfig)
 import GHC.Generics (Generic)
@@ -34,7 +36,9 @@ data MCPServer = MCPServer
     -- | Handle to read diagnostic output (logged by background thread)
     stderr :: Handle,
     -- | Counter for generating unique request IDs
-    requestId :: IORef Int
+    requestId :: IORef Int,
+    -- | Pending requests awaiting responses, keyed by JSON-RPC id
+    pendingRequests :: IORef (Map Int (MVar (Either MCPError Value)))
   }
 
 -- | Tool definition from MCP server

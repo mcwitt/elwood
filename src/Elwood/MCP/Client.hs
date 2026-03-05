@@ -1,4 +1,5 @@
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TupleSections #-}
 
 module Elwood.MCP.Client
   ( -- * Server Lifecycle
@@ -11,13 +12,14 @@ module Elwood.MCP.Client
 where
 
 import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.Exception (SomeException, catch, try)
 import Control.Monad (forever, void, when)
 import Data.Aeson (Value (..), eitherDecode, encode, object, (.=))
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
-import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.IORef (atomicModifyIORef', newIORef)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -70,8 +72,9 @@ spawnServer logger cfg = do
       hSetBuffering stdoutH LineBuffering
       hSetBuffering stderrH LineBuffering
 
-      -- Create request ID counter
+      -- Create request ID counter and pending requests map
       requestIdRef <- newIORef 0
+      pendingRef <- newIORef Map.empty
 
       let server =
             MCPServer
@@ -80,11 +83,15 @@ spawnServer logger cfg = do
                 stdin = stdinH,
                 stdout = stdoutH,
                 stderr = stderrH,
-                requestId = requestIdRef
+                requestId = requestIdRef,
+                pendingRequests = pendingRef
               }
 
       -- Start background thread to log stderr output
       void $ forkIO $ logStderr logger cfg.name stderrH
+
+      -- Start background thread to read and dispatch responses
+      void $ forkIO $ responseReader logger server
 
       -- Optional startup delay for slow-starting servers (e.g., npx)
       when (cfg.startupDelay > 0) $
@@ -163,8 +170,7 @@ sendNotification logger server method_ params_ = do
   let jsonLine = BL.toStrict (encode notification) <> "\n"
   logDebug logger "Sending MCP notification" [("method", method_)]
 
-  hFlush server.stdin
-  BL.hPut server.stdin (BL.fromStrict jsonLine)
+  BS.hPut server.stdin jsonLine
   hFlush server.stdin
 
 -- | Send a JSON-RPC request and wait for response (with timeout)
@@ -180,62 +186,64 @@ sendRequest server method_ params_ = do
             id_ = reqId
           }
 
+  -- Create MVar and register in pending requests
+  mvar <- newEmptyMVar
+  atomicModifyIORef' server.pendingRequests (\m -> (Map.insert reqId mvar m, ()))
+
+  let reqBytes = BL.toStrict (encode request) <> "\n"
   sendResult <- try $ do
-    BL8.hPutStrLn server.stdin (encode request)
+    BS.hPut server.stdin reqBytes
     hFlush server.stdin
 
   case sendResult of
-    Left (e :: SomeException) ->
+    Left (e :: SomeException) -> do
+      atomicModifyIORef' server.pendingRequests (\m -> (Map.delete reqId m, ()))
       pure $ Left $ MCPRequestError $ "Failed to send request: " <> T.pack (show e)
     Right () -> do
-      -- Read response with timeout
-      result <- timeout responseTimeoutMicros (readResponse server reqId)
+      -- Wait for the reader thread to dispatch our response
+      result <- timeout responseTimeoutMicros (takeMVar mvar)
       case result of
-        Nothing -> pure $ Left $ MCPRequestError "Response timeout (30s)"
+        Nothing -> do
+          atomicModifyIORef' server.pendingRequests (\m -> (Map.delete reqId m, ()))
+          pure $ Left $ MCPRequestError "Response timeout (30s)"
         Just r -> pure r
 
--- | Read and parse JSON-RPC response, skipping non-JSON lines
-readResponse :: MCPServer -> Int -> IO (Either MCPError Value)
-readResponse server expectedId = readJsonLine 100 Nothing
+-- | Background thread that reads JSON-RPC responses from stdout and dispatches
+-- them to pending request MVars by ID. Terminates when stdout is closed.
+responseReader :: Logger -> MCPServer -> IO ()
+responseReader logger server =
+  forever readAndDispatch `catch` \(e :: SomeException) -> do
+    logDebug logger "MCP response reader exiting" [("reason", T.pack (show e))]
+    -- Signal all pending requests that the server is gone
+    pending <- atomicModifyIORef' server.pendingRequests (Map.empty,)
+    let err = Left $ MCPRequestError "MCP server connection closed"
+    mapM_ (\mv -> void $ tryPutMVar mv err) (Map.elems pending)
   where
-    readJsonLine :: Int -> Maybe String -> IO (Either MCPError Value)
-    readJsonLine 0 lastErr =
-      pure $
-        Left $
-          MCPProtocolError $
-            "No JSON response found after 100 lines"
-              <> maybe "" (\e -> " (last parse error: " <> T.pack e <> ")") lastErr
-    readJsonLine remaining lastErr = do
-      responseResult <- try $ BS.hGetLine server.stdout
-      case responseResult of
-        Left (e :: SomeException) ->
-          pure $ Left $ MCPRequestError $ "Failed to read response: " <> T.pack (show e)
-        Right lineBytes -> do
-          let line = BL.fromStrict lineBytes
-          if not (isJsonLine lineBytes)
-            then readJsonLine (remaining - 1) lastErr
-            else case eitherDecode line of
-              Left err -> readJsonLine (remaining - 1) (Just err)
-              Right response -> validateResponse response
+    readAndDispatch = do
+      lineBytes <- BS.hGetLine server.stdout
+      when (isJsonLine lineBytes) $ do
+        let line = BL.fromStrict lineBytes
+        case eitherDecode line of
+          Left _ -> pure ()
+          Right response -> dispatchResponse response
 
-    validateResponse response =
-      case response.id_ of
-        Just respId
-          | respId == expectedId -> handleResponse response
-          | otherwise ->
-              pure $
-                Left $
-                  MCPProtocolError $
-                    "Response ID mismatch: expected "
-                      <> T.pack (show expectedId)
-                      <> ", got "
-                      <> T.pack (show respId)
-        Nothing -> handleResponse response
+    dispatchResponse :: JsonRpcResponse -> IO ()
+    dispatchResponse response = case response.id_ of
+      Nothing -> pure () -- Notification, ignore
+      Just respId -> do
+        mMvar <- atomicModifyIORef' server.pendingRequests (\m -> (Map.delete respId m, Map.lookup respId m))
+        case mMvar of
+          Just mvar -> do
+            result <- handleResponse response
+            putMVar mvar result
+          Nothing ->
+            logWarn logger "MCP response for unknown request ID" [("id", T.pack (show respId))]
 
-    -- Check if a line looks like it could be JSON (starts with '{')
-    isJsonLine bs = case BS.uncons (BS.dropWhile (== 0x20) bs) of -- 0x20 = space
-      Just (0x7B, _) -> True -- 0x7B = '{'
-      _ -> False
+-- | Check if a line looks like it could be JSON (starts with '{')
+isJsonLine :: BS.ByteString -> Bool
+isJsonLine bs = case BS.uncons (BS.dropWhile (== 0x20) bs) of
+  Just (0x7B, _) -> True
+  _ -> False
 
 -- | Handle a parsed JSON-RPC response
 handleResponse :: JsonRpcResponse -> IO (Either MCPError Value)
