@@ -110,28 +110,35 @@ compactMessages logger client config onCompaction onApiResponse msgs = do
               }
       pure $ summaryMsg : recentMsgs
 
--- | Default structured compaction prompt
+-- | Default structured compaction prompt.
+--
+-- Designed for a personal assistant that maintains long-running context
+-- about the user across sessions.  The summary replaces older messages
+-- while recent messages are kept verbatim, so it focuses on background
+-- context that would otherwise be lost.
 defaultCompactionPrompt :: Text
 defaultCompactionPrompt =
   T.unlines
-    [ "Summarize the following conversation using exactly these sections:",
+    [ "Summarize the following conversation excerpt. This summary will replace",
+      "these messages while the most recent messages are kept intact, so focus",
+      "on context that would be lost.",
       "",
-      "## Intent",
-      "What is the user's current goal or request?",
+      "## User Profile",
+      "Personal details, preferences, relationships, and circumstances the user has shared.",
       "",
-      "## State",
-      "Key facts, decisions made, and preferences expressed.",
+      "## Projects & Goals",
+      "What the user is working on, their motivations, and broader objectives.",
       "",
-      "## Files",
-      "Files mentioned or modified, with full paths.",
+      "## Key Facts & Decisions",
+      "Important facts established, decisions made, resources referenced, and constraints set.",
       "",
       "## Progress",
-      "What was accomplished and what remains.",
+      "What was accomplished in this portion of the conversation.",
       "",
-      "## Constraints",
-      "Rules, preferences, or boundaries the user established.",
+      "## Open Threads",
+      "Anything unresolved, promised, or awaiting follow-up.",
       "",
-      "Be concise but preserve all information needed to continue the conversation."
+      "Be concise but preserve everything the user would expect you to remember."
     ]
 
 -- | Summarize a list of messages using a fast model

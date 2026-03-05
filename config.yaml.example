@@ -106,7 +106,8 @@ compaction:
   token_threshold: 50000             # default: 50000
   model: claude-3-5-haiku-20241022  # default: claude-3-5-haiku-20241022
   # Custom compaction prompt (conversation text is appended automatically).
-  # Default: built-in structured prompt with Intent/State/Files/Progress/Constraints sections.
+  # Default: built-in structured prompt with User Profile/Projects & Goals/
+  # Key Facts & Decisions/Progress/Open Threads sections.
   # prompt: "Summarize the conversation concisely, preserving key facts and decisions."
 
 # Tool result pruning settings
