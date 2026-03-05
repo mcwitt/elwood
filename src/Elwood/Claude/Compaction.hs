@@ -25,7 +25,7 @@ import Elwood.Claude.Client (ClaudeClient, sendMessages)
 import Elwood.Claude.Types
 import Elwood.Config (CompactionConfig (..), CompactionStrategy (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
-import Elwood.Positive (Positive, unPositive)
+import Elwood.Positive (Positive (getPositive))
 
 -- | Estimate the number of tokens in a message list
 -- Uses a rough heuristic: JSON length / 4
@@ -48,14 +48,14 @@ compactIfNeeded ::
   IO [ClaudeMessage]
 compactIfNeeded logger client config onCompaction onApiResponse msgs = do
   let tokens = estimateTokens msgs
-  if tokens < unPositive config.tokenThreshold
+  if tokens < config.tokenThreshold.getPositive
     then pure msgs
     else do
       logInfo
         logger
         "Context compaction triggered"
         [ ("estimated_tokens", T.pack (show tokens)),
-          ("threshold", T.pack (show (unPositive config.tokenThreshold))),
+          ("threshold", T.pack (show config.tokenThreshold.getPositive)),
           ("message_count", T.pack (show (length msgs)))
         ]
       compactMessages logger client config onCompaction onApiResponse msgs
@@ -218,12 +218,12 @@ strategySplit :: CompactionStrategy -> Positive -> [ClaudeMessage] -> Maybe ([Cl
 strategySplit (KeepLastTurns n) _threshold msgs =
   let boundaries = turnBoundaryIndices msgs
    in -- We need at least n+1 boundaries: n to keep, 1+ to compact
-      case drop (length boundaries - unPositive n) boundaries of
+      case drop (length boundaries - n.getPositive) boundaries of
         (splitIdx : _)
           | splitIdx > 0 -> nonEmptySplit splitIdx msgs
         _ -> Nothing
 strategySplit (KeepLastFraction f) threshold msgs =
-  let keepTokens = floor (f * fromIntegral (unPositive threshold)) :: Int
+  let keepTokens = floor (f * fromIntegral threshold.getPositive) :: Int
       boundaries = turnBoundaryIndices msgs
       -- Walk backward through messages, accumulating token estimates
       -- until we've accounted for keepTokens. The split point is the

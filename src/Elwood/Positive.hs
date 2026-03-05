@@ -1,6 +1,5 @@
 module Elwood.Positive
-  ( Positive,
-    unPositive,
+  ( Positive (getPositive),
     unsafePositive,
   )
 where
@@ -8,12 +7,8 @@ where
 import Data.Aeson (FromJSON (..), withScientific)
 
 -- | A positive integer (>= 1). Constructor not exported; use 'unsafePositive'.
-newtype Positive = UnsafePositive Int
+newtype Positive = UnsafePositive {getPositive :: Int}
   deriving stock (Show, Eq, Ord)
-
--- | Unwrap to 'Int'.
-unPositive :: Positive -> Int
-unPositive (UnsafePositive n) = n
 
 -- | Construct from a known-good literal. Errors on <= 0.
 unsafePositive :: Int -> Positive

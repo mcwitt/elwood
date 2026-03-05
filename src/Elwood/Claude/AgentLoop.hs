@@ -36,7 +36,7 @@ import Elwood.Config (PruningConfig (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
-import Elwood.Positive (unPositive)
+import Elwood.Positive (Positive (getPositive))
 import Elwood.Thinking (ThinkingEffort (..), ThinkingLevel (..))
 import Elwood.Tools.Registry
   ( ToolRegistry,
@@ -117,7 +117,7 @@ agentLoop ::
   Int ->
   IO AgentResult
 agentLoop cfg msgs iteration
-  | iteration >= unPositive cfg.agentSettings.maxIterations = do
+  | iteration >= cfg.agentSettings.maxIterations.getPositive = do
       logError cfg.logger "Agent loop exceeded max iterations" []
       pure $ AgentError $ formatNotify Error "**Agent loop:** `exceeded max iterations`"
   | otherwise = do

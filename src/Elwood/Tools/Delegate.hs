@@ -16,7 +16,7 @@ import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..)
 import Elwood.Config (CompactionConfig (..), PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
-import Elwood.Positive (unPositive, unsafePositive)
+import Elwood.Positive (Positive (getPositive), unsafePositive)
 import Elwood.Thinking (ThinkingLevel (..), parseThinkingLevel)
 import Elwood.Tools.Registry (ToolRegistry)
 import Elwood.Tools.Types
@@ -78,7 +78,7 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
           "Delegating task to sub-agent"
           [ ("task_length", T.pack (show (T.length di.task))),
             ("model", subSettings.model),
-            ("max_iterations", T.pack (show (unPositive subSettings.maxIterations)))
+            ("max_iterations", T.pack (show subSettings.maxIterations.getPositive))
           ]
 
         let -- Disable compaction — sub-agent starts with empty history
