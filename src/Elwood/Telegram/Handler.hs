@@ -185,7 +185,7 @@ handleTelegramMessage env msg =
                   pct :: Int64 -> Text
                   pct tok
                     | catSum == 0 = "0%"
-                    | otherwise = T.pack (show (tok * 100 `div` catSum)) <> "%"
+                    | otherwise = T.pack (show ((tok * 100) `div` catSum)) <> "%"
                   categories =
                     filter
                       (\(_, v) -> v > 0)
@@ -195,14 +195,17 @@ handleTelegramMessage env msg =
                         ("Tool calls", tb.toolCallTokens),
                         ("Tool results", tb.toolResultTokens)
                       ]
-                  header =
-                    "Context usage ("
-                      <> T.pack (show msgCount)
-                      <> " messages, ~"
-                      <> formatKTok totalTokens
-                      <> " tokens):"
+                  tokenThreshold = env.compaction.tokenThreshold
+                  thresholdPct
+                    | tokenThreshold <= 0 = 0 :: Int
+                    | otherwise = (totalTokens * 100) `div` tokenThreshold
+                  header = "Context usage:"
+                  summary =
+                    [ "• " <> T.pack (show msgCount) <> " messages",
+                      "• ~" <> formatKTok totalTokens <> " tokens (" <> T.pack (show thresholdPct) <> "% of compaction threshold)"
+                    ]
                   catLines = map (\(label, tok) -> "• " <> label <> ": " <> pct tok) categories
-              pure (Just $ formatNotify Info $ T.intercalate "\n" (header : catLines))
+              pure (Just $ formatNotify Info $ T.intercalate "\n" (header : summary <> [""] <> ["Context breakdown:"] <> catLines))
 
     countMessage :: TokenBreakdown -> Claude.ClaudeMessage -> TokenBreakdown
     countMessage acc msg_ = foldl' (countBlock msg_.role) acc msg_.content
