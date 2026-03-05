@@ -14,7 +14,7 @@ import Data.Text qualified as T
 import Elwood.AgentSettings (AgentOverrides (..), AgentSettings (..), resolveAgent, toOverrides)
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolSchema (..))
+import Elwood.Claude.Types (CacheTtl, ClaudeMessage (..), ContentBlock (..), Role (..), ToolSchema (..))
 import Elwood.Config (CompactionConfig (..), PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
@@ -49,8 +49,9 @@ mkDelegateTaskTool ::
   MetricsStore ->
   AgentOverrides ->
   [Text] ->
+  CacheTtl ->
   Tool
-mkDelegateTaskTool logger client baseRegistry context agentSettings compaction pruning systemPrompt metrics configOverrides allowedModels =
+mkDelegateTaskTool logger client baseRegistry context agentSettings compaction pruning systemPrompt metrics configOverrides allowedModels cacheTtl =
   Tool
     { schema =
         ToolSchema
@@ -100,7 +101,8 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
                   onBeforeApiCall = Nothing,
                   toolSearch = Nothing,
                   pruningConfig = pruning,
-                  pruneHorizon = 0
+                  pruneHorizon = 0,
+                  cacheTtl = cacheTtl
                 }
             userMsg = ClaudeMessage User [TextBlock di.task]
 

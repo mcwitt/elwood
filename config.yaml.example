@@ -93,6 +93,12 @@ tool_use_messages: true
 #   - type: text
 #     content: "Additional instructions"
 
+# Prompt cache TTL
+# Controls the cache lifetime for prompt caching. Longer TTLs cost more for
+# cache writes but help if requests are spaced more than 5 minutes apart.
+# Values: "5m" (default, 1.25x write cost) or "1h" (2x write cost)
+# cache_ttl: 5m
+
 # Context compaction settings
 # When conversation history exceeds the token threshold, older messages
 # are summarized using a fast model to stay within context limits.

@@ -8,6 +8,7 @@ module Elwood.Config
     MCPServerConfig (..),
     PermissionConfig (..),
     PermissionConfigFile (..),
+    CacheTtl (..),
     loadConfig,
     parseToolSearch,
   )
@@ -32,7 +33,7 @@ import Elwood.AgentSettings
     agentDefaults,
     resolveAgent,
   )
-import Elwood.Claude.Types (ToolName)
+import Elwood.Claude.Types (CacheTtl (..), ToolName)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), ToolPolicy (..), defaultPermissionConfig)
 import Elwood.Prompt (PromptInput (..), PromptInputFile (..), resolvePromptInput)
@@ -79,7 +80,9 @@ data Config = Config
     -- | Delegate sub-agent overrides (model, thinking, max_iterations)
     delegateOverrides :: AgentOverrides,
     -- | Allowed models for delegate_task tool parameter
-    delegateAllowedModels :: [Text]
+    delegateAllowedModels :: [Text],
+    -- | Cache TTL for prompt caching
+    cacheTtl :: CacheTtl
   }
   deriving stock (Show, Generic)
 
@@ -154,7 +157,8 @@ data ConfigFile = ConfigFile
     toolSearch :: Maybe Value,
     systemPrompt :: Maybe [PromptInputFile],
     toolUseMessages :: Maybe Bool,
-    delegate :: Maybe DelegateConfigFile
+    delegate :: Maybe DelegateConfigFile,
+    cacheTtl :: Maybe CacheTtl
   }
   deriving stock (Show, Generic)
 
@@ -307,7 +311,7 @@ instance FromJSON TelegramChatConfigFile where
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "agent", "permissions", "compaction", "pruning", "mcp_servers", "webhook", "tool_search", "system_prompt", "tool_use_messages", "delegate"] v
+    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "agent", "permissions", "compaction", "pruning", "mcp_servers", "webhook", "tool_search", "system_prompt", "tool_use_messages", "delegate", "cache_ttl"] v
     ConfigFile
       <$> v .:? "state_dir"
       <*> v .:? "workspace_dir"
@@ -322,6 +326,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "system_prompt"
       <*> v .:? "tool_use_messages"
       <*> v .:? "delegate"
+      <*> v .:? "cache_ttl"
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v -> do
@@ -483,7 +488,8 @@ loadConfig path = do
         systemPrompt = systemPrompt_,
         toolUseMessages = fromMaybe True configFile.toolUseMessages,
         delegateOverrides = delCfg.agentOverrides,
-        delegateAllowedModels = fromMaybe [] delCfg.allowedModels
+        delegateAllowedModels = fromMaybe [] delCfg.allowedModels,
+        cacheTtl = fromMaybe CacheTtl5Min configFile.cacheTtl
       }
 
 -- | Parse tool search configuration from a YAML value

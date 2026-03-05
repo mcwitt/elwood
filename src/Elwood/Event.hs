@@ -53,7 +53,8 @@ import Data.Text qualified as T
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Elwood.AgentSettings (AgentOverrides, AgentSettings (..))
 import Elwood.Claude qualified as Claude
-import Elwood.Claude.Pruning (PruneHorizons, anthropicCacheTtl, getAndUpdateHorizon)
+import Elwood.Claude.Pruning (PruneHorizons, getAndUpdateHorizon)
+import Elwood.Claude.Types (CacheTtl, cacheTtlSeconds)
 import Elwood.Config (CompactionConfig, PruningConfig, TelegramChatConfig (..))
 import Elwood.Event.Types
   ( Base64Data (..),
@@ -125,7 +126,9 @@ data AppEnv = AppEnv
     -- | Delegate sub-agent overrides (model, thinking, max_iterations)
     delegateOverrides :: AgentOverrides,
     -- | Allowed models for delegate_task tool parameter
-    delegateAllowedModels :: [Text]
+    delegateAllowedModels :: [Text],
+    -- | Cache TTL for prompt caching
+    cacheTtl :: CacheTtl
   }
 
 -- | Callbacks wired into the agent loop for delivery during a turn
@@ -179,7 +182,7 @@ handleEventCore env event callbacks = do
     Nothing -> pure ([], 0)
     Just cid -> do
       conv <- env.conversations.getConversation cid
-      let cacheExpired = diffUTCTime now conv.lastUpdated > anthropicCacheTtl
+      let cacheExpired = diffUTCTime now conv.lastUpdated > cacheTtlSeconds env.cacheTtl
       h <- getAndUpdateHorizon env.pruneHorizons cid (length conv.messages) cacheExpired
       pure (conv.messages, h)
 
@@ -209,6 +212,7 @@ handleEventCore env event callbacks = do
           env.metrics
           env.delegateOverrides
           env.delegateAllowedModels
+          env.cacheTtl
       registryWithDelegate = Tools.registerTool delegateTool env.registry
 
   -- Build agent config from environment
@@ -228,7 +232,8 @@ handleEventCore env event callbacks = do
             onBeforeApiCall = callbacks.onBeforeApiCall,
             toolSearch = env.toolSearch,
             pruningConfig = env.pruning,
-            pruneHorizon = pruneHorizon
+            pruneHorizon = pruneHorizon,
+            cacheTtl = env.cacheTtl
           }
 
   -- Run the agent turn

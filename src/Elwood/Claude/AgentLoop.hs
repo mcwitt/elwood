@@ -21,7 +21,8 @@ import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Observer (AgentObserver (..), RateLimitCallback, TextCallback, ToolUseCallback)
 import Elwood.Claude.Pruning (pruneThinkingBlocks, pruneToolInputs, pruneToolResults)
 import Elwood.Claude.Types
-  ( ClaudeError (..),
+  ( CacheTtl,
+    ClaudeError (..),
     ClaudeMessage (..),
     ContentBlock (..),
     MessagesRequest (..),
@@ -78,7 +79,9 @@ data AgentConfig = AgentConfig
     -- | Pruning configuration for tool results
     pruningConfig :: PruningConfig,
     -- | Prune horizon: tool results before this index are replaced with placeholders
-    pruneHorizon :: Int
+    pruneHorizon :: Int,
+    -- | Cache TTL for prompt caching
+    cacheTtl :: CacheTtl
   }
 
 -- | Convert a thinking level to the API thinking config
@@ -146,7 +149,7 @@ agentLoop cfg msgs iteration
                 messages = prunedMsgs,
                 tools = schemas,
                 thinking = thinkingToConfig thk,
-                cacheControl = True,
+                cacheControl = Just cfg.cacheTtl,
                 toolSearch = cfg.toolSearch
               }
 

@@ -160,7 +160,7 @@ summarizeMessages client config onApiResponse msgs = do
             messages = [summaryRequest],
             tools = [],
             thinking = Nothing,
-            cacheControl = False,
+            cacheControl = Nothing,
             toolSearch = Nothing
           }
 

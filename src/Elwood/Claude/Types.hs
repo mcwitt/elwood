@@ -20,6 +20,10 @@ module Elwood.Claude.Types
     StopReason (..),
     stopReasonToText,
 
+    -- * Cache Control
+    CacheTtl (..),
+    cacheTtlSeconds,
+
     -- * API Request/Response
     MessagesRequest (..),
     MessagesResponse (..),
@@ -38,7 +42,7 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.String (IsString)
 import Data.Text (Text)
-import Data.Time (UTCTime)
+import Data.Time (NominalDiffTime, UTCTime)
 import Elwood.Thinking (ThinkingEffort (..))
 import GHC.Generics (Generic)
 
@@ -278,6 +282,25 @@ instance ToJSON ToolSchema where
         "input_schema" .= ts.inputSchema
       ]
 
+-- | Cache TTL for prompt caching
+data CacheTtl
+  = -- | 5-minute ephemeral cache (default)
+    CacheTtl5Min
+  | -- | 1-hour extended cache
+    CacheTtl1Hour
+  deriving stock (Show, Eq, Generic)
+
+-- | Convert a cache TTL to its duration in seconds
+cacheTtlSeconds :: CacheTtl -> NominalDiffTime
+cacheTtlSeconds CacheTtl5Min = 300
+cacheTtlSeconds CacheTtl1Hour = 3600
+
+instance FromJSON CacheTtl where
+  parseJSON = withText "CacheTtl" $ \case
+    "5m" -> pure CacheTtl5Min
+    "1h" -> pure CacheTtl1Hour
+    other -> fail $ "Invalid cache_ttl: " <> show other <> ". Expected \"5m\" or \"1h\""
+
 -- | Request to the Claude Messages API
 data MessagesRequest = MessagesRequest
   { -- | Model to use (e.g., "claude-sonnet-4-20250514")
@@ -292,8 +315,8 @@ data MessagesRequest = MessagesRequest
     tools :: [ToolSchema],
     -- | Extended thinking configuration (optional)
     thinking :: Maybe ThinkingConfig,
-    -- | Enable automatic prompt caching
-    cacheControl :: Bool,
+    -- | Prompt caching TTL (Nothing = disabled)
+    cacheControl :: Maybe CacheTtl,
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
     toolSearch :: Maybe (Set ToolName)
   }
@@ -306,11 +329,33 @@ instance ToJSON MessagesRequest where
         "max_tokens" .= req.maxTokens,
         "messages" .= req.messages
       ]
-        ++ maybe [] (\s -> ["system" .= s]) req.system
+        ++ systemField
         ++ toolsField
         ++ maybe [] thinkingFields req.thinking
-        ++ ["cache_control" .= object ["type" .= ("ephemeral" :: Text)] | req.cacheControl]
+        ++ maybe [] (\ttl -> ["cache_control" .= cacheTtlObj ttl]) req.cacheControl
     where
+      -- When caching is enabled, send system as array of content blocks with
+      -- an explicit cache breakpoint.  This ensures the system prompt is
+      -- cached even immediately after compaction, while the top-level
+      -- cache_control still caches the longest possible prefix automatically.
+      systemField :: [Pair]
+      systemField = case (req.system, req.cacheControl) of
+        (Nothing, _) -> []
+        (Just s, Nothing) -> ["system" .= s]
+        (Just s, Just ttl) ->
+          [ "system"
+              .= [ object
+                     [ "type" .= ("text" :: Text),
+                       "text" .= s,
+                       "cache_control" .= cacheTtlObj ttl
+                     ]
+                 ]
+          ]
+
+      cacheTtlObj :: CacheTtl -> Value
+      cacheTtlObj CacheTtl5Min = object ["type" .= ("ephemeral" :: Text)]
+      cacheTtlObj CacheTtl1Hour = object ["type" .= ("ephemeral" :: Text), "ttl" .= ("1h" :: Text)]
+
       toolsField :: [Pair]
       toolsField
         | null req.tools = []

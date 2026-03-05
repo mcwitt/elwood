@@ -12,9 +12,6 @@ module Elwood.Claude.Pruning
     PruneHorizons,
     newPruneHorizons,
     getAndUpdateHorizon,
-
-    -- * Constants
-    anthropicCacheTtl,
   )
 where
 
@@ -26,7 +23,6 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
-import Data.Time (NominalDiffTime)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..))
 import Elwood.Config (PruningConfig (..))
 
@@ -165,11 +161,6 @@ pruneToolInput _ _ block = block
 -- ---------------------------------------------------------------------------
 -- Horizon state
 -- ---------------------------------------------------------------------------
-
--- | Anthropic ephemeral prompt-cache TTL (5 minutes).
--- Must stay in sync with the @cache_control@ object sent in API requests.
-anthropicCacheTtl :: NominalDiffTime
-anthropicCacheTtl = 300
 
 -- | Per-session prune horizon map.  In-memory only; resets on process
 -- restart (which is correct because the API cache is also lost).

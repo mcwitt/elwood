@@ -80,10 +80,14 @@ sendMessages :: ClaudeClient -> MessagesRequest -> IO (Either ClaudeError Messag
 sendMessages client req = do
   httpReq <- buildRequest client
   let body = encode req
+      betaHeaders = case req.cacheControl of
+        Just CacheTtl1Hour -> [("anthropic-beta", "extended-cache-ttl-2025-04-11")]
+        _ -> []
       httpReq' =
         httpReq
           { method = "POST",
-            requestBody = RequestBodyLBS body
+            requestBody = RequestBodyLBS body,
+            requestHeaders = requestHeaders httpReq ++ betaHeaders
           }
 
   response <- httpLbs httpReq' client.manager
