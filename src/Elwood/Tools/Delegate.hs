@@ -14,7 +14,7 @@ import Data.Text qualified as T
 import Elwood.AgentSettings (AgentOverrides (..), AgentSettings (..), resolveAgent, toOverrides)
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
-import Elwood.Claude.Types (CacheTtl, ClaudeMessage (..), ContentBlock (..), Role (..), ToolSchema (..))
+import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..), Role (..), ToolSchema (..))
 import Elwood.Config (CompactionConfig (..), PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
@@ -26,7 +26,7 @@ import Elwood.Tools.Types
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
 -- Model and thinking inherit from the parent agent.
 delegateDefaults :: AgentOverrides
-delegateDefaults = AgentOverrides Nothing Nothing (Just 10)
+delegateDefaults = AgentOverrides Nothing Nothing (Just 10) (Just CacheTtl5Min)
 
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
@@ -49,9 +49,8 @@ mkDelegateTaskTool ::
   MetricsStore ->
   AgentOverrides ->
   [Text] ->
-  CacheTtl ->
   Tool
-mkDelegateTaskTool logger client baseRegistry context agentSettings compaction pruning systemPrompt metrics configOverrides allowedModels cacheTtl =
+mkDelegateTaskTool logger client baseRegistry context agentSettings compaction pruning systemPrompt metrics configOverrides allowedModels =
   Tool
     { schema =
         ToolSchema
@@ -101,8 +100,7 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
                   onBeforeApiCall = Nothing,
                   toolSearch = Nothing,
                   pruningConfig = pruning,
-                  pruneHorizon = 0,
-                  cacheTtl = cacheTtl
+                  pruneHorizon = 0
                 }
             userMsg = ClaudeMessage User [TextBlock di.task]
 
@@ -198,6 +196,6 @@ parseDelegateInput allowedModels (Aeson.Object obj) = do
             else Right (Just i)
     Just _ -> Left "Invalid 'max_iterations' parameter (must be an integer)"
     Nothing -> Right Nothing
-  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam}
+  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cacheTtl = Nothing}
   Right DelegateInput {task, overrides = ovr}
 parseDelegateInput _ _ = Left "Expected object input"

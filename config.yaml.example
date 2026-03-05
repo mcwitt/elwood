@@ -22,6 +22,7 @@ telegram_chats:
     #     type: adaptive
     #     effort: low
     #   max_iterations: 10
+    #   cache_ttl: 5m
 
 # Agent settings (model, thinking, iteration limit)
 agent:
@@ -49,6 +50,12 @@ agent:
   # Default: 20
   max_iterations: 20
 
+  # Prompt cache TTL
+  # Controls the cache lifetime for prompt caching. Longer TTLs cost more for
+  # cache writes but help if requests are spaced more than 5 minutes apart.
+  # Values: "5m" (default, 1.25x write cost) or "1h" (2x write cost)
+  # cache_ttl: 5m
+
 # Delegate sub-agent configuration for delegate_task.
 # The main agent can further override model, thinking, and max_iterations
 # per-call via tool parameters.
@@ -57,6 +64,7 @@ agent:
 #     model: claude-haiku-4-20250414
 #     thinking: off
 #     max_iterations: 10          # default: 10
+#     cache_ttl: 5m
 #   allowed_models:               # models the main agent can choose from
 #     - claude-haiku-4-20250414
 #     - claude-sonnet-4-20250514
@@ -92,12 +100,6 @@ tool_use_messages: true
 #     path: SOUL.md
 #   - type: text
 #     content: "Additional instructions"
-
-# Prompt cache TTL
-# Controls the cache lifetime for prompt caching. Longer TTLs cost more for
-# cache writes but help if requests are spaced more than 5 minutes apart.
-# Values: "5m" (default, 1.25x write cost) or "1h" (2x write cost)
-# cache_ttl: 5m
 
 # Context compaction settings
 # When conversation history exceeds the token threshold, older messages
@@ -180,6 +182,7 @@ webhook:
       #     type: adaptive
       #     effort: low
       #   max_iterations: 5
+      #   cache_ttl: 5m
       delivery_target:                      # where to send responses (default: telegram_broadcast)
         type: telegram_broadcast          # broadcast to all telegram_chats
       # delivery_target:

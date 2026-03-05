@@ -68,13 +68,12 @@ system_prompt:
 agent:
   model: claude-sonnet-4-20250514
   thinking: off  # off | {type: adaptive, effort: medium} | {type: fixed, budget_tokens: 4096}
+  # cache_ttl: 5m  # prompt cache TTL: "5m" (default) or "1h"
 
 # delegate:                      # sub-agent defaults for delegate_task
 #   agent:
 #     model: claude-haiku-4-20250414
 #     max_iterations: 10
-
-# cache_ttl: 5m  # prompt cache TTL: "5m" (default) or "1h"
 
 compaction:
   token_threshold: 50000

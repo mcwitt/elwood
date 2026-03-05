@@ -150,6 +150,6 @@ exampleConfigTests =
         let wh = head webhooks
         wh.deliveryTarget @?= TelegramBroadcast
         -- Verify delegate defaults
-        config.delegateOverrides @?= AgentOverrides Nothing Nothing Nothing
+        config.delegateOverrides @?= AgentOverrides Nothing Nothing Nothing Nothing
         null config.delegateAllowedModels @?= True
     ]

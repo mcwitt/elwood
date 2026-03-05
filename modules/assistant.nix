@@ -48,6 +48,9 @@ let
             }
             // lib.optionalAttrs (agentOvr.maxIterations != null) {
               max_iterations = agentOvr.maxIterations;
+            }
+            // lib.optionalAttrs (agentOvr.cacheTtl != null) {
+              cache_ttl = agentOvr.cacheTtl;
             };
         in
         lib.optionalAttrs (attrs != { }) { agent = attrs; };
@@ -112,9 +115,9 @@ let
           model = agentCfg.agent.model;
           thinking = mkThinkingConfig agentCfg.agent.thinking;
           max_iterations = agentCfg.agent.maxIterations;
+          cache_ttl = agentCfg.agent.cacheTtl;
         };
         tool_use_messages = agentCfg.toolUseMessages;
-        cache_ttl = agentCfg.cacheTtl;
         system_prompt = map mkPromptInputYaml agentCfg.systemPrompt;
 
         permissions = {
@@ -342,6 +345,17 @@ let
       default = null;
       description = "Max iterations override. Null means use the agent's global value.";
     };
+
+    cacheTtl = lib.mkOption {
+      type = lib.types.nullOr (
+        lib.types.enum [
+          "5m"
+          "1h"
+        ]
+      );
+      default = null;
+      description = "Cache TTL override. Null means use the agent's global value.";
+    };
   };
 
   # Options shared between webhook endpoints and cron jobs
@@ -509,6 +523,18 @@ let
             default = 20;
             description = "Maximum agent loop iterations per turn (prevents infinite tool-use loops).";
           };
+
+          cacheTtl = lib.mkOption {
+            type = lib.types.enum [
+              "5m"
+              "1h"
+            ];
+            default = "5m";
+            description = ''
+              Prompt cache TTL. "5m" for 5-minute ephemeral cache (1.25x write cost),
+              "1h" for 1-hour extended cache (2x write cost).
+            '';
+          };
         };
 
         delegate = {
@@ -540,18 +566,6 @@ let
             }
           ];
           description = "System prompt inputs. Assembled in order to form the system prompt.";
-        };
-
-        cacheTtl = lib.mkOption {
-          type = lib.types.enum [
-            "5m"
-            "1h"
-          ];
-          default = "5m";
-          description = ''
-            Prompt cache TTL. "5m" for 5-minute ephemeral cache (1.25x write cost),
-            "1h" for 1-hour extended cache (2x write cost).
-          '';
         };
 
         toolSearch = lib.mkOption {

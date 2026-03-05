@@ -2,7 +2,7 @@ module Test.Elwood.Tools.Delegate (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
 import Data.Text (Text)
-import Elwood.Claude.Types (CacheTtl (..), ToolName (..), ToolSchema (..))
+import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
 import Elwood.Tools.Delegate (mkDelegateTaskTool)
 import Elwood.Tools.Types
 import Test.Tasty
@@ -111,7 +111,7 @@ mkStubDelegateTool :: Tool
 mkStubDelegateTool = mkStubDelegateToolWithModels []
 
 mkStubDelegateToolWithModels :: [Text] -> Tool
-mkStubDelegateToolWithModels models =
+mkStubDelegateToolWithModels =
   mkDelegateTaskTool
     undefined -- logger
     undefined -- client
@@ -123,5 +123,3 @@ mkStubDelegateToolWithModels models =
     undefined -- systemPrompt
     undefined -- metrics
     mempty -- configOverrides
-    models
-    CacheTtl5Min -- cacheTtl

@@ -11,6 +11,7 @@ import Elwood.AgentSettings
     resolveAgent,
     toOverrides,
   )
+import Elwood.Claude.Types (CacheTtl (..))
 import Elwood.Thinking (ThinkingEffort (..), ThinkingLevel (..))
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -44,12 +45,16 @@ instance Arbitrary ThinkingLevel where
         ThinkingBudget . getPositive <$> arbitrary
       ]
 
+instance Arbitrary CacheTtl where
+  arbitrary = elements [CacheTtl5Min, CacheTtl1Hour]
+
 instance Arbitrary AgentOverrides where
   arbitrary =
     AgentOverrides
       <$> arbitrary
       <*> arbitrary
       <*> (fmap getPositive <$> arbitrary)
+      <*> arbitrary
 
 semigroupLawTests :: TestTree
 semigroupLawTests =
@@ -74,15 +79,15 @@ overrideTests =
   testGroup
     "Override semantics"
     [ testCase "right-biased: later Just wins" $ do
-        let a = AgentOverrides (Just "model-a") Nothing Nothing
-            b = AgentOverrides (Just "model-b") Nothing Nothing
+        let a = AgentOverrides (Just "model-a") Nothing Nothing Nothing
+            b = AgentOverrides (Just "model-b") Nothing Nothing Nothing
         (a <> b).model @?= Just "model-b",
       testCase "right-biased: Nothing preserves left" $ do
-        let a = AgentOverrides (Just "model-a") (Just ThinkingOff) (Just 10)
+        let a = AgentOverrides (Just "model-a") (Just ThinkingOff) (Just 10) (Just CacheTtl5Min)
             b = mempty
         (a <> b) @?= a,
       testCase "toOverrides roundtrips through resolveAgent" $ do
-        let s = AgentSettings "model-x" (ThinkingBudget 4096) 15
+        let s = AgentSettings "model-x" (ThinkingBudget 4096) 15 CacheTtl1Hour
         resolveAgent (toOverrides s) @?= s
     ]
 
@@ -98,7 +103,7 @@ resolveTests =
       testCase "agentDefaults resolves to same defaults" $ do
         resolveAgent agentDefaults @?= resolveAgent mempty,
       testCase "overrides are applied" $ do
-        let o = agentDefaults <> AgentOverrides (Just "custom-model") Nothing (Just 50)
+        let o = agentDefaults <> AgentOverrides (Just "custom-model") Nothing (Just 50) Nothing
             s = resolveAgent o
         s.model @?= "custom-model"
         s.thinking @?= ThinkingOff
