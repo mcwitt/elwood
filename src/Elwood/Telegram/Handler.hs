@@ -10,7 +10,8 @@ where
 
 import Control.Exception (SomeException, catch)
 import Data.Aeson (Value (..))
-import Data.ByteString.Base64.Lazy qualified as B64
+import Data.ByteString qualified as BS
+import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as LBS
 import Data.Int (Int64)
 import Data.List (foldl', sortOn)
@@ -40,6 +41,7 @@ import Elwood.Event.Types
     EventSource (..),
     SessionConfig (..),
   )
+import Elwood.Image (ResizeResult (..), resizeImage)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (estimateJsonTokens, estimateTextTokens, recordApiResponse, recordCompaction)
 import Elwood.Notify (Severity (..), formatNotify)
@@ -324,16 +326,30 @@ handleTelegramMessage env msg =
                 if LBS.null rawImageData
                   then pure Nothing
                   else do
-                    -- Determine media type from file extension
-                    let mt = guessMediaType fp
-                        b64 = Base64Data $ TE.decodeUtf8 $ LBS.toStrict $ B64.encode rawImageData
+                    let strictBytes = LBS.toStrict rawImageData
+                        mt = guessMediaType fp
+                        (imageBytes, finalMt, resizeResult) = case env.maxImageDimension of
+                          Nothing -> (strictBytes, mt, Unchanged)
+                          Just maxDim -> resizeImage maxDim strictBytes mt
+                        b64 = Base64Data $ TE.decodeUtf8 $ B64.encode imageBytes
+                    case resizeResult of
+                      DecodeFailed err ->
+                        logWarn
+                          lgr
+                          "Image decode failed, sending original"
+                          [ ("error", T.pack err),
+                            ("media_type", mt.unMediaType),
+                            ("size_bytes", T.pack (show (BS.length strictBytes)))
+                          ]
+                      _ -> pure ()
                     logInfo
                       lgr
                       "Photo downloaded and encoded"
-                      [ ("media_type", mt.unMediaType),
-                        ("size_bytes", T.pack (show (LBS.length rawImageData)))
+                      [ ("media_type", finalMt.unMediaType),
+                        ("original_bytes", T.pack (show (BS.length strictBytes))),
+                        ("final_bytes", T.pack (show (BS.length imageBytes)))
                       ]
-                    pure $ Just ImageData {mediaType = mt, base64Data = b64}
+                    pure $ Just ImageData {mediaType = finalMt, base64Data = b64}
 
     -- Guess media type from file path
     guessMediaType :: Text -> MediaType

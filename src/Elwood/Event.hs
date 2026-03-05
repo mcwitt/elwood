@@ -126,7 +126,9 @@ data AppEnv = AppEnv
     -- | Delegate sub-agent overrides (model, thinking, max_iterations)
     delegateOverrides :: AgentOverrides,
     -- | Allowed models for delegate_task tool parameter
-    delegateAllowedModels :: [Text]
+    delegateAllowedModels :: [Text],
+    -- | Maximum image dimension for resizing (Nothing = disabled)
+    maxImageDimension :: Maybe Int
   }
 
 -- | Callbacks wired into the agent loop for delivery during a turn

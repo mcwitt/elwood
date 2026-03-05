@@ -117,6 +117,7 @@ let
           max_iterations = agentCfg.agent.maxIterations;
           cache_ttl = agentCfg.agent.cacheTtl;
         };
+        max_image_dimension = agentCfg.maxImageDimension;
         tool_use_messages = agentCfg.toolUseMessages;
         system_prompt = map mkPromptInputYaml agentCfg.systemPrompt;
 
@@ -549,6 +550,12 @@ let
               "claude-sonnet-4-20250514"
             ];
           };
+        };
+
+        maxImageDimension = lib.mkOption {
+          type = lib.types.nullOr lib.types.int;
+          default = 1568;
+          description = "Maximum image dimension in pixels. Images exceeding this are resized before sending to the Claude API. Null disables resizing.";
         };
 
         toolUseMessages = lib.mkOption {

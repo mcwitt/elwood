@@ -102,7 +102,9 @@ data Config = Config
     -- | Delegate sub-agent overrides (model, thinking, max_iterations)
     delegateOverrides :: AgentOverrides,
     -- | Allowed models for delegate_task tool parameter
-    delegateAllowedModels :: [Text]
+    delegateAllowedModels :: [Text],
+    -- | Maximum image dimension (Nothing = disabled, Just n = resize to n)
+    maxImageDimension :: Maybe Int
   }
   deriving stock (Show, Generic)
 
@@ -179,7 +181,10 @@ data ConfigFile = ConfigFile
     toolSearch :: Maybe Value,
     systemPrompt :: Maybe [PromptInputFile],
     toolUseMessages :: Maybe Bool,
-    delegate :: Maybe DelegateConfigFile
+    delegate :: Maybe DelegateConfigFile,
+    -- | Outer Nothing = absent (use default); Just Nothing = explicit null (disabled);
+    -- Just (Just n) = explicit value
+    maxImageDimension :: Maybe (Maybe Int)
   }
   deriving stock (Show, Generic)
 
@@ -336,7 +341,7 @@ instance FromJSON TelegramChatConfigFile where
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "agent", "permissions", "compaction", "pruning", "mcp_servers", "webhook", "tool_search", "system_prompt", "tool_use_messages", "delegate"] v
+    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "agent", "permissions", "compaction", "pruning", "mcp_servers", "webhook", "tool_search", "system_prompt", "tool_use_messages", "delegate", "max_image_dimension"] v
     ConfigFile
       <$> v .:? "state_dir"
       <*> v .:? "workspace_dir"
@@ -351,6 +356,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "system_prompt"
       <*> v .:? "tool_use_messages"
       <*> v .:? "delegate"
+      <*> v .:? "max_image_dimension"
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v -> do
@@ -494,6 +500,17 @@ loadConfig path = do
   when (nub chatIds /= chatIds) $
     fail "telegram_chats contains duplicate chat IDs"
 
+  -- Resolve max_image_dimension: absent -> Just 1568, null -> Nothing, value -> Just value
+  let maxImgDim = case configFile.maxImageDimension of
+        Nothing -> Just 1568
+        Just Nothing -> Nothing
+        Just (Just n) -> Just n
+
+  -- Validate max_image_dimension >= 50
+  case maxImgDim of
+    Just n | n < 50 -> fail "max_image_dimension must be >= 50"
+    _ -> pure ()
+
   let delCfg = fromMaybe (DelegateConfigFile mempty Nothing) configFile.delegate
 
   pure
@@ -513,7 +530,8 @@ loadConfig path = do
         systemPrompt = systemPrompt_,
         toolUseMessages = fromMaybe True configFile.toolUseMessages,
         delegateOverrides = delCfg.agentOverrides,
-        delegateAllowedModels = fromMaybe [] delCfg.allowedModels
+        delegateAllowedModels = fromMaybe [] delCfg.allowedModels,
+        maxImageDimension = maxImgDim
       }
 
 -- | Parse tool search configuration from a YAML value

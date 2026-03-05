@@ -69,6 +69,12 @@ agent:
 #     - claude-haiku-4-20250414
 #     - claude-sonnet-4-20250514
 
+# Maximum image dimension (pixels) for images sent to the Claude API.
+# Images exceeding this are resized (preserving aspect ratio) before sending.
+# Set to null to disable resizing and send original images.
+# Default: 1568 (Claude's native processing resolution)
+max_image_dimension: 1568
+
 # Send notification messages when the agent uses tools (e.g. "🔧 Using bash")
 # Default: true
 tool_use_messages: true

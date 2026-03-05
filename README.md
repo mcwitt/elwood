@@ -17,7 +17,7 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Persistent memory** — Cross-session knowledge store
 - **Scheduled tasks** — Cron jobs via systemd timers that call webhooks
 - **Tool approval flow** — Approve sensitive operations via inline keyboard (Telegram only; webhook-triggered runs deny `ask` tools)
-- **Image support** — Send photos and Claude can see them
+- **Image support** — Send photos and Claude can see them (auto-resized to save tokens)
 - **Extended thinking** — Configurable reasoning budget for complex tasks
 - **Task delegation** — Spawn sub-agents with isolated context for tool-heavy tasks
 - **Context compaction** — Automatic summarization for long conversations
