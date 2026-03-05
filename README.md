@@ -79,6 +79,7 @@ agent:
 compaction:
   token_threshold: 50000
   model: claude-3-5-haiku-20241022
+  # strategy: { keep_last_turns: 10 }  # or { keep_last_fraction: 0.25 }
 
 permissions:
   default_policy: allow  # allow | ask | deny

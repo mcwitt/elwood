@@ -23,7 +23,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..))
+import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), turnBoundaryIndices)
 import Elwood.Config (PruningConfig (..))
 
 -- | Conservative overhead estimate for the pruning indicator text.
@@ -60,17 +60,11 @@ protectedBoundary :: Int -> [ClaudeMessage] -> Int
 protectedBoundary keepN msgs
   | keepN <= 0 = length msgs -- protect nothing
   | otherwise =
-      let -- Collect indices of user messages containing a TextBlock (turn boundaries)
-          turnIndices =
-            [ i
-            | (i, ClaudeMessage User blocks) <- zip [0 ..] msgs,
-              any isTextBlock blocks
-            ]
-          isTextBlock (TextBlock _) = True
-          isTextBlock _ = False
-       in case drop (length turnIndices - keepN) turnIndices of
-            (i : _) -> i
-            [] -> 0 -- fewer turns than keepN → protect everything
+      case drop (length bs - keepN) bs of
+        (i : _) -> i
+        [] -> 0 -- fewer turns than keepN → protect everything
+  where
+    bs = turnBoundaryIndices msgs
 
 -- | Replace tool-result content with soft-pruned versions in messages before
 -- the effective horizon.  The effective horizon is the minimum of the given

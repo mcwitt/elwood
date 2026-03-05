@@ -8,12 +8,13 @@ module Elwood.Claude.Compaction
 
     -- * Re-export config
     CompactionConfig (..),
+    CompactionStrategy (..),
 
     -- * Exported for testing
     defaultCompactionPrompt,
     extractText,
     formatMessagesForSummary,
-    safeSplit,
+    strategySplit,
   )
 where
 
@@ -24,7 +25,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Claude.Client (ClaudeClient, sendMessages)
 import Elwood.Claude.Types
-import Elwood.Config (CompactionConfig (..))
+import Elwood.Config (CompactionConfig (..), CompactionStrategy (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
 
 -- | Estimate the number of tokens in a message list
@@ -69,46 +70,50 @@ compactMessages ::
   (StopReason -> Usage -> IO ()) ->
   [ClaudeMessage] ->
   IO [ClaudeMessage]
-compactMessages logger client config onCompaction onApiResponse msgs = do
-  -- Split messages: keep recent half, summarize old half
-  -- We must be careful not to split in the middle of a tool_use/tool_result pair
-  let totalMsgs = length msgs
-      splitPoint = totalMsgs `div` 2
-      (oldMsgs, recentMsgs) = safeSplit splitPoint msgs
-
-  logInfo
-    logger
-    "Compacting messages"
-    [ ("old_messages", T.pack (show (length oldMsgs))),
-      ("recent_messages", T.pack (show (length recentMsgs)))
-    ]
-
-  -- Record compaction event
-  onCompaction
-
-  -- Generate summary of old messages
-  summaryResult <- summarizeMessages client config onApiResponse oldMsgs
-
-  case summaryResult of
-    Left err -> do
-      logWarn logger "Compaction failed, keeping original" [("error", err)]
-      -- If summarization fails, just truncate to recent messages
-      pure recentMsgs
-    Right summary -> do
+compactMessages logger client config onCompaction onApiResponse msgs =
+  case strategySplit config.strategy config.tokenThreshold msgs of
+    Nothing -> do
+      logWarn
+        logger
+        "Compaction no-op: all messages fall in keep region"
+        [ ("strategy", T.pack (show config.strategy)),
+          ("message_count", T.pack (show (length msgs)))
+        ]
+      pure msgs
+    Just (oldMsgs, recentMsgs) -> do
       logInfo
         logger
-        "Compaction successful"
-        [("summary_length", T.pack (show (T.length summary)))]
-      -- Create a synthetic message with the summary
-      let summaryMsg =
-            ClaudeMessage
-              { role = User,
-                content =
-                  [ TextBlock $
-                      "[Previous conversation summary]\n\n" <> summary
-                  ]
-              }
-      pure $ summaryMsg : recentMsgs
+        "Compacting messages"
+        [ ("old_messages", T.pack (show (length oldMsgs))),
+          ("recent_messages", T.pack (show (length recentMsgs)))
+        ]
+
+      -- Record compaction event
+      onCompaction
+
+      -- Generate summary of old messages
+      summaryResult <- summarizeMessages client config onApiResponse oldMsgs
+
+      case summaryResult of
+        Left err -> do
+          logWarn logger "Compaction failed, keeping original" [("error", err)]
+          -- If summarization fails, just truncate to recent messages
+          pure recentMsgs
+        Right summary -> do
+          logInfo
+            logger
+            "Compaction successful"
+            [("summary_length", T.pack (show (T.length summary)))]
+          -- Create a synthetic message with the summary
+          let summaryMsg =
+                ClaudeMessage
+                  { role = User,
+                    content =
+                      [ TextBlock $
+                          "[Previous conversation summary]\n\n" <> summary
+                      ]
+                  }
+          pure $ summaryMsg : recentMsgs
 
 -- | Default structured compaction prompt.
 --
@@ -205,40 +210,58 @@ extractText :: [ContentBlock] -> Text
 extractText blocks =
   T.intercalate "\n" [t | TextBlock t <- blocks]
 
--- | Split messages at a safe boundary that doesn't break tool_use/tool_result pairs
--- If the split point would leave tool_results without their tool_uses,
--- adjust the split to include both in the recent messages
-safeSplit :: Int -> [ClaudeMessage] -> ([ClaudeMessage], [ClaudeMessage])
-safeSplit splitPoint msgs =
-  let (old, recent) = splitAt splitPoint msgs
-   in if startsWithToolResult recent
-        then adjustSplit old recent
-        else (old, recent)
-  where
-    -- Check if messages start with a user message containing tool_result blocks
-    startsWithToolResult :: [ClaudeMessage] -> Bool
-    startsWithToolResult [] = False
-    startsWithToolResult (m : _) =
-      m.role == User && any isToolResult m.content
+-- | Split messages according to a compaction strategy.
+--
+-- Returns @Nothing@ when all messages fall in the keep region (no-op).
+-- Otherwise returns @Just (old, recent)@ where @old@ will be compacted
+-- and @recent@ kept verbatim.
+strategySplit :: CompactionStrategy -> Int -> [ClaudeMessage] -> Maybe ([ClaudeMessage], [ClaudeMessage])
+strategySplit (KeepLastTurns n) _threshold msgs =
+  let boundaries = turnBoundaryIndices msgs
+   in -- We need at least n+1 boundaries: n to keep, 1+ to compact
+      case drop (length boundaries - n) boundaries of
+        (splitIdx : _)
+          | splitIdx > 0 -> nonEmptySplit splitIdx msgs
+        _ -> Nothing
+strategySplit (KeepLastFraction f) threshold msgs =
+  let keepTokens = floor (f * fromIntegral threshold) :: Int
+      boundaries = turnBoundaryIndices msgs
+      -- Walk backward through messages, accumulating token estimates
+      -- until we've accounted for keepTokens. The split point is the
+      -- index of the first message in the keep region.
+      splitIdx = findKeepBoundary keepTokens (reverse (zip [0 ..] msgs))
+      -- Snap to the first turn boundary at or after the raw split point,
+      -- so the keep region starts at a clean turn boundary.
+      snapped = firstBoundaryAtOrAfter splitIdx boundaries
+   in case snapped of
+        Nothing -> Nothing
+        Just idx
+          | idx <= 0 -> Nothing
+          | otherwise -> nonEmptySplit idx msgs
 
-    isToolResult :: ContentBlock -> Bool
-    isToolResult (ToolResultBlock {}) = True
-    isToolResult _ = False
+-- | Walk backward through indexed messages, accumulating token estimates.
+-- Returns the index where the accumulated tokens first reach the budget.
+-- If all messages fit within the budget, returns 0.
+findKeepBoundary :: Int -> [(Int, ClaudeMessage)] -> Int
+findKeepBoundary _ [] = 0
+findKeepBoundary budget ((i, m) : rest)
+  | budget <= 0 = i + 1 -- previous message exhausted the budget
+  | otherwise = findKeepBoundary (budget - estimateTokens [m]) rest
 
-    -- Move messages from old to recent until we find the matching tool_use
-    adjustSplit :: [ClaudeMessage] -> [ClaudeMessage] -> ([ClaudeMessage], [ClaudeMessage])
-    adjustSplit [] recent = ([], recent)
-    adjustSplit old recent =
-      let lastOld = last old
-          initOld = init old
-       in if hasToolUse lastOld
-            then (initOld, lastOld : recent)
-            else adjustSplit initOld (lastOld : recent)
+-- | Find the first turn boundary index that is >= the given position.
+-- Returns Nothing if no such boundary exists (all messages are in keep region).
+firstBoundaryAtOrAfter :: Int -> [Int] -> Maybe Int
+firstBoundaryAtOrAfter pos boundaries =
+  case filter (>= pos) boundaries of
+    (b : _) -> Just b
+    [] -> Nothing
 
-    hasToolUse :: ClaudeMessage -> Bool
-    hasToolUse m =
-      m.role == Assistant && any isToolUse m.content
-
-    isToolUse :: ContentBlock -> Bool
-    isToolUse (ToolUseBlock {}) = True
-    isToolUse _ = False
+-- | Split at the given index; return Nothing if @old@ would be empty.
+-- Since 'strategySplit' always splits at turn boundaries (user messages
+-- with a TextBlock), the split can never land in the middle of a
+-- tool_use/tool_result pair.
+nonEmptySplit :: Int -> [ClaudeMessage] -> Maybe ([ClaudeMessage], [ClaudeMessage])
+nonEmptySplit splitIdx msgs =
+  case splitAt splitIdx msgs of
+    ([], _) -> Nothing
+    result -> Just result

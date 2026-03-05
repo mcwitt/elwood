@@ -2,8 +2,9 @@ module Test.Elwood.Claude.Compaction (tests) where
 
 import Data.Aeson qualified as Aeson
 import Data.Text qualified as T
-import Elwood.Claude.Compaction (estimateTokens, extractText, formatMessagesForSummary, safeSplit)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolUseId (..))
+import Elwood.Claude.Compaction (estimateTokens, extractText, formatMessagesForSummary, strategySplit)
+import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolUseId (..), turnBoundaryIndices)
+import Elwood.Config (CompactionStrategy (..))
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
@@ -15,7 +16,7 @@ tests =
     [ estimateTokensTests,
       extractTextTests,
       formatMessagesTests,
-      safeSplitTests,
+      strategySplitTests,
       estimateTokensProperties
     ]
 
@@ -105,71 +106,119 @@ formatMessagesTests =
         T.isSuffixOf "..." formatted @?= True
     ]
 
-safeSplitTests :: TestTree
-safeSplitTests =
+strategySplitTests :: TestTree
+strategySplitTests =
   testGroup
-    "safeSplit"
-    [ testCase "splits normally when no tool_result at boundary" $ do
-        let msgs =
-              [ ClaudeMessage User [TextBlock "Hello"],
-                ClaudeMessage Assistant [TextBlock "Hi there"],
-                ClaudeMessage User [TextBlock "How are you?"],
-                ClaudeMessage Assistant [TextBlock "I'm good"]
-              ]
-            (old, recent) = safeSplit 2 msgs
-        length old @?= 2
-        length recent @?= 2,
-      testCase "adjusts split when tool_result at boundary" $ do
-        let msgs =
-              [ ClaudeMessage User [TextBlock "Hello"],
-                ClaudeMessage Assistant [ToolUseBlock (ToolUseId "tool-1") "some_tool" (Aeson.object [])],
-                ClaudeMessage User [ToolResultBlock (ToolUseId "tool-1") "result" False],
-                ClaudeMessage Assistant [TextBlock "Done"]
-              ]
-            -- Naive split at 2 would put tool_result in recent without its tool_use
-            (old, recent) = safeSplit 2 msgs
-        -- Should adjust to include the tool_use message in recent
-        length old @?= 1
-        length recent @?= 3,
-      testCase "handles multiple tool_use/tool_result pairs" $ do
-        let msgs =
-              [ ClaudeMessage User [TextBlock "Do two things"],
-                ClaudeMessage Assistant [ToolUseBlock (ToolUseId "tool-1") "first_tool" (Aeson.object [])],
-                ClaudeMessage User [ToolResultBlock (ToolUseId "tool-1") "result1" False],
-                ClaudeMessage Assistant [ToolUseBlock (ToolUseId "tool-2") "second_tool" (Aeson.object [])],
-                ClaudeMessage User [ToolResultBlock (ToolUseId "tool-2") "result2" False],
-                ClaudeMessage Assistant [TextBlock "Both done"]
-              ]
-            -- Split at 4 would put tool_result at start of recent
-            (old, recent) = safeSplit 4 msgs
-        -- Should adjust to include the tool_use
-        length old @?= 3
-        length recent @?= 3,
-      testCase "handles empty list" $ do
-        let (old, recent) = safeSplit 0 ([] :: [ClaudeMessage])
-        old @?= []
-        recent @?= [],
-      testCase "handles split at 0" $ do
-        let msgs = [ClaudeMessage User [TextBlock "Hello"]]
-            (old, recent) = safeSplit 0 msgs
-        old @?= []
-        length recent @?= 1,
-      testCase "handles split beyond length" $ do
-        let msgs = [ClaudeMessage User [TextBlock "Hello"]]
-            (old, recent) = safeSplit 10 msgs
-        length old @?= 1
-        recent @?= [],
-      testCase "no adjustment needed when recent starts with text" $ do
-        let msgs =
-              [ ClaudeMessage Assistant [ToolUseBlock (ToolUseId "tool-1") "some_tool" (Aeson.object [])],
-                ClaudeMessage User [ToolResultBlock (ToolUseId "tool-1") "result" False],
-                ClaudeMessage User [TextBlock "Thanks"],
-                ClaudeMessage Assistant [TextBlock "You're welcome"]
-              ]
-            -- Split at 2 puts text message at start of recent
-            (old, recent) = safeSplit 2 msgs
-        length old @?= 2
-        length recent @?= 2
+    "strategySplit"
+    [ testGroup
+        "KeepLastTurns"
+        [ testCase "keeps last N turns, compacts the rest" $ do
+            -- 3 turns: user/assistant pairs with text boundaries
+            let msgs =
+                  [ ClaudeMessage User [TextBlock "Turn 1"],
+                    ClaudeMessage Assistant [TextBlock "Response 1"],
+                    ClaudeMessage User [TextBlock "Turn 2"],
+                    ClaudeMessage Assistant [TextBlock "Response 2"],
+                    ClaudeMessage User [TextBlock "Turn 3"],
+                    ClaudeMessage Assistant [TextBlock "Response 3"]
+                  ]
+            case strategySplit (KeepLastTurns 2) 50000 msgs of
+              Nothing -> assertFailure "Expected Just, got Nothing"
+              Just (old, recent) -> do
+                length old @?= 2 -- Turn 1 + Response 1
+                length recent @?= 4,
+          testCase "returns Nothing when <= N turns exist" $ do
+            let msgs =
+                  [ ClaudeMessage User [TextBlock "Turn 1"],
+                    ClaudeMessage Assistant [TextBlock "Response 1"],
+                    ClaudeMessage User [TextBlock "Turn 2"],
+                    ClaudeMessage Assistant [TextBlock "Response 2"]
+                  ]
+            strategySplit (KeepLastTurns 2) 50000 msgs @?= Nothing
+            strategySplit (KeepLastTurns 3) 50000 msgs @?= Nothing,
+          testCase "splits at turn boundary with tool pairs before it" $ do
+            -- Turn boundaries at 0, 3, 5. KeepLastTurns 2 splits at index 3.
+            -- Tool pairs before the boundary stay in old.
+            let msgs =
+                  [ ClaudeMessage User [TextBlock "Turn 1"],
+                    ClaudeMessage Assistant [ToolUseBlock (ToolUseId "t1") "tool" (Aeson.object [])],
+                    ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "result" False],
+                    ClaudeMessage User [TextBlock "Turn 2"],
+                    ClaudeMessage Assistant [TextBlock "Response 2"],
+                    ClaudeMessage User [TextBlock "Turn 3"],
+                    ClaudeMessage Assistant [TextBlock "Response 3"]
+                  ]
+            case strategySplit (KeepLastTurns 2) 50000 msgs of
+              Nothing -> assertFailure "Expected Just, got Nothing"
+              Just (old, recent) -> do
+                length old @?= 3 -- Turn 1 + tool_use + tool_result
+                length recent @?= 4,
+          testCase "empty message list returns Nothing" $
+            strategySplit (KeepLastTurns 5) 50000 [] @?= Nothing
+        ],
+      testGroup
+        "KeepLastFraction"
+        [ testCase "small fraction compacts most messages" $ do
+            -- Make turn 1 very large so it dominates the token count.
+            -- Use a very large threshold so the fraction math gives a
+            -- keep budget smaller than the big message.
+            let bigText = T.replicate 2000 "word "
+                msgs =
+                  [ ClaudeMessage User [TextBlock "Turn 1"],
+                    ClaudeMessage Assistant [TextBlock bigText],
+                    ClaudeMessage User [TextBlock "Turn 2"],
+                    ClaudeMessage Assistant [TextBlock "Short"],
+                    ClaudeMessage User [TextBlock "Turn 3"],
+                    ClaudeMessage Assistant [TextBlock "Short"]
+                  ]
+                -- Use a threshold large enough that 0.01 * threshold
+                -- still exceeds the small messages but not the big one
+                threshold = estimateTokens msgs * 10
+            case strategySplit (KeepLastFraction 0.01) threshold msgs of
+              Nothing -> assertFailure "Expected Just, got Nothing"
+              Just (old, recent) -> do
+                -- Turn boundaries: 0, 2, 4. The big message is in turn 1.
+                assertBool "old should be non-empty" (not (null old))
+                assertBool "recent should be non-empty" (not (null recent))
+                -- The split should land on a turn boundary
+                let recentBoundaries = turnBoundaryIndices recent
+                assertBool "recent starts at a turn boundary" (not (null recentBoundaries)),
+          testCase "large fraction keeps most messages" $ do
+            let msgs =
+                  [ ClaudeMessage User [TextBlock "Turn 1"],
+                    ClaudeMessage Assistant [TextBlock "Response 1"],
+                    ClaudeMessage User [TextBlock "Turn 2"],
+                    ClaudeMessage Assistant [TextBlock "Response 2"],
+                    ClaudeMessage User [TextBlock "Turn 3"],
+                    ClaudeMessage Assistant [TextBlock "Response 3"]
+                  ]
+                totalTokens = estimateTokens msgs
+            -- fraction=1.0 means keep all tokens → no-op
+            strategySplit (KeepLastFraction 1.0) totalTokens msgs @?= Nothing,
+          testCase "returns Nothing when all messages fit in keep region" $ do
+            let msgs =
+                  [ ClaudeMessage User [TextBlock "Hello"],
+                    ClaudeMessage Assistant [TextBlock "Hi"]
+                  ]
+            -- threshold much larger than actual tokens
+            strategySplit (KeepLastFraction 1.0) 100000 msgs @?= Nothing,
+          testCase "empty message list returns Nothing" $
+            strategySplit (KeepLastFraction 0.25) 50000 [] @?= Nothing
+        ],
+      testGroup
+        "turnBoundaryIndices"
+        [ testCase "identifies user messages with TextBlock" $ do
+            let msgs =
+                  [ ClaudeMessage User [TextBlock "Hello"],
+                    ClaudeMessage Assistant [TextBlock "Hi"],
+                    ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "res" False],
+                    ClaudeMessage User [TextBlock "Question"],
+                    ClaudeMessage Assistant [TextBlock "Answer"]
+                  ]
+            turnBoundaryIndices msgs @?= [0, 3],
+          testCase "empty list" $
+            turnBoundaryIndices [] @?= []
+        ]
     ]
 
 estimateTokensProperties :: TestTree

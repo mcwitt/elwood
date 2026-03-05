@@ -105,6 +105,10 @@ tool_use_messages: true
 compaction:
   token_threshold: 50000             # default: 50000
   model: claude-3-5-haiku-20241022  # default: claude-3-5-haiku-20241022
+  # Strategy for splitting messages into compact vs keep regions.
+  # { keep_last_turns: N } — keep last N turns verbatim, compact the rest (default: 10)
+  # { keep_last_fraction: F } — keep ~(F * token_threshold) tokens from the end
+  # strategy: { keep_last_turns: 10 }
   # Custom compaction prompt (conversation text is appended automatically).
   # Default: built-in structured prompt with User Profile/Projects & Goals/
   # Key Facts & Decisions/Progress/Open Threads sections.

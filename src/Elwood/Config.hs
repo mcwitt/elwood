@@ -4,6 +4,7 @@ module Elwood.Config
   ( Config (..),
     TelegramChatConfig (..),
     CompactionConfig (..),
+    CompactionStrategy (..),
     PruningConfig (..),
     MCPServerConfig (..),
     PermissionConfig (..),
@@ -17,6 +18,7 @@ where
 import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Data.Aeson
+import Data.Aeson.KeyMap qualified as KM
 import Data.Int (Int64)
 import Data.List (nub)
 import Data.Map.Strict (Map)
@@ -46,6 +48,27 @@ import Elwood.Webhook.Types
   )
 import GHC.Generics (Generic)
 import System.Environment (lookupEnv)
+
+-- | Strategy for deciding which messages to compact vs keep verbatim
+data CompactionStrategy
+  = -- | Keep last N turns verbatim, compact the rest
+    KeepLastTurns Int
+  | -- | Keep ~(fraction * tokenThreshold) tokens from the end
+    KeepLastFraction Double
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON CompactionStrategy where
+  parseJSON = withObject "CompactionStrategy" $ \v ->
+    case KM.keys v of
+      ["keep_last_turns"] -> do
+        n <- v .: "keep_last_turns"
+        when (n < 1) $ fail "keep_last_turns must be >= 1"
+        pure (KeepLastTurns n)
+      ["keep_last_fraction"] -> do
+        f <- v .: "keep_last_fraction"
+        when (f <= 0 || f > 1) $ fail "keep_last_fraction must be in (0, 1]"
+        pure (KeepLastFraction f)
+      _ -> fail "CompactionStrategy must have exactly one key: keep_last_turns or keep_last_fraction"
 
 -- | Main configuration for Elwood
 data Config = Config
@@ -93,7 +116,9 @@ data CompactionConfig = CompactionConfig
     -- | Model to use for summarization (e.g., "claude-3-5-haiku-20241022")
     model :: Text,
     -- | Custom compaction prompt (Nothing = use built-in structured default)
-    prompt :: Maybe Text
+    prompt :: Maybe Text,
+    -- | Strategy for splitting messages into compact vs keep regions
+    strategy :: CompactionStrategy
   }
   deriving stock (Show, Generic)
 
@@ -208,7 +233,8 @@ resolvePermissions pcf =
 data CompactionConfigFile = CompactionConfigFile
   { tokenThreshold :: Maybe Int,
     model :: Maybe Text,
-    prompt :: Maybe Text
+    prompt :: Maybe Text,
+    strategy :: Maybe CompactionStrategy
   }
   deriving stock (Show, Generic)
 
@@ -218,11 +244,12 @@ instance Semigroup CompactionConfigFile where
     CompactionConfigFile
       { tokenThreshold = b.tokenThreshold <|> a.tokenThreshold,
         model = b.model <|> a.model,
-        prompt = b.prompt <|> a.prompt
+        prompt = b.prompt <|> a.prompt,
+        strategy = b.strategy <|> a.strategy
       }
 
 instance Monoid CompactionConfigFile where
-  mempty = CompactionConfigFile Nothing Nothing Nothing
+  mempty = CompactionConfigFile Nothing Nothing Nothing Nothing
 
 -- | Default compaction overrides (all 'Just' with hardcoded defaults).
 compactionDefaults :: CompactionConfigFile
@@ -230,7 +257,8 @@ compactionDefaults =
   CompactionConfigFile
     { tokenThreshold = Just 50000,
       model = Just "claude-3-5-haiku-20241022",
-      prompt = Nothing
+      prompt = Nothing,
+      strategy = Just (KeepLastTurns 10)
     }
 
 -- | Resolve a partial compaction config to concrete values.
@@ -239,7 +267,8 @@ resolveCompaction ccf =
   CompactionConfig
     { tokenThreshold = fromMaybe 50000 ccf.tokenThreshold,
       model = fromMaybe "claude-3-5-haiku-20241022" ccf.model,
-      prompt = ccf.prompt
+      prompt = ccf.prompt,
+      strategy = fromMaybe (KeepLastTurns 10) ccf.strategy
     }
 
 -- | Pruning configuration from YAML file
@@ -340,11 +369,12 @@ instance FromJSON PermissionConfigFile where
 
 instance FromJSON CompactionConfigFile where
   parseJSON = withObject "CompactionConfigFile" $ \v -> do
-    rejectUnknownKeys "CompactionConfigFile" ["token_threshold", "model", "prompt"] v
+    rejectUnknownKeys "CompactionConfigFile" ["token_threshold", "model", "prompt", "strategy"] v
     CompactionConfigFile
       <$> v .:? "token_threshold"
       <*> v .:? "model"
       <*> v .:? "prompt"
+      <*> v .:? "strategy"
 
 instance FromJSON PruningConfigFile where
   parseJSON = withObject "PruningConfigFile" $ \v -> do

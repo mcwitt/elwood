@@ -128,6 +128,11 @@ let
         compaction = {
           token_threshold = agentCfg.compaction.tokenThreshold;
           model = agentCfg.compaction.model;
+          strategy =
+            if agentCfg.compaction.strategy.type == "keep_last_turns" then
+              { keep_last_turns = agentCfg.compaction.strategy.keepLastTurns; }
+            else
+              { keep_last_fraction = agentCfg.compaction.strategy.keepLastFraction; };
         }
         // lib.optionalAttrs (agentCfg.compaction.prompt != null) {
           prompt = agentCfg.compaction.prompt;
@@ -619,6 +624,29 @@ let
             type = lib.types.nullOr lib.types.str;
             default = null;
             description = "Custom compaction prompt. Null uses the built-in structured prompt.";
+          };
+
+          strategy = {
+            type = lib.mkOption {
+              type = lib.types.enum [
+                "keep_last_turns"
+                "keep_last_fraction"
+              ];
+              default = "keep_last_turns";
+              description = "Compaction strategy type.";
+            };
+
+            keepLastTurns = lib.mkOption {
+              type = lib.types.int;
+              default = 10;
+              description = "Number of turns to keep verbatim (keep_last_turns strategy).";
+            };
+
+            keepLastFraction = lib.mkOption {
+              type = lib.types.float;
+              default = 0.25;
+              description = "Fraction of token_threshold to keep from the end (keep_last_fraction strategy).";
+            };
           };
         };
 

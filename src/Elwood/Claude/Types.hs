@@ -6,6 +6,9 @@ module Elwood.Claude.Types
     ClaudeMessage (..),
     Conversation (..),
 
+    -- * Message utilities
+    turnBoundaryIndices,
+
     -- * Content Blocks
     ContentBlock (..),
 
@@ -449,3 +452,16 @@ data ClaudeError
   deriving stock (Show, Eq)
 
 instance Exception ClaudeError
+
+-- | Indices of user messages that contain a 'TextBlock' (turn boundaries).
+-- A turn boundary marks human-initiated input, as opposed to user messages
+-- that contain only 'ToolResultBlock' (tool results within an agent loop).
+turnBoundaryIndices :: [ClaudeMessage] -> [Int]
+turnBoundaryIndices msgs =
+  [ i
+  | (i, ClaudeMessage User blocks) <- zip [0 ..] msgs,
+    any isTextBlock blocks
+  ]
+  where
+    isTextBlock (TextBlock _) = True
+    isTextBlock _ = False

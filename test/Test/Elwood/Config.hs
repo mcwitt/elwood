@@ -5,6 +5,7 @@ import Data.Vector qualified as V
 import Elwood.AgentSettings (AgentOverrides (..), AgentSettings (..))
 import Elwood.Config
   ( CompactionConfig (..),
+    CompactionStrategy (..),
     Config (..),
     TelegramChatConfig (..),
     loadConfig,
@@ -37,12 +38,14 @@ compactionConfigTests =
               CompactionConfig
                 { tokenThreshold = 50000,
                   model = "claude-3-5-haiku-20241022",
-                  prompt = Nothing
+                  prompt = Nothing,
+                  strategy = KeepLastTurns 10
                 }
         cc.tokenThreshold @?= 50000
-        cc.model @?= "claude-3-5-haiku-20241022",
+        cc.model @?= "claude-3-5-haiku-20241022"
+        cc.strategy @?= KeepLastTurns 10,
       testCase "threshold is reasonable" $ do
-        let cc = CompactionConfig 30000 "model" Nothing
+        let cc = CompactionConfig 30000 "model" Nothing (KeepLastTurns 5)
         -- Threshold should be positive and reasonable
         cc.tokenThreshold > 0 @?= True
         cc.tokenThreshold < 1000000 @?= True
@@ -140,6 +143,7 @@ exampleConfigTests =
         tc.id_ @?= 123456789
         tc.session @?= Named "main"
         config.compaction.tokenThreshold @?= 50000
+        config.compaction.strategy @?= KeepLastTurns 10
         -- Verify delivery target from example config
         let webhooks = config.webhook.webhooks
         length webhooks @?= 1
