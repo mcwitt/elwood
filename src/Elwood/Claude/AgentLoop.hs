@@ -7,6 +7,8 @@ module Elwood.Claude.AgentLoop
   )
 where
 
+import Control.Concurrent.Async (mapConcurrently)
+import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import Data.Aeson (Value (..), encode)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Set (Set)
@@ -282,7 +284,17 @@ executeToolUses ::
   AgentContext ->
   [ContentBlock] ->
   IO [ToolResult]
-executeToolUses lgr reg ctx = mapM (executeToolUse lgr reg ctx)
+executeToolUses lgr reg ctx = mapConcurrently execSafe
+  where
+    execSafe block = do
+      r <- try @SomeException (executeToolUse lgr reg ctx block)
+      case r of
+        Right result -> pure result
+        Left e
+          | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
+          | otherwise -> do
+              logError lgr "Tool execution threw exception" [("error", T.pack (show e))]
+              pure $ ToolError $ "Tool execution failed: " <> T.take 500 (T.pack (show e))
 
 -- | Extract text content from content blocks
 extractTextContent :: [ContentBlock] -> Text
