@@ -33,6 +33,7 @@ import Elwood.Logging
 import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
 import Elwood.Metrics (newMetricsStore, setMCPServerCount)
+import Elwood.Positive (unPositive)
 import Elwood.Session (newSessionLocks)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Telegram.Handler (handleTelegramMessage)
@@ -72,7 +73,7 @@ runApp config = do
   let perms = config.permissions :: PermissionConfig
       timeoutSecs = perms.approvalTimeoutSeconds
   approvalCoordinator <- newApprovalCoordinator timeoutSecs
-  logInfo logger "Approval coordinator initialized" [("timeout_seconds", T.pack (show timeoutSecs))]
+  logInfo logger "Approval coordinator initialized" [("timeout_seconds", T.pack (show (unPositive timeoutSecs)))]
 
   -- Initialize attachment queue
   attachmentQueue_ <- newTVarIO []

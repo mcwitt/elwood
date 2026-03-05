@@ -18,6 +18,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Claude.Types (CacheTtl (..))
+import Elwood.Positive (Positive, unsafePositive)
 import Elwood.Thinking (ThinkingLevel (..))
 import GHC.Generics (Generic)
 
@@ -27,7 +28,7 @@ import GHC.Generics (Generic)
 data AgentOverrides = AgentOverrides
   { model :: Maybe Text,
     thinking :: Maybe ThinkingLevel,
-    maxIterations :: Maybe Int,
+    maxIterations :: Maybe Positive,
     cacheTtl :: Maybe CacheTtl
   }
   deriving stock (Show, Eq, Generic)
@@ -49,7 +50,7 @@ instance Monoid AgentOverrides where
 data AgentSettings = AgentSettings
   { model :: Text,
     thinking :: ThinkingLevel,
-    maxIterations :: Int,
+    maxIterations :: Positive,
     cacheTtl :: CacheTtl
   }
   deriving stock (Show, Eq, Generic)
@@ -60,7 +61,7 @@ agentDefaults =
   AgentOverrides
     { model = Just "claude-sonnet-4-20250514",
       thinking = Just ThinkingOff,
-      maxIterations = Just 20,
+      maxIterations = Just (unsafePositive 20),
       cacheTtl = Just CacheTtl5Min
     }
 
@@ -71,7 +72,7 @@ resolveAgent o =
   AgentSettings
     { model = fromMaybe "claude-sonnet-4-20250514" o.model,
       thinking = fromMaybe ThinkingOff o.thinking,
-      maxIterations = fromMaybe 20 o.maxIterations,
+      maxIterations = fromMaybe (unsafePositive 20) o.maxIterations,
       cacheTtl = fromMaybe CacheTtl5Min o.cacheTtl
     }
 

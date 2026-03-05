@@ -12,6 +12,7 @@ import Elwood.AgentSettings
     toOverrides,
   )
 import Elwood.Claude.Types (CacheTtl (..))
+import Elwood.Positive qualified as P
 import Elwood.Thinking (ThinkingEffort (..), ThinkingLevel (..))
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -48,12 +49,15 @@ instance Arbitrary ThinkingLevel where
 instance Arbitrary CacheTtl where
   arbitrary = elements [CacheTtl5Min, CacheTtl1Hour]
 
+instance Arbitrary P.Positive where
+  arbitrary = P.unsafePositive . getPositive <$> arbitrary
+
 instance Arbitrary AgentOverrides where
   arbitrary =
     AgentOverrides
       <$> arbitrary
       <*> arbitrary
-      <*> (fmap getPositive <$> arbitrary)
+      <*> arbitrary
       <*> arbitrary
 
 semigroupLawTests :: TestTree
@@ -83,11 +87,11 @@ overrideTests =
             b = AgentOverrides (Just "model-b") Nothing Nothing Nothing
         (a <> b).model @?= Just "model-b",
       testCase "right-biased: Nothing preserves left" $ do
-        let a = AgentOverrides (Just "model-a") (Just ThinkingOff) (Just 10) (Just CacheTtl5Min)
+        let a = AgentOverrides (Just "model-a") (Just ThinkingOff) (Just (P.unsafePositive 10)) (Just CacheTtl5Min)
             b = mempty
         (a <> b) @?= a,
       testCase "toOverrides roundtrips through resolveAgent" $ do
-        let s = AgentSettings "model-x" (ThinkingBudget 4096) 15 CacheTtl1Hour
+        let s = AgentSettings "model-x" (ThinkingBudget 4096) (P.unsafePositive 15) CacheTtl1Hour
         resolveAgent (toOverrides s) @?= s
     ]
 
@@ -99,13 +103,13 @@ resolveTests =
         let s = resolveAgent mempty
         s.model @?= "claude-sonnet-4-20250514"
         s.thinking @?= ThinkingOff
-        s.maxIterations @?= 20,
+        s.maxIterations @?= P.unsafePositive 20,
       testCase "agentDefaults resolves to same defaults" $ do
         resolveAgent agentDefaults @?= resolveAgent mempty,
       testCase "overrides are applied" $ do
-        let o = agentDefaults <> AgentOverrides (Just "custom-model") Nothing (Just 50) Nothing
+        let o = agentDefaults <> AgentOverrides (Just "custom-model") Nothing (Just (P.unsafePositive 50)) Nothing
             s = resolveAgent o
         s.model @?= "custom-model"
         s.thinking @?= ThinkingOff
-        s.maxIterations @?= 50
+        s.maxIterations @?= P.unsafePositive 50
     ]

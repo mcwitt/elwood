@@ -35,6 +35,7 @@ import Elwood.AgentSettings
 import Elwood.Claude.Types (ToolName)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), ToolPolicy (..), defaultPermissionConfig)
+import Elwood.Positive (Positive, unsafePositive)
 import Elwood.Prompt (PromptInput (..), PromptInputFile (..), resolvePromptInput)
 import Elwood.Webhook.Types
   ( DeliveryTargetFile (..),
@@ -49,7 +50,7 @@ import System.Environment (lookupEnv)
 -- | Strategy for deciding which messages to compact vs keep verbatim
 data CompactionStrategy
   = -- | Keep last N turns verbatim, compact the rest
-    KeepLastTurns Int
+    KeepLastTurns Positive
   | -- | Keep ~(fraction * tokenThreshold) tokens from the end
     KeepLastFraction Double
   deriving stock (Show, Eq, Generic)
@@ -57,10 +58,8 @@ data CompactionStrategy
 instance FromJSON CompactionStrategy where
   parseJSON = withObject "CompactionStrategy" $ \v ->
     case KM.keys v of
-      ["keep_last_turns"] -> do
-        n <- v .: "keep_last_turns"
-        when (n < 1) $ fail "keep_last_turns must be >= 1"
-        pure (KeepLastTurns n)
+      ["keep_last_turns"] ->
+        KeepLastTurns <$> v .: "keep_last_turns"
       ["keep_last_fraction"] -> do
         f <- v .: "keep_last_fraction"
         when (f <= 0 || f > 1) $ fail "keep_last_fraction must be in (0, 1]"
@@ -109,7 +108,7 @@ data Config = Config
 -- | Configuration for context compaction
 data CompactionConfig = CompactionConfig
   { -- | Compact when estimated tokens exceed this
-    tokenThreshold :: Int,
+    tokenThreshold :: Positive,
     -- | Model to use for summarization (e.g., "claude-3-5-haiku-20241022")
     model :: Text,
     -- | Custom compaction prompt (Nothing = use built-in structured default)
@@ -199,7 +198,7 @@ data PermissionConfigFile = PermissionConfigFile
     dangerousPatterns :: Maybe [Text],
     toolPolicies :: Maybe (Map ToolName ToolPolicy),
     defaultPolicy :: Maybe ToolPolicy,
-    approvalTimeoutSeconds :: Maybe Int
+    approvalTimeoutSeconds :: Maybe Positive
   }
   deriving stock (Show, Generic)
 
@@ -230,7 +229,7 @@ resolvePermissions pcf =
 
 -- | Compaction configuration from YAML file
 data CompactionConfigFile = CompactionConfigFile
-  { tokenThreshold :: Maybe Int,
+  { tokenThreshold :: Maybe Positive,
     model :: Maybe Text,
     prompt :: Maybe Text,
     strategy :: Maybe CompactionStrategy
@@ -254,20 +253,20 @@ instance Monoid CompactionConfigFile where
 compactionDefaults :: CompactionConfigFile
 compactionDefaults =
   CompactionConfigFile
-    { tokenThreshold = Just 50000,
+    { tokenThreshold = Just (unsafePositive 50000),
       model = Just "claude-3-5-haiku-20241022",
       prompt = Nothing,
-      strategy = Just (KeepLastTurns 10)
+      strategy = Just (KeepLastTurns (unsafePositive 10))
     }
 
 -- | Resolve a partial compaction config to concrete values.
 resolveCompaction :: CompactionConfigFile -> CompactionConfig
 resolveCompaction ccf =
   CompactionConfig
-    { tokenThreshold = fromMaybe 50000 ccf.tokenThreshold,
+    { tokenThreshold = fromMaybe (unsafePositive 50000) ccf.tokenThreshold,
       model = fromMaybe "claude-3-5-haiku-20241022" ccf.model,
       prompt = ccf.prompt,
-      strategy = fromMaybe (KeepLastTurns 10) ccf.strategy
+      strategy = fromMaybe (KeepLastTurns (unsafePositive 10)) ccf.strategy
     }
 
 -- | Pruning configuration from YAML file

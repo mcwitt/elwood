@@ -26,6 +26,7 @@ import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Data.UUID.V4 qualified as UUID
 import Elwood.Claude.Types (ToolName (..))
+import Elwood.Positive (Positive, unPositive)
 
 -- | Result of an approval request
 data ApprovalResult
@@ -42,11 +43,11 @@ data ApprovalCoordinator = ApprovalCoordinator
   { -- | Map of pending requests awaiting response
     pendingRequests :: TVar (Map UUID (TMVar ApprovalResult)),
     -- | Timeout in seconds for approval requests
-    timeoutSeconds :: Int
+    timeoutSeconds :: Positive
   }
 
 -- | Create a new approval coordinator
-newApprovalCoordinator :: Int -> IO ApprovalCoordinator
+newApprovalCoordinator :: Positive -> IO ApprovalCoordinator
 newApprovalCoordinator ts = do
   pendingVar <- newTVarIO Map.empty
   pure
@@ -73,7 +74,7 @@ requestApproval coordinator = do
   -- Start timeout thread
   void $
     forkIO $ do
-      threadDelay (coordinator.timeoutSeconds * 1000000)
+      threadDelay (unPositive coordinator.timeoutSeconds * 1000000)
       -- Try to mark as timed out (only succeeds if not already responded)
       atomically $ do
         pending <- readTVar coordinator.pendingRequests

@@ -16,6 +16,7 @@ import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..)
 import Elwood.Config (CompactionConfig (..), PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
+import Elwood.Positive (unPositive, unsafePositive)
 import Elwood.Thinking (ThinkingLevel (..), parseThinkingLevel)
 import Elwood.Tools.Registry (ToolRegistry)
 import Elwood.Tools.Types
@@ -24,7 +25,7 @@ import Elwood.Tools.Types
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
 -- Model and thinking inherit from the parent agent.
 delegateDefaults :: AgentOverrides
-delegateDefaults = AgentOverrides Nothing Nothing (Just 10) (Just CacheTtl5Min)
+delegateDefaults = AgentOverrides Nothing Nothing (Just (unsafePositive 10)) (Just CacheTtl5Min)
 
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
@@ -77,11 +78,11 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
           "Delegating task to sub-agent"
           [ ("task_length", T.pack (show (T.length di.task))),
             ("model", subSettings.model),
-            ("max_iterations", T.pack (show subSettings.maxIterations))
+            ("max_iterations", T.pack (show (unPositive subSettings.maxIterations)))
           ]
 
         let -- Disable compaction — sub-agent starts with empty history
-            subCompaction = compaction {tokenThreshold = maxBound}
+            subCompaction = compaction {tokenThreshold = unsafePositive maxBound}
             subConfig =
               AgentConfig
                 { logger = logger,
@@ -191,7 +192,7 @@ parseDelegateInput allowedModels (Aeson.Object obj) = do
       let i = round n
        in if i < 1 || i > 50
             then Left "max_iterations must be between 1 and 50"
-            else Right (Just i)
+            else Right (Just (unsafePositive i))
     Just _ -> Left "Invalid 'max_iterations' parameter (must be an integer)"
     Nothing -> Right Nothing
   let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cacheTtl = Nothing}

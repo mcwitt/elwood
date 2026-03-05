@@ -43,6 +43,7 @@ import Elwood.Image (ResizeResult (..), resizeImage)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (estimateJsonTokens, estimateTextTokens, recordApiResponse, recordCompaction)
 import Elwood.Notify (Severity (..), formatNotify)
+import Elwood.Positive (unPositive)
 import Elwood.Session (withSessionLock)
 import Elwood.Telegram qualified as Telegram
 import System.Exit (ExitCode (..))
@@ -195,10 +196,8 @@ handleTelegramMessage env msg =
                         ("Tool calls", tb.toolCallTokens),
                         ("Tool results", tb.toolResultTokens)
                       ]
-                  tokenThreshold = env.compaction.tokenThreshold
-                  thresholdPct
-                    | tokenThreshold <= 0 = 0 :: Int
-                    | otherwise = (totalTokens * 100) `div` tokenThreshold
+                  tokenThreshold = unPositive env.compaction.tokenThreshold
+                  thresholdPct = (totalTokens * 100) `div` tokenThreshold
                   header = "Context usage:"
                   summary =
                     [ "• " <> T.pack (show msgCount) <> " messages",

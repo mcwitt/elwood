@@ -21,6 +21,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Claude.Types (ToolName)
+import Elwood.Positive (Positive, unsafePositive)
 import Text.Regex.TDFA ((=~))
 
 -- | Policy for tool execution
@@ -52,7 +53,7 @@ data PermissionConfig = PermissionConfig
     -- | Default policy for tools not in toolPolicies
     defaultPolicy :: ToolPolicy,
     -- | Timeout in seconds for approval requests
-    approvalTimeoutSeconds :: Int
+    approvalTimeoutSeconds :: Positive
   }
   deriving stock (Show, Eq)
 
@@ -90,7 +91,7 @@ defaultPermissionConfig =
         ],
       toolPolicies = Map.empty,
       defaultPolicy = PolicyAllow,
-      approvalTimeoutSeconds = 300
+      approvalTimeoutSeconds = unsafePositive 300
     }
 
 -- | Result of a permission check

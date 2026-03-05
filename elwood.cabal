@@ -49,6 +49,7 @@ library
     Elwood.Metrics
     Elwood.Notify
     Elwood.Permissions
+    Elwood.Positive
     Elwood.Prompt
     Elwood.Session
     Elwood.Telegram
