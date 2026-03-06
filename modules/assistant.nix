@@ -724,7 +724,7 @@ let
                 "ask"
                 "deny"
               ];
-              default = "ask";
+              default = "allow";
               description = "Default policy for tools not in toolPolicies.";
             };
 
