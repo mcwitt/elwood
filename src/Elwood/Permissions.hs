@@ -3,6 +3,11 @@ module Elwood.Permissions
     PermissionConfig (..),
     defaultPermissionConfig,
 
+    -- * Permission File Configuration (partial/mergeable)
+    PermissionConfigFile (..),
+    resolvePermissions,
+    toPermissionConfigFile,
+
     -- * Permission Results
     PermissionResult (..),
 
@@ -15,13 +20,17 @@ module Elwood.Permissions
   )
 where
 
-import Data.Aeson (FromJSON (..), withText)
+import Control.Applicative ((<|>))
+import Data.Aeson (FromJSON (..), withObject, withText, (.:?))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Claude.Types (ToolName)
 import Elwood.Positive (Positive, unsafePositive)
+import GHC.Generics (Generic)
 import Text.Regex.TDFA ((=~))
 
 -- | Policy for tool execution
@@ -57,42 +66,9 @@ data PermissionConfig = PermissionConfig
   }
   deriving stock (Show, Eq)
 
--- | Default permission configuration
+-- | Default permission configuration (derived from 'permissionDefaults').
 defaultPermissionConfig :: PermissionConfig
-defaultPermissionConfig =
-  PermissionConfig
-    { safePatterns =
-        [ "^ls\\b",
-          "^cat\\b",
-          "^head\\b",
-          "^tail\\b",
-          "^date\\b",
-          "^whoami\\b",
-          "^pwd\\b",
-          "^git status\\b",
-          "^git log\\b",
-          "^git diff\\b",
-          "^echo\\b",
-          "^wc\\b",
-          "^find\\b",
-          "^grep\\b"
-        ],
-      dangerousPatterns =
-        [ "\\brm\\b",
-          "\\bsudo\\b",
-          "\\bchmod\\b",
-          "\\bchown\\b",
-          "curl.*\\|.*sh",
-          "wget.*\\|.*sh",
-          "\\bmkfs\\b",
-          "\\bdd\\b.*of=/",
-          "\\b>\\s*/dev/",
-          "\\bformat\\b"
-        ],
-      toolPolicies = Map.empty,
-      defaultPolicy = PolicyAllow,
-      approvalTimeoutSeconds = unsafePositive 300
-    }
+defaultPermissionConfig = resolvePermissions mempty
 
 -- | Result of a permission check
 data PermissionResult
@@ -128,3 +104,71 @@ checkCommandPermission config cmd
 getToolPolicy :: PermissionConfig -> ToolName -> ToolPolicy
 getToolPolicy config toolName_ =
   Map.findWithDefault config.defaultPolicy toolName_ config.toolPolicies
+
+-- | Permission configuration from YAML file (partial, mergeable)
+data PermissionConfigFile = PermissionConfigFile
+  { safePatterns :: Maybe [Text],
+    dangerousPatterns :: Maybe [Text],
+    toolPolicies :: Maybe (Map ToolName ToolPolicy),
+    defaultPolicy :: Maybe ToolPolicy,
+    approvalTimeoutSeconds :: Maybe Positive
+  }
+  deriving stock (Show, Eq, Generic)
+
+-- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
+instance Semigroup PermissionConfigFile where
+  a <> b =
+    PermissionConfigFile
+      { safePatterns = b.safePatterns <|> a.safePatterns,
+        dangerousPatterns = b.dangerousPatterns <|> a.dangerousPatterns,
+        toolPolicies = b.toolPolicies <|> a.toolPolicies,
+        defaultPolicy = b.defaultPolicy <|> a.defaultPolicy,
+        approvalTimeoutSeconds = b.approvalTimeoutSeconds <|> a.approvalTimeoutSeconds
+      }
+
+instance Monoid PermissionConfigFile where
+  mempty = PermissionConfigFile Nothing Nothing Nothing Nothing Nothing
+
+instance FromJSON PermissionConfigFile where
+  parseJSON = withObject "PermissionConfigFile" $ \v -> do
+    rejectUnknownKeys "PermissionConfigFile" ["safe_patterns", "dangerous_patterns", "tool_policies", "default_policy", "approval_timeout_seconds"] v
+    PermissionConfigFile
+      <$> v .:? "safe_patterns"
+      <*> v .:? "dangerous_patterns"
+      <*> v .:? "tool_policies"
+      <*> v .:? "default_policy"
+      <*> v .:? "approval_timeout_seconds"
+
+-- | Default permission overrides (all 'Just' with hardcoded defaults).
+permissionDefaults :: PermissionConfigFile
+permissionDefaults =
+  PermissionConfigFile
+    { safePatterns = Just [],
+      dangerousPatterns = Just [],
+      toolPolicies = Just Map.empty,
+      defaultPolicy = Just PolicyAllow,
+      approvalTimeoutSeconds = Just (unsafePositive 300)
+    }
+
+-- | Resolve a partial permission config by layering over 'permissionDefaults'.
+resolvePermissions :: PermissionConfigFile -> PermissionConfig
+resolvePermissions pcf =
+  let d = permissionDefaults <> pcf
+   in PermissionConfig
+        { safePatterns = fromMaybe [] d.safePatterns,
+          dangerousPatterns = fromMaybe [] d.dangerousPatterns,
+          toolPolicies = fromMaybe Map.empty d.toolPolicies,
+          defaultPolicy = fromMaybe PolicyAllow d.defaultPolicy,
+          approvalTimeoutSeconds = fromMaybe (unsafePositive 300) d.approvalTimeoutSeconds
+        }
+
+-- | Convert a resolved 'PermissionConfig' back to a 'PermissionConfigFile' (all 'Just').
+toPermissionConfigFile :: PermissionConfig -> PermissionConfigFile
+toPermissionConfigFile pc =
+  PermissionConfigFile
+    { safePatterns = Just pc.safePatterns,
+      dangerousPatterns = Just pc.dangerousPatterns,
+      toolPolicies = Just pc.toolPolicies,
+      defaultPolicy = Just pc.defaultPolicy,
+      approvalTimeoutSeconds = Just pc.approvalTimeoutSeconds
+    }

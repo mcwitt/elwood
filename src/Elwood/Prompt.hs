@@ -1,7 +1,5 @@
 module Elwood.Prompt
   ( PromptInput (..),
-    PromptInputFile (..),
-    resolvePromptInput,
     assemblePrompt,
   )
 where
@@ -24,24 +22,13 @@ data PromptInput
     InlineText Text
   deriving stock (Show, Eq, Generic)
 
--- | Prompt input as specified in config files (YAML)
-data PromptInputFile
-  = PromptInputFileWorkspace FilePath
-  | PromptInputFileText Text
-  deriving stock (Show, Generic)
-
-instance FromJSON PromptInputFile where
-  parseJSON = withObject "PromptInputFile" $ \v -> do
+instance FromJSON PromptInput where
+  parseJSON = withObject "PromptInput" $ \v -> do
     t <- v .: "type" :: Parser Text
     case T.toLower t of
-      "workspace_file" -> PromptInputFileWorkspace <$> v .: "path"
-      "text" -> PromptInputFileText <$> v .: "content"
+      "workspace_file" -> WorkspaceFile <$> v .: "path"
+      "text" -> InlineText <$> v .: "content"
       other -> fail $ "Unknown prompt input type: " <> T.unpack other
-
--- | Resolve a config-file prompt input to a runtime prompt input.
-resolvePromptInput :: PromptInputFile -> PromptInput
-resolvePromptInput (PromptInputFileWorkspace p) = WorkspaceFile p
-resolvePromptInput (PromptInputFileText t) = InlineText t
 
 -- | Assemble a prompt from a list of inputs by reading workspace files
 -- and concatenating all parts with @"\\n\\n"@.

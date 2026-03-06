@@ -9,12 +9,10 @@ import Control.Exception (finally)
 import Data.Foldable (for_)
 import Data.Int (Int64)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isJust)
-import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
-import Elwood.AgentSettings (AgentSettings (..), resolveAgent, toOverrides)
+import Elwood.AgentSettings (AgentProfile (..), ToolSearchConfig (..), resolveProfile, toOverrides)
 import Elwood.Approval
   ( ApprovalCoordinator,
     ApprovalResult (..),
@@ -33,7 +31,7 @@ import Elwood.Logging
 import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
 import Elwood.Metrics (newMetricsStore, setMCPServerCount)
-import Elwood.Positive (Positive (getPositive))
+import Elwood.Positive (Positive)
 import Elwood.Session (newSessionLocks)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Telegram.Handler (handleTelegramMessage)
@@ -59,7 +57,7 @@ runApp config = do
 
   -- Initialize Claude client
   claude <- Claude.newClient config.anthropicApiKey
-  logInfo logger "Claude client initialized" [("model", config.agentSettings.model)]
+  logInfo logger "Claude client initialized" [("model", config.agentProfile.model)]
 
   -- Initialize conversation store
   convs <- Claude.newConversationStore config.stateDir
@@ -70,10 +68,8 @@ runApp config = do
   logInfo logger "Memory store initialized" []
 
   -- Initialize approval coordinator
-  let perms = config.permissions :: PermissionConfig
-      timeoutSecs = perms.approvalTimeoutSeconds
-  approvalCoordinator <- newApprovalCoordinator timeoutSecs
-  logInfo logger "Approval coordinator initialized" [("timeout_seconds", T.pack (show timeoutSecs.getPositive))]
+  approvalCoordinator <- newApprovalCoordinator
+  logInfo logger "Approval coordinator initialized" []
 
   -- Initialize attachment queue
   attachmentQueue_ <- newTVarIO []
@@ -85,9 +81,12 @@ runApp config = do
   sessionLocks_ <- newSessionLocks
 
   -- Construct tools with explicit dependencies
+  -- Note: run_command is registered with the base profile's permissions here,
+  -- but is re-registered per-request in handleEventCore with current permissions
+  -- (so per-chat/per-webhook/per-delegate overrides take effect).
   let builtinRegistry =
         Tools.registerTool (Tools.mkQueueAttachmentTool logger attachmentQueue_) $
-          Tools.registerTool (Tools.mkRunCommandTool logger config.workspaceDir config.permissions) $
+          Tools.registerTool (Tools.mkRunCommandTool logger config.workspaceDir config.agentProfile.permissions) $
             Tools.registerTool (Tools.mkSaveMemoryTool logger memoryStore) $
               Tools.registerTool
                 (Tools.mkSearchMemoryTool logger memoryStore)
@@ -110,13 +109,10 @@ runApp config = do
   mets <- newMetricsStore
   logInfo logger "Metrics store initialized" []
 
-  -- Tool search config: convert to Maybe (Set ToolName)
-  let toolSearch_ = fmap (Set.fromList . map Claude.ToolName) config.toolSearch
-
   logInfo
     logger
     "Tool search"
-    [("enabled", T.pack (show (isJust toolSearch_)))]
+    [("enabled", T.pack (show (case config.agentProfile.toolSearch of ToolSearchDisabled -> False; _ -> True)))]
 
   logInfo
     logger
@@ -130,20 +126,12 @@ runApp config = do
     "Telegram chats"
     [("chats", T.pack (show chatIds))]
 
-  -- Create base agent context (without per-chat approval function)
-  let baseAgentContext =
-        Tools.AgentContext
-          { permissionConfig = config.permissions,
-            requestApproval = Tools.noApprovalChannel
-          }
+  -- Default approval function (no approval channel — used by webhooks)
+  let baseApprovalFn = Tools.noApprovalChannel
 
-  -- Helper to create agent context with approval function for a specific chat
-  let mkAgentContextWithApproval :: Int64 -> Tools.AgentContext
-      mkAgentContextWithApproval cid =
-        Tools.AgentContext
-          { permissionConfig = config.permissions,
-            requestApproval = requestToolApproval logger tg approvalCoordinator cid
-          }
+  -- Helper to create per-chat approval function.
+  -- Closes over the per-chat approval timeout so overrides take effect.
+  let mkApprovalFn = requestToolApproval logger tg approvalCoordinator
 
   -- Create callback handler for approval responses
   let callbackHandler = handleApprovalCallback logger tg approvalCoordinator
@@ -159,16 +147,14 @@ runApp config = do
             claude = claude,
             conversations = convs,
             registry = reg,
-            agentContext = baseAgentContext,
+            requestApproval = baseApprovalFn,
             compaction = config.compaction,
             pruning = config.pruning,
-            systemPromptInputs = config.systemPrompt,
             workspaceDir = config.workspaceDir,
-            agentSettings = config.agentSettings,
+            agentProfile = config.agentProfile,
             telegramChatMap = Map.fromList [(tc.id_, tc) | tc <- config.telegramChats],
             attachmentQueue = attachmentQueue_,
             metrics = mets,
-            toolSearch = toolSearch_,
             pruneHorizons = pruneHorizons_,
             sessionLocks = sessionLocks_,
             toolUseMessages = config.toolUseMessages,
@@ -182,10 +168,11 @@ runApp config = do
   let msgHandler msg =
         let cid = msg.chat.id_
             chatCfg = Map.lookup cid appEnv.telegramChatMap
+            chatProfile = resolveProfile (toOverrides appEnv.agentProfile <> maybe mempty (.overrides) chatCfg)
             envForChat =
               appEnv
-                { agentContext = mkAgentContextWithApproval cid,
-                  agentSettings = resolveAgent (toOverrides appEnv.agentSettings <> maybe mempty (.overrides) chatCfg)
+                { requestApproval = mkApprovalFn cid chatProfile.permissions.approvalTimeoutSeconds,
+                  agentProfile = chatProfile
                 }
          in handleTelegramMessage envForChat msg
 
@@ -234,12 +221,13 @@ requestToolApproval ::
   Telegram.TelegramClient ->
   ApprovalCoordinator ->
   Int64 ->
+  Positive ->
   Claude.ToolName ->
   Text ->
   IO Tools.ApprovalOutcome
-requestToolApproval logger tg coordinator cid toolName_ inputSummary = do
+requestToolApproval logger tg coordinator cid timeout toolName_ inputSummary = do
   -- Create approval request and get UUID
-  (requestId_, waitForResult) <- requestApproval coordinator
+  (requestId_, waitForResult) <- requestApproval coordinator timeout
 
   -- Build the approval message with inline keyboard
   let messageText = formatApprovalRequest toolName_ inputSummary

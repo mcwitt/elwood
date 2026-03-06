@@ -2,7 +2,7 @@ module Elwood.Tools
   ( -- * Types
     Tool (..),
     ToolResult (..),
-    AgentContext (..),
+    ApprovalFunction,
     ApprovalOutcome (..),
     noApprovalChannel,
     Attachment (..),

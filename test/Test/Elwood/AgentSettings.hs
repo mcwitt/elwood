@@ -2,17 +2,27 @@
 
 module Test.Elwood.AgentSettings (tests) where
 
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.AgentSettings
   ( AgentOverrides (..),
-    AgentSettings (..),
+    AgentProfile (..),
+    ToolSearchConfig (..),
     agentDefaults,
-    resolveAgent,
+    resolveProfile,
     toOverrides,
   )
-import Elwood.Claude.Types (CacheTtl (..))
+import Elwood.Claude.Types (CacheTtl (..), ToolName (..))
+import Elwood.Permissions
+  ( PermissionConfig (..),
+    PermissionConfigFile (..),
+    ToolPolicy (..),
+    defaultPermissionConfig,
+    resolvePermissions,
+  )
 import Elwood.Positive qualified as P
+import Elwood.Prompt (PromptInput (..))
 import Elwood.Thinking (ThinkingEffort (..), ThinkingLevel (..))
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -32,7 +42,8 @@ tests =
     [ semigroupLawTests,
       monoidLawTests,
       overrideTests,
-      resolveTests
+      resolveTests,
+      permissionsMergeTests
     ]
 
 instance Arbitrary ThinkingEffort where
@@ -52,10 +63,42 @@ instance Arbitrary CacheTtl where
 instance Arbitrary P.Positive where
   arbitrary = P.unsafePositive . getPositive <$> arbitrary
 
+instance Arbitrary PromptInput where
+  arbitrary =
+    oneof
+      [ WorkspaceFile <$> arbitrary,
+        InlineText <$> arbitrary
+      ]
+
+instance Arbitrary ToolSearchConfig where
+  arbitrary =
+    oneof
+      [ pure ToolSearchDisabled,
+        ToolSearchEnabled <$> arbitrary
+      ]
+
+instance Arbitrary ToolName where
+  arbitrary = ToolName <$> arbitrary
+
+instance Arbitrary ToolPolicy where
+  arbitrary = elements [PolicyAllow, PolicyAsk, PolicyDeny]
+
+instance Arbitrary PermissionConfigFile where
+  arbitrary =
+    PermissionConfigFile
+      <$> arbitrary
+      <*> arbitrary
+      <*> arbitrary
+      <*> arbitrary
+      <*> arbitrary
+
 instance Arbitrary AgentOverrides where
   arbitrary =
     AgentOverrides
       <$> arbitrary
+      <*> arbitrary
+      <*> arbitrary
+      <*> arbitrary
       <*> arbitrary
       <*> arbitrary
       <*> arbitrary
@@ -84,35 +127,97 @@ overrideTests =
   testGroup
     "Override semantics"
     [ testCase "right-biased: later Just wins" $ do
-        let a = AgentOverrides (Just "model-a") Nothing Nothing Nothing Nothing
-            b = AgentOverrides (Just "model-b") Nothing Nothing Nothing Nothing
+        let a = AgentOverrides (Just "model-a") Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+            b = AgentOverrides (Just "model-b") Nothing Nothing Nothing Nothing Nothing Nothing Nothing
         (a <> b).model @?= Just "model-b",
       testCase "right-biased: Nothing preserves left" $ do
-        let a = AgentOverrides (Just "model-a") (Just ThinkingOff) (Just (P.unsafePositive 10)) (Just CacheTtl5Min) (Just (P.unsafePositive 8192))
+        let a =
+              AgentOverrides
+                (Just "model-a")
+                (Just ThinkingOff)
+                (Just (P.unsafePositive 10))
+                (Just CacheTtl5Min)
+                (Just (P.unsafePositive 8192))
+                (Just [WorkspaceFile "SOUL.md"])
+                (Just ToolSearchDisabled)
+                (Just mempty)
             b = mempty
         (a <> b) @?= a,
-      testCase "toOverrides roundtrips through resolveAgent" $ do
-        let s = AgentSettings "model-x" (ThinkingBudget 4096) (P.unsafePositive 15) CacheTtl1Hour (P.unsafePositive 32768)
-        resolveAgent (toOverrides s) @?= s
+      testCase "toOverrides roundtrips through resolveProfile" $ do
+        let s =
+              AgentProfile
+                "model-x"
+                (ThinkingBudget 4096)
+                (P.unsafePositive 15)
+                CacheTtl1Hour
+                (P.unsafePositive 32768)
+                [InlineText "test"]
+                (ToolSearchEnabled ["run_command"])
+                defaultPermissionConfig
+        resolveProfile (toOverrides s) @?= s
     ]
 
 resolveTests :: TestTree
 resolveTests =
   testGroup
-    "resolveAgent"
+    "resolveProfile"
     [ testCase "mempty resolves to hardcoded defaults" $ do
-        let s = resolveAgent mempty
+        let s = resolveProfile mempty
         s.model @?= "claude-sonnet-4-20250514"
         s.thinking @?= ThinkingOff
         s.maxIterations @?= P.unsafePositive 20
-        s.maxTokens @?= P.unsafePositive 16384,
+        s.maxTokens @?= P.unsafePositive 16384
+        s.systemPrompt @?= [WorkspaceFile "SOUL.md"]
+        s.toolSearch @?= ToolSearchDisabled
+        s.permissions @?= resolvePermissions mempty,
       testCase "agentDefaults resolves to same defaults" $ do
-        resolveAgent agentDefaults @?= resolveAgent mempty,
+        resolveProfile agentDefaults @?= resolveProfile mempty,
       testCase "overrides are applied" $ do
-        let o = agentDefaults <> AgentOverrides (Just "custom-model") Nothing (Just (P.unsafePositive 50)) Nothing (Just (P.unsafePositive 8192))
-            s = resolveAgent o
+        let o = agentDefaults <> AgentOverrides (Just "custom-model") Nothing (Just (P.unsafePositive 50)) Nothing (Just (P.unsafePositive 8192)) Nothing Nothing Nothing
+            s = resolveProfile o
         s.model @?= "custom-model"
         s.thinking @?= ThinkingOff
         s.maxIterations @?= P.unsafePositive 50
         s.maxTokens @?= P.unsafePositive 8192
+    ]
+
+permissionsMergeTests :: TestTree
+permissionsMergeTests =
+  testGroup
+    "Permissions merge"
+    [ testCase "permissions use field-level merge" $ do
+        let a = AgentOverrides Nothing Nothing Nothing Nothing Nothing Nothing Nothing (Just (PermissionConfigFile Nothing Nothing (Just (Map.singleton "run_command" PolicyDeny)) Nothing Nothing))
+            b = AgentOverrides Nothing Nothing Nothing Nothing Nothing Nothing Nothing (Just (PermissionConfigFile (Just ["^ls\\b"]) Nothing Nothing Nothing Nothing))
+        -- b's safePatterns should merge with a's toolPolicies (not replace)
+        let merged = a <> b
+        case merged.permissions of
+          Nothing -> assertFailure "Expected Just permissions"
+          Just pcf -> do
+            pcf.safePatterns @?= Just ["^ls\\b"]
+            pcf.toolPolicies @?= Just (Map.singleton "run_command" PolicyDeny),
+      testCase "permissions: both Nothing stays Nothing" $ do
+        let a = mempty :: AgentOverrides
+            b = mempty :: AgentOverrides
+        (a <> b).permissions @?= Nothing,
+      testCase "roundtrip permissions through toPermissionConfigFile" $ do
+        let pc =
+              PermissionConfig
+                { safePatterns = ["^ls\\b"],
+                  dangerousPatterns = ["\\brm\\b"],
+                  toolPolicies = Map.singleton "run_command" PolicyAsk,
+                  defaultPolicy = PolicyAllow,
+                  approvalTimeoutSeconds = P.unsafePositive 120
+                }
+            profile =
+              AgentProfile
+                "model"
+                ThinkingOff
+                (P.unsafePositive 20)
+                CacheTtl5Min
+                (P.unsafePositive 16384)
+                [WorkspaceFile "SOUL.md"]
+                ToolSearchDisabled
+                pc
+        let roundtripped = resolveProfile (toOverrides profile)
+        roundtripped.permissions @?= pc
     ]

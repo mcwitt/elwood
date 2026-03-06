@@ -245,23 +245,24 @@ in
             { id = 111; }
             { id = 222; }
           ];
-          agent.model = "claude-test-model";
+          agent = {
+            model = "claude-test-model";
+            permissions = {
+              safePatterns = [
+                "^ls\\b"
+                "^cat\\b"
+              ];
+              dangerousPatterns = [ "\\brm\\b" ];
+              defaultPolicy = "ask";
+              approvalTimeoutSeconds = 600;
+            };
+          };
 
           # Heartbeat is now handled via systemd timer, not in config
           # We still need webhook enabled for it to work
           webhook = {
             enable = true;
             port = 9000;
-          };
-
-          permissions = {
-            safePatterns = [
-              "^ls\\b"
-              "^cat\\b"
-            ];
-            dangerousPatterns = [ "\\brm\\b" ];
-            defaultPolicy = "ask";
-            approvalTimeoutSeconds = 600;
           };
 
           compaction = {
@@ -369,7 +370,7 @@ in
           stateDir = "/var/lib/assistant/prompt-test";
           workspaceDir = "/var/lib/assistant/prompt-test/workspace";
 
-          systemPrompt = [
+          agent.systemPrompt = [
             {
               type = "workspace_file";
               path = "SOUL.md";

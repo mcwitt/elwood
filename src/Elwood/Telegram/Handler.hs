@@ -20,7 +20,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (getCurrentTime)
-import Elwood.AgentSettings (AgentSettings (..))
+import Elwood.AgentSettings (AgentProfile (..))
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Compaction qualified as Compaction
 import Elwood.Command qualified as Cmd
@@ -178,7 +178,7 @@ handleTelegramMessage env msg =
                 else do
                   let beforeTokens = Compaction.estimateTokens msgs
                   result <-
-                    (Right <$> Compaction.compactMessages lgr env.claude env.compaction (recordCompaction env.metrics) (recordApiResponse env.metrics env.agentSettings.model "telegram") msgs)
+                    (Right <$> Compaction.compactMessages lgr env.claude env.compaction (recordCompaction env.metrics) (recordApiResponse env.metrics env.agentProfile.model "telegram") msgs)
                       `catch` \(e :: SomeException) -> do
                         logError lgr "Manual compaction failed" [("chat_id", T.pack (show chatIdVal)), ("error", T.pack (show e))]
                         pure (Left e)

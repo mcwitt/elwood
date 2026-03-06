@@ -19,7 +19,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (getCurrentTime)
-import Elwood.AgentSettings (resolveAgent, toOverrides)
+import Elwood.AgentSettings (resolveProfile, toOverrides)
 import Elwood.Event (AppEnv (..), BufferedResult (..), DeliveryTarget (..), Event (..), EventSource (..), handleEvent, handleEventBuffered)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (renderMetrics)
@@ -193,7 +193,8 @@ handleWebhookRequest lgr webhookCfg env request respond = do
 -- | Apply per-endpoint agent overrides to the environment
 applyOverrides :: AppEnv -> WebhookConfig -> AppEnv
 applyOverrides env wc =
-  env {agentSettings = resolveAgent (toOverrides env.agentSettings <> wc.overrides)}
+  let newProfile = resolveProfile (toOverrides env.agentProfile <> wc.overrides)
+   in env {agentProfile = newProfile}
 
 -- | status400 for bad request
 status400 :: Status

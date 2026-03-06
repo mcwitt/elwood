@@ -39,29 +39,23 @@ data ApprovalResult
   deriving stock (Show, Eq)
 
 -- | Coordinator for managing pending approval requests
-data ApprovalCoordinator = ApprovalCoordinator
+newtype ApprovalCoordinator = ApprovalCoordinator
   { -- | Map of pending requests awaiting response
-    pendingRequests :: TVar (Map UUID (TMVar ApprovalResult)),
-    -- | Timeout in seconds for approval requests
-    timeoutSeconds :: Positive
+    pendingRequests :: TVar (Map UUID (TMVar ApprovalResult))
   }
 
 -- | Create a new approval coordinator
-newApprovalCoordinator :: Positive -> IO ApprovalCoordinator
-newApprovalCoordinator ts = do
+newApprovalCoordinator :: IO ApprovalCoordinator
+newApprovalCoordinator = do
   pendingVar <- newTVarIO Map.empty
-  pure
-    ApprovalCoordinator
-      { pendingRequests = pendingVar,
-        timeoutSeconds = ts
-      }
+  pure ApprovalCoordinator {pendingRequests = pendingVar}
 
 -- | Request approval and block until response or timeout
 --
 -- Returns the UUID for the request (to be included in callback data)
--- and blocks until a response is received or timeout occurs.
-requestApproval :: ApprovalCoordinator -> IO (UUID, IO ApprovalResult)
-requestApproval coordinator = do
+-- and an action that blocks until a response is received or timeout occurs.
+requestApproval :: ApprovalCoordinator -> Positive -> IO (UUID, IO ApprovalResult)
+requestApproval coordinator timeoutSecs = do
   -- Generate unique ID for this request
   requestId_ <- UUID.nextRandom
 
@@ -74,7 +68,7 @@ requestApproval coordinator = do
   -- Start timeout thread
   void $
     forkIO $ do
-      threadDelay (coordinator.timeoutSeconds.getPositive * 1000000)
+      threadDelay (timeoutSecs.getPositive * 1000000)
       -- Try to mark as timed out (only succeeds if not already responded)
       atomically $ do
         pending <- readTVar coordinator.pendingRequests

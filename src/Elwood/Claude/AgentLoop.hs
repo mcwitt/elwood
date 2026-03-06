@@ -13,7 +13,7 @@ import Data.Set (Set)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
-import Elwood.AgentSettings (AgentSettings (..))
+import Elwood.AgentSettings (AgentProfile (..))
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Observer (AgentObserver (..), RateLimitCallback, TextCallback, ToolUseCallback)
@@ -36,7 +36,7 @@ import Elwood.Claude.Types
 import Elwood.Config (PruningConfig (..))
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
-import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
+import Elwood.Permissions (PermissionConfig, ToolPolicy (..), getToolPolicy)
 import Elwood.Positive (Positive (getPositive))
 import Elwood.Thinking (ThinkingLevel (..))
 import Elwood.Tools.Registry
@@ -44,7 +44,7 @@ import Elwood.Tools.Registry
     lookupTool,
     toolSchemas,
   )
-import Elwood.Tools.Types (AgentContext (..), ApprovalOutcome (..), Tool (..), ToolResult (..))
+import Elwood.Tools.Types (ApprovalFunction, ApprovalOutcome (..), Tool (..), ToolResult (..))
 
 -- | Result of running an agent turn
 data AgentResult
@@ -59,10 +59,10 @@ data AgentConfig = AgentConfig
   { logger :: Logger,
     client :: ClaudeClient,
     registry :: ToolRegistry,
-    context :: AgentContext,
+    requestApproval :: ApprovalFunction,
     compaction :: CompactionConfig,
     systemPrompt :: Maybe Text,
-    agentSettings :: AgentSettings,
+    agentProfile :: AgentProfile,
     -- | Observer for metrics and telemetry
     observer :: AgentObserver,
     -- | Optional callback for rate limit notifications
@@ -114,14 +114,14 @@ agentLoop ::
   Int ->
   IO AgentResult
 agentLoop cfg msgs iteration
-  | iteration >= cfg.agentSettings.maxIterations.getPositive = do
+  | iteration >= cfg.agentProfile.maxIterations.getPositive = do
       logError cfg.logger "Agent loop exceeded max iterations" []
       pure $ AgentError $ formatNotify Error "**Agent loop:** `exceeded max iterations`"
   | otherwise = do
       let lgr = cfg.logger
           reg = cfg.registry
-          mdl = cfg.agentSettings.model
-          thk = cfg.agentSettings.thinking
+          mdl = cfg.agentProfile.model
+          thk = cfg.agentProfile.thinking
 
       -- Always send all tool schemas (tool search handles filtering server-side)
       let schemas = toolSchemas reg
@@ -137,12 +137,12 @@ agentLoop cfg msgs iteration
       let request =
             MessagesRequest
               { model = mdl,
-                maxTokens = cfg.agentSettings.maxTokens.getPositive,
+                maxTokens = cfg.agentProfile.maxTokens.getPositive,
                 system = cfg.systemPrompt,
                 messages = prunedMsgs,
                 tools = schemas,
                 thinking = thinkingToConfig thk,
-                cacheControl = Just cfg.agentSettings.cacheTtl,
+                cacheControl = Just cfg.agentProfile.cacheTtl,
                 toolSearch = cfg.toolSearch,
                 outputFormat = cfg.outputFormat
               }
@@ -264,7 +264,7 @@ handleResponse cfg msgs response iteration =
       mapM_ (\case ToolUseBlock _ (ToolName tn) _ -> cfg.observer.onToolCall tn; _ -> pure ()) toolUses
 
       -- Execute all tool uses
-      toolResults <- executeToolUses lgr reg cfg.context toolUses
+      toolResults <- executeToolUses lgr reg cfg.agentProfile.permissions cfg.requestApproval toolUses
 
       -- Build messages for next iteration (pure)
       let nextIteration = iteration + 1
@@ -278,13 +278,14 @@ handleResponse cfg msgs response iteration =
 executeToolUses ::
   Logger ->
   ToolRegistry ->
-  AgentContext ->
+  PermissionConfig ->
+  ApprovalFunction ->
   [ContentBlock] ->
   IO [ToolResult]
-executeToolUses lgr reg ctx = mapConcurrently execSafe
+executeToolUses lgr reg perms approve = mapConcurrently execSafe
   where
     execSafe block = do
-      r <- try @SomeException (executeToolUse lgr reg ctx block)
+      r <- try @SomeException (executeToolUse lgr reg perms approve block)
       case r of
         Right result -> pure result
         Left e
@@ -306,8 +307,8 @@ extractToolUses = filter isToolUse
     isToolUse _ = False
 
 -- | Execute a single tool use with policy checking
-executeToolUse :: Logger -> ToolRegistry -> AgentContext -> ContentBlock -> IO ToolResult
-executeToolUse lgr reg ctx (ToolUseBlock tid n input) = do
+executeToolUse :: Logger -> ToolRegistry -> PermissionConfig -> ApprovalFunction -> ContentBlock -> IO ToolResult
+executeToolUse lgr reg perms approve (ToolUseBlock tid n input) = do
   let ToolName tn = n
       ToolUseId ti = tid
   logInfo lgr "Executing tool" [("tool", tn), ("id", ti)]
@@ -318,7 +319,7 @@ executeToolUse lgr reg ctx (ToolUseBlock tid n input) = do
       pure $ ToolError $ "Unknown tool: " <> tn
     Just tool -> do
       -- Check tool policy before execution
-      let policy = getToolPolicy ctx.permissionConfig n
+      let policy = getToolPolicy perms n
 
       case policy of
         PolicyDeny -> do
@@ -330,7 +331,7 @@ executeToolUse lgr reg ctx (ToolUseBlock tid n input) = do
           -- Request approval before execution
           logInfo lgr "Requesting approval for tool" [("tool", tn)]
           let inputSummary = T.take 200 (decodeUtf8 (LBS.toStrict (encode input)))
-          outcome <- ctx.requestApproval n inputSummary
+          outcome <- approve n inputSummary
           case outcome of
             ApprovalGranted -> do
               logInfo lgr "Tool approved by user" [("tool", tn)]
@@ -344,7 +345,7 @@ executeToolUse lgr reg ctx (ToolUseBlock tid n input) = do
             ApprovalUnavailable -> do
               logWarn lgr "No approval mechanism, denying tool" [("tool", tn)]
               pure $ ToolError $ "Tool '" <> tn <> "' requires approval but no approval channel is available"
-executeToolUse _ _ _ _ = pure $ ToolError "Invalid tool use block"
+executeToolUse _ _ _ _ _ = pure $ ToolError "Invalid tool use block"
 
 -- | Execute a tool and log the result
 executeToolWithLogging :: Logger -> Tool -> Text -> Value -> IO ToolResult

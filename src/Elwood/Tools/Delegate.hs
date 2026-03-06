@@ -9,25 +9,28 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentSettings (..), resolveAgent, toOverrides)
+import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), ToolSearchConfig (..), resolveProfile, toOverrides)
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
-import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..), Role (..), ToolSchema (..), jsonSchemaFormat)
+import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolSchema (..), jsonSchemaFormat)
 import Elwood.Config (CompactionConfig (..), PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
 import Elwood.Positive (Positive (getPositive), unsafePositive)
+import Elwood.Prompt (assemblePrompt)
 import Elwood.Thinking (parseThinkingLevel)
-import Elwood.Tools.Registry (ToolRegistry)
+import Elwood.Tools.Command (mkRunCommandTool)
+import Elwood.Tools.Registry (ToolRegistry, registerTool)
 import Elwood.Tools.Types
 
 -- | Default overrides for delegate sub-agents.
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
--- Model and thinking inherit from the parent agent.
+-- Other fields (model, thinking, system_prompt, tool_search, permissions) inherit from parent.
 delegateDefaults :: AgentOverrides
-delegateDefaults = AgentOverrides Nothing Nothing (Just (unsafePositive 10)) (Just CacheTtl5Min) Nothing
+delegateDefaults = AgentOverrides Nothing Nothing (Just (unsafePositive 10)) (Just CacheTtl5Min) Nothing Nothing Nothing Nothing
 
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
@@ -44,17 +47,17 @@ mkDelegateTaskTool ::
   Logger ->
   ClaudeClient ->
   ToolRegistry ->
-  AgentContext ->
-  AgentSettings ->
+  ApprovalFunction ->
+  AgentProfile ->
   CompactionConfig ->
   PruningConfig ->
-  Maybe Text ->
+  FilePath ->
   MetricsStore ->
   AgentPreset ->
   Map Text AgentPreset ->
   [Text] ->
   Tool
-mkDelegateTaskTool logger client baseRegistry context agentSettings compaction pruning systemPrompt metrics defaultAgentPreset extraAgents allowedModels =
+mkDelegateTaskTool logger client baseRegistry approve parentProfile compaction pruning workspaceDir metrics defaultAgentPreset extraAgents allowedModels =
   Tool
     { schema =
         ToolSchema
@@ -86,18 +89,31 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
     executeDelegateTask input = case parseDelegateInput allowedModels extraAgentKeys input of
       Left err -> pure $ toolError err
       Right di -> do
-        -- Layering: parent settings < delegate defaults < config default_agent < extra agent < tool params
+        -- Layering: parent profile < delegate defaults < config default_agent < extra agent < tool params
         let extraAgentOvr = maybe mempty (\n -> maybe mempty (.overrides) (Map.lookup n extraAgents)) di.agentName
-            baseOverrides = toOverrides agentSettings <> delegateDefaults <> defaultAgentPreset.overrides <> extraAgentOvr
-            subSettings = resolveAgent (baseOverrides <> di.overrides)
+            baseOverrides = toOverrides parentProfile <> delegateDefaults <> defaultAgentPreset.overrides <> extraAgentOvr
+            subProfile = resolveProfile (baseOverrides <> di.overrides)
 
         logInfo
           logger
           "Delegating task to sub-agent"
           [ ("task_length", T.pack (show (T.length di.task))),
-            ("model", subSettings.model),
-            ("max_iterations", T.pack (show subSettings.maxIterations.getPositive))
+            ("model", subProfile.model),
+            ("max_iterations", T.pack (show subProfile.maxIterations.getPositive))
           ]
+
+        -- Assemble sub-agent system prompt from workspace files
+        subSystemPrompt <- assemblePrompt workspaceDir subProfile.systemPrompt
+
+        -- Convert sub-profile's tool search to Maybe (Set ToolName)
+        let subToolSearch = case subProfile.toolSearch of
+              ToolSearchDisabled -> Nothing
+              ToolSearchEnabled names -> Just (Set.fromList (map ToolName names))
+
+        -- Re-register run_command with sub-profile's permissions (so delegate
+        -- permission overrides affect command-pattern checking)
+        let subRunCmd = mkRunCommandTool logger workspaceDir subProfile.permissions
+            subRegistry = registerTool subRunCmd baseRegistry
 
         let -- Disable compaction — sub-agent starts with empty history
             subCompaction = compaction {tokenThreshold = unsafePositive maxBound}
@@ -106,17 +122,17 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
               AgentConfig
                 { logger = logger,
                   client = client,
-                  registry = baseRegistry,
-                  context = context,
+                  registry = subRegistry,
+                  requestApproval = approve,
                   compaction = subCompaction,
-                  systemPrompt = systemPrompt,
-                  agentSettings = subSettings,
-                  observer = metricsObserver metrics subSettings.model "delegate",
+                  systemPrompt = subSystemPrompt,
+                  agentProfile = subProfile,
+                  observer = metricsObserver metrics subProfile.model "delegate",
                   onRateLimit = Nothing,
                   onText = Nothing,
                   onToolUse = Nothing,
                   onBeforeApiCall = Nothing,
-                  toolSearch = Nothing,
+                  toolSearch = subToolSearch,
                   pruningConfig = pruning,
                   pruneHorizon = 0,
                   outputFormat = outputFmt
@@ -268,6 +284,6 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
     Just val@(Aeson.Object _) -> Right (Just val)
     Just _ -> Left "Invalid 'output_schema' parameter (must be a JSON object)"
     Nothing -> Right Nothing
-  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cacheTtl = Nothing, maxTokens = Nothing}
+  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cacheTtl = Nothing, maxTokens = Nothing, systemPrompt = Nothing, toolSearch = Nothing, permissions = Nothing}
   Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam}
 parseDelegateInput _ _ _ = Left "Expected object input"

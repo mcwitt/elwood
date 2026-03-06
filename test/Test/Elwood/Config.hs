@@ -1,15 +1,13 @@
 module Test.Elwood.Config (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
-import Data.Vector qualified as V
-import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentSettings (..))
+import Elwood.AgentSettings (AgentPreset (..), AgentProfile (..), ToolSearchConfig (..))
 import Elwood.Config
   ( CompactionConfig (..),
     CompactionStrategy (..),
     Config (..),
     TelegramChatConfig (..),
     loadConfig,
-    parseToolSearch,
   )
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Positive (unsafePositive)
@@ -26,7 +24,6 @@ tests =
     "Config"
     [ compactionConfigTests,
       thinkingLevelTests,
-      toolSearchTests,
       exampleConfigTests
     ]
 
@@ -109,27 +106,6 @@ thinkingLevelTests =
           Right _ -> assertFailure "Expected Left for invalid type"
     ]
 
-toolSearchTests :: TestTree
-toolSearchTests =
-  testGroup
-    "ToolSearch"
-    [ testCase "false returns Nothing" $ do
-        parseToolSearch (Bool False) @?= Nothing,
-      testCase "true returns empty list" $ do
-        parseToolSearch (Bool True) @?= Just [],
-      testCase "empty array returns empty list" $ do
-        parseToolSearch (Array V.empty) @?= Just [],
-      testCase "array with tool names parses correctly" $ do
-        let val = Array (V.fromList [String "run_command", String "save_memory"])
-        parseToolSearch val @?= Just ["run_command", "save_memory"],
-      testCase "object returns Nothing" $ do
-        parseToolSearch (object []) @?= Nothing,
-      testCase "null returns Nothing" $ do
-        parseToolSearch Null @?= Nothing,
-      testCase "string returns Nothing" $ do
-        parseToolSearch (String "true") @?= Nothing
-    ]
-
 exampleConfigTests :: TestTree
 exampleConfigTests =
   testGroup
@@ -143,9 +119,10 @@ exampleConfigTests =
         -- Clean up env vars
         unsetEnv "TELEGRAM_BOT_TOKEN"
         unsetEnv "ANTHROPIC_API_KEY"
-        -- Verify some fields parsed correctly
-        config.agentSettings.model @?= "claude-sonnet-4-20250514"
-        config.agentSettings.thinking @?= ThinkingOff
+        -- Verify agent profile fields
+        config.agentProfile.model @?= "claude-sonnet-4-20250514"
+        config.agentProfile.thinking @?= ThinkingOff
+        config.agentProfile.toolSearch @?= ToolSearchDisabled
         length config.telegramChats @?= 1
         let tc = head config.telegramChats
         tc.id_ @?= 123456789
@@ -158,7 +135,7 @@ exampleConfigTests =
         let wh = head webhooks
         wh.deliveryTarget @?= TelegramBroadcast
         -- Verify delegate defaults
-        config.delegateDefaultAgent @?= AgentPreset Nothing (AgentOverrides Nothing Nothing Nothing Nothing Nothing)
+        config.delegateDefaultAgent @?= AgentPreset Nothing mempty
         null config.delegateExtraAgents @?= True
         null config.delegateAllowedModels @?= True
     ]

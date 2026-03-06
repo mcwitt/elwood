@@ -61,16 +61,25 @@ telegram_chats:
   - id: 123456789
     session: main
 
-system_prompt:
-  - type: workspace_file
-    path: SOUL.md
-
 agent:
   model: claude-sonnet-4-20250514
   thinking:
     type: off  # off | adaptive (with effort) | fixed (with budget_tokens)
   max_tokens: 16384
   # cache_ttl: 5m  # prompt cache TTL: "5m" (default) or "1h"
+  system_prompt:
+    - type: workspace_file
+      path: SOUL.md
+  permissions:
+    default_policy: allow  # allow | ask | deny
+    approval_timeout_seconds: 120
+    tool_policies:
+      run_command: ask
+    dangerous_patterns:
+      - "\\brm\\b"
+      - "\\bsudo\\b"
+    safe_patterns:
+      - "^rm -i\\b"
 
 # delegate:                      # sub-agent defaults for delegate_task
 #   default_agent:
@@ -87,17 +96,6 @@ compaction:
   token_threshold: 50000
   model: claude-3-5-haiku-20241022
   # strategy: { keep_last_turns: 10 }  # or { keep_last_fraction: 0.25 }
-
-permissions:
-  default_policy: allow  # allow | ask | deny
-  approval_timeout_seconds: 120
-  tool_policies:
-    run_command: ask  # Telegram prompts for approval; webhooks deny (use "allow" for webhook-safe tools)
-  dangerous_patterns:
-    - "\\brm\\b"
-    - "\\bsudo\\b"
-  safe_patterns:
-    - "^rm -i\\b"
 
 webhook:
   enabled: true
@@ -134,7 +132,7 @@ export WEBHOOK_SECRET="your-webhook-secret"   # optional, overrides config file
 
 ## Workspace Files
 
-The system prompt is assembled from a configurable list of inputs. Each input is either a `workspace_file` (read from `workspace_dir`) or inline `text`. When the `system_prompt` key is omitted, it defaults to `[{type: workspace_file, path: SOUL.md}]`.
+The system prompt is assembled from a configurable list of inputs under `agent.system_prompt`. Each input is either a `workspace_file` (read from `workspace_dir`) or inline `text`. When omitted, it defaults to `[{type: workspace_file, path: SOUL.md}]`.
 
 Place workspace files in your `workspace_dir` (e.g. `SOUL.md` for personality and behavioral guidelines).
 
@@ -160,17 +158,24 @@ Add the flake to your NixOS configuration:
             environmentFile = "/run/secrets/elwood-env";
             workspaceDir = "/var/lib/assistant/elwood/workspace";
 
-            systemPrompt = [
-              {
-                type = "workspace_file";
-                path = "SOUL.md";
-                defaultContent = ''You are Elwood, a personal AI assistant'';
-              }
-              {
-                type = "text";
-                content = ''<additional content, not editable by the agent>'';
-              }
-            ];
+            agent = {
+              systemPrompt = [
+                {
+                  type = "workspace_file";
+                  path = "SOUL.md";
+                  defaultContent = ''You are Elwood, a personal AI assistant'';
+                }
+                {
+                  type = "text";
+                  content = ''<additional content, not editable by the agent>'';
+                }
+              ];
+              permissions = {
+                dangerousPatterns = [ "\\brm\\b" "\\bsudo\\b" ];
+                safePatterns = [ "^rm -i\\b" ];
+                defaultPolicy = "ask";  # Telegram prompts; webhooks deny (use "allow" for webhook-safe tools)
+              };
+            };
 
             # environmentFile should contain WEBHOOK_SECRET (and TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY)
             webhook = {
@@ -207,11 +212,6 @@ Add the flake to your NixOS configuration:
               args = [ "/var/lib/assistant/elwood/workspace" ];
             };
 
-            permissions = {
-              dangerousPatterns = [ "\\brm\\b" "\\bsudo\\b" ];
-              safePatterns = [ "^rm -i\\b" ];
-              defaultPolicy = "ask";  # Telegram prompts; webhooks deny (use "allow" for webhook-safe tools)
-            };
           };
 
           # Run a second agent with different config

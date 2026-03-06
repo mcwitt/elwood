@@ -45,11 +45,11 @@ import Data.Int (Int64)
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
-import Elwood.AgentSettings (AgentPreset, AgentSettings (..))
+import Elwood.AgentSettings (AgentPreset, AgentProfile (..), ToolSearchConfig (..))
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Pruning (PruneHorizons, getAndUpdateHorizon)
 import Elwood.Claude.Types (cacheTtlSeconds)
@@ -65,7 +65,7 @@ import Elwood.Event.Types
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
 import Elwood.Notify (Severity (..), escapeUnderscores, formatNotify, sanitizeBackticks)
-import Elwood.Prompt (PromptInput, assemblePrompt)
+import Elwood.Prompt (assemblePrompt)
 import Elwood.Session (SessionLocks, withSessionLock)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
@@ -97,24 +97,20 @@ data AppEnv = AppEnv
     claude :: Claude.ClaudeClient,
     conversations :: Claude.ConversationStore,
     registry :: Tools.ToolRegistry,
-    agentContext :: Tools.AgentContext,
+    requestApproval :: Tools.ApprovalFunction,
     compaction :: CompactionConfig,
     -- | Tool result pruning configuration
     pruning :: PruningConfig,
-    -- | System prompt inputs (resolved per-request from workspace files)
-    systemPromptInputs :: [PromptInput],
     -- | Directory containing workspace files
     workspaceDir :: FilePath,
-    -- | Resolved agent settings (model, thinking, maxIterations)
-    agentSettings :: AgentSettings,
+    -- | Resolved agent profile (model, thinking, permissions, system prompt, tool search, etc.)
+    agentProfile :: AgentProfile,
     -- | Telegram chat ID to full chat config (source of truth for allowed chats)
     telegramChatMap :: Map Int64 TelegramChatConfig,
     -- | Attachment queue
     attachmentQueue :: TVar [Tools.Attachment],
     -- | Metrics store for Prometheus counters
     metrics :: MetricsStore,
-    -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
-    toolSearch :: Maybe (Set Claude.ToolName),
     -- | Per-session prune horizons for tool result pruning
     pruneHorizons :: PruneHorizons,
     -- | Per-session locks for serializing concurrent event handling
@@ -176,18 +172,20 @@ handleEventCore env event callbacks = do
   -- Determine conversation ID from session config
   let mConversationId = sessionToConversationId event.session
 
+  let prof = env.agentProfile
+
   -- Get existing conversation (empty for Isolated)
   now <- getCurrentTime
   (history, pruneHorizon) <- case mConversationId of
     Nothing -> pure ([], 0)
     Just cid -> do
       conv <- env.conversations.getConversation cid
-      let cacheExpired = diffUTCTime now conv.lastUpdated > cacheTtlSeconds env.agentSettings.cacheTtl
+      let cacheExpired = diffUTCTime now conv.lastUpdated > cacheTtlSeconds prof.cacheTtl
       h <- getAndUpdateHorizon env.pruneHorizons cid (length conv.messages) cacheExpired
       pure (conv.messages, h)
 
   -- Assemble system prompt from workspace files (re-read each request)
-  systemPrompt <- assemblePrompt env.workspaceDir env.systemPromptInputs
+  systemPrompt <- assemblePrompt env.workspaceDir prof.systemPrompt
 
   -- Build user message with optional image
   let contentBlocks = case event.image of
@@ -197,23 +195,33 @@ handleEventCore env event callbacks = do
           [Claude.TextBlock event.prompt]
       userMsg = Claude.ClaudeMessage Claude.User contentBlocks
 
+  -- Convert tool search config to Maybe (Set ToolName) for the agent loop
+  let toolSearch_ = case prof.toolSearch of
+        ToolSearchDisabled -> Nothing
+        ToolSearchEnabled names -> Just (Set.fromList (map Claude.ToolName names))
+
+  -- Re-register run_command with current permissions (so per-chat/per-webhook
+  -- overrides reach the command-pattern checking in run_command)
+  let runCmdTool = Tools.mkRunCommandTool lgr env.workspaceDir prof.permissions
+      registryWithPerms = Tools.registerTool runCmdTool env.registry
+
   -- Build registry with delegate tool (base registry has no delegate_task,
   -- preventing recursive nesting)
   let delegateTool =
         Tools.mkDelegateTaskTool
           lgr
           env.claude
-          env.registry
-          env.agentContext
-          env.agentSettings
+          registryWithPerms
+          env.requestApproval
+          prof
           env.compaction
           env.pruning
-          systemPrompt
+          env.workspaceDir
           env.metrics
           env.delegateDefaultAgent
           env.delegateExtraAgents
           env.delegateAllowedModels
-      registryWithDelegate = Tools.registerTool delegateTool env.registry
+      registryWithDelegate = Tools.registerTool delegateTool registryWithPerms
 
   -- Build agent config from environment
   let agentConfig =
@@ -221,16 +229,16 @@ handleEventCore env event callbacks = do
           { logger = lgr,
             client = env.claude,
             registry = registryWithDelegate,
-            context = env.agentContext,
+            requestApproval = env.requestApproval,
             compaction = env.compaction,
             systemPrompt = systemPrompt,
-            agentSettings = env.agentSettings,
-            observer = metricsObserver env.metrics env.agentSettings.model (metricsSource src),
+            agentProfile = prof,
+            observer = metricsObserver env.metrics prof.model (metricsSource src),
             onRateLimit = callbacks.onRateLimit,
             onText = callbacks.onText,
             onToolUse = callbacks.onToolUse,
             onBeforeApiCall = callbacks.onBeforeApiCall,
-            toolSearch = env.toolSearch,
+            toolSearch = toolSearch_,
             pruningConfig = env.pruning,
             pruneHorizon = pruneHorizon,
             outputFormat = Nothing

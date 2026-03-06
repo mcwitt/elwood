@@ -6,38 +6,67 @@ module Elwood.AgentSettings
     AgentPreset (..),
 
     -- * Resolved (concrete) type for runtime use
-    AgentSettings (..),
+    AgentProfile (..),
+
+    -- * Tool search configuration
+    ToolSearchConfig (..),
 
     -- * Defaults and resolution
     agentDefaults,
-    resolveAgent,
+    resolveProfile,
     toOverrides,
   )
 where
 
 import Control.Applicative ((<|>))
-import Data.Aeson (FromJSON (..), withObject, (.:?))
+import Data.Aeson (FromJSON (..), Key, Object, Value (..), withObject, (.:?))
+import Data.Aeson.Types (Parser)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
+import Data.Vector qualified as V
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Claude.Types (CacheTtl (..))
+import Elwood.Permissions (PermissionConfig, PermissionConfigFile, resolvePermissions, toPermissionConfigFile)
 import Elwood.Positive (Positive, unsafePositive)
+import Elwood.Prompt (PromptInput (..))
 import Elwood.Thinking (ThinkingLevel (..))
 import GHC.Generics (Generic)
+
+-- | Tool search configuration
+--
+-- Supported YAML formats:
+--   @false@ / absent → 'ToolSearchDisabled'
+--   @true@ / @[]@    → @'ToolSearchEnabled' []@ (all tools deferred)
+--   @[tool1, tool2]@ → @'ToolSearchEnabled' [tool1, tool2]@ (listed tools never deferred)
+data ToolSearchConfig
+  = ToolSearchDisabled
+  | ToolSearchEnabled [Text]
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON ToolSearchConfig where
+  parseJSON (Bool False) = pure ToolSearchDisabled
+  parseJSON (Bool True) = pure (ToolSearchEnabled [])
+  parseJSON (Array arr) = pure $ ToolSearchEnabled [t | String t <- V.toList arr]
+  parseJSON _ = fail "tool_search must be false, true, or an array of tool names"
 
 -- | Partial agent settings for layering overrides.
 --
 -- Right-biased semigroup: @a <> b@ picks @b@'s values when 'Just'.
+-- Permissions use field-level merge via 'PermissionConfigFile' 'Semigroup'.
 data AgentOverrides = AgentOverrides
   { model :: Maybe Text,
     thinking :: Maybe ThinkingLevel,
     maxIterations :: Maybe Positive,
     cacheTtl :: Maybe CacheTtl,
-    maxTokens :: Maybe Positive
+    maxTokens :: Maybe Positive,
+    systemPrompt :: Maybe [PromptInput],
+    toolSearch :: Maybe ToolSearchConfig,
+    permissions :: Maybe PermissionConfigFile
   }
   deriving stock (Show, Eq, Generic)
 
 -- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
+-- Permissions use field-level merge (not replace) via 'PermissionConfigFile' 'Semigroup'.
 instance Semigroup AgentOverrides where
   a <> b =
     AgentOverrides
@@ -45,19 +74,29 @@ instance Semigroup AgentOverrides where
         thinking = b.thinking <|> a.thinking,
         maxIterations = b.maxIterations <|> a.maxIterations,
         cacheTtl = b.cacheTtl <|> a.cacheTtl,
-        maxTokens = b.maxTokens <|> a.maxTokens
+        maxTokens = b.maxTokens <|> a.maxTokens,
+        systemPrompt = b.systemPrompt <|> a.systemPrompt,
+        toolSearch = b.toolSearch <|> a.toolSearch,
+        permissions = case (a.permissions, b.permissions) of
+          (Nothing, Nothing) -> Nothing
+          (Just pa, Nothing) -> Just pa
+          (Nothing, Just pb) -> Just pb
+          (Just pa, Just pb) -> Just (pa <> pb)
       }
 
 instance Monoid AgentOverrides where
-  mempty = AgentOverrides Nothing Nothing Nothing Nothing Nothing
+  mempty = AgentOverrides Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
 
--- | Resolved agent settings — all fields concrete. Used at runtime.
-data AgentSettings = AgentSettings
+-- | Resolved agent profile — all fields concrete. Used at runtime.
+data AgentProfile = AgentProfile
   { model :: Text,
     thinking :: ThinkingLevel,
     maxIterations :: Positive,
     cacheTtl :: CacheTtl,
-    maxTokens :: Positive
+    maxTokens :: Positive,
+    systemPrompt :: [PromptInput],
+    toolSearch :: ToolSearchConfig,
+    permissions :: PermissionConfig
   }
   deriving stock (Show, Eq, Generic)
 
@@ -69,41 +108,62 @@ agentDefaults =
       thinking = Just ThinkingOff,
       maxIterations = Just (unsafePositive 20),
       cacheTtl = Just CacheTtl5Min,
-      maxTokens = Just (unsafePositive 16384)
+      maxTokens = Just (unsafePositive 16384),
+      systemPrompt = Just [WorkspaceFile "SOUL.md"],
+      toolSearch = Just ToolSearchDisabled,
+      permissions = Just mempty
     }
 
--- | Resolve overrides to concrete settings, using hardcoded fallbacks
--- for any remaining 'Nothing' fields.
-resolveAgent :: AgentOverrides -> AgentSettings
-resolveAgent o =
-  AgentSettings
-    { model = fromMaybe "claude-sonnet-4-20250514" o.model,
-      thinking = fromMaybe ThinkingOff o.thinking,
-      maxIterations = fromMaybe (unsafePositive 20) o.maxIterations,
-      cacheTtl = fromMaybe CacheTtl5Min o.cacheTtl,
-      maxTokens = fromMaybe (unsafePositive 16384) o.maxTokens
-    }
+-- | Resolve overrides to concrete profile by layering over 'agentDefaults'.
+resolveProfile :: AgentOverrides -> AgentProfile
+resolveProfile o =
+  let d = agentDefaults <> o
+   in AgentProfile
+        { model = fromMaybe "claude-sonnet-4-20250514" d.model,
+          thinking = fromMaybe ThinkingOff d.thinking,
+          maxIterations = fromMaybe (unsafePositive 20) d.maxIterations,
+          cacheTtl = fromMaybe CacheTtl5Min d.cacheTtl,
+          maxTokens = fromMaybe (unsafePositive 16384) d.maxTokens,
+          systemPrompt = fromMaybe [WorkspaceFile "SOUL.md"] d.systemPrompt,
+          toolSearch = fromMaybe ToolSearchDisabled d.toolSearch,
+          permissions = resolvePermissions (fromMaybe mempty d.permissions)
+        }
 
--- | Wrap resolved settings back into overrides (all 'Just').
-toOverrides :: AgentSettings -> AgentOverrides
+-- | Wrap resolved profile back into overrides (all 'Just').
+toOverrides :: AgentProfile -> AgentOverrides
 toOverrides s =
   AgentOverrides
     { model = Just s.model,
       thinking = Just s.thinking,
       maxIterations = Just s.maxIterations,
       cacheTtl = Just s.cacheTtl,
-      maxTokens = Just s.maxTokens
+      maxTokens = Just s.maxTokens,
+      systemPrompt = Just s.systemPrompt,
+      toolSearch = Just s.toolSearch,
+      permissions = Just (toPermissionConfigFile s.permissions)
     }
+
+-- | Keys accepted in agent override objects.
+agentOverrideKeys :: [Key]
+agentOverrideKeys = ["model", "thinking", "max_iterations", "cache_ttl", "max_tokens", "system_prompt", "tool_search", "permissions"]
+
+-- | Parse agent overrides from an Aeson object (shared by 'AgentOverrides' and 'AgentPreset').
+parseAgentOverrides :: Object -> Parser AgentOverrides
+parseAgentOverrides v =
+  AgentOverrides
+    <$> v .:? "model"
+    <*> v .:? "thinking"
+    <*> v .:? "max_iterations"
+    <*> v .:? "cache_ttl"
+    <*> v .:? "max_tokens"
+    <*> v .:? "system_prompt"
+    <*> v .:? "tool_search"
+    <*> v .:? "permissions"
 
 instance FromJSON AgentOverrides where
   parseJSON = withObject "AgentOverrides" $ \v -> do
-    rejectUnknownKeys "AgentOverrides" ["model", "thinking", "max_iterations", "cache_ttl", "max_tokens"] v
-    AgentOverrides
-      <$> v .:? "model"
-      <*> v .:? "thinking"
-      <*> v .:? "max_iterations"
-      <*> v .:? "cache_ttl"
-      <*> v .:? "max_tokens"
+    rejectUnknownKeys "AgentOverrides" agentOverrideKeys v
+    parseAgentOverrides v
 
 -- | Agent preset: overrides plus an optional description.
 -- Used in delegate config to document what each preset is for.
@@ -115,13 +175,5 @@ data AgentPreset = AgentPreset
 
 instance FromJSON AgentPreset where
   parseJSON = withObject "AgentPreset" $ \v -> do
-    rejectUnknownKeys "AgentPreset" ["description", "model", "thinking", "max_iterations", "cache_ttl", "max_tokens"] v
-    AgentPreset
-      <$> v .:? "description"
-      <*> ( AgentOverrides
-              <$> v .:? "model"
-              <*> v .:? "thinking"
-              <*> v .:? "max_iterations"
-              <*> v .:? "cache_ttl"
-              <*> v .:? "max_tokens"
-          )
+    rejectUnknownKeys "AgentPreset" ("description" : agentOverrideKeys) v
+    AgentPreset <$> v .:? "description" <*> parseAgentOverrides v

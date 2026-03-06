@@ -36,6 +36,26 @@ let
           inherit (pi) content;
         };
 
+      # Serialize permission overrides to a YAML-ready attrset (only non-null fields)
+      mkPermissionOverridesAttrs =
+        perms:
+        { }
+        // lib.optionalAttrs (perms.safePatterns != null) {
+          safe_patterns = perms.safePatterns;
+        }
+        // lib.optionalAttrs (perms.dangerousPatterns != null) {
+          dangerous_patterns = perms.dangerousPatterns;
+        }
+        // lib.optionalAttrs (perms.toolPolicies != null) {
+          tool_policies = perms.toolPolicies;
+        }
+        // lib.optionalAttrs (perms.defaultPolicy != null) {
+          default_policy = perms.defaultPolicy;
+        }
+        // lib.optionalAttrs (perms.approvalTimeoutSeconds != null) {
+          approval_timeout_seconds = perms.approvalTimeoutSeconds;
+        };
+
       # Serialize agent overrides to a flat attrset of YAML keys (no wrapper)
       mkAgentOverridesAttrs =
         agentOvr:
@@ -52,7 +72,20 @@ let
         }
         // lib.optionalAttrs (agentOvr.maxTokens != null) {
           max_tokens = agentOvr.maxTokens;
-        };
+        }
+        // lib.optionalAttrs (agentOvr.systemPrompt != null) {
+          system_prompt = map mkPromptInputYaml agentOvr.systemPrompt;
+        }
+        // lib.optionalAttrs (agentOvr.toolSearch != null) {
+          tool_search = agentOvr.toolSearch;
+        }
+        // (
+          let
+            permAttrs =
+              if agentOvr.permissions != null then mkPermissionOverridesAttrs agentOvr.permissions else { };
+          in
+          lib.optionalAttrs (permAttrs != { }) { permissions = permAttrs; }
+        );
 
       # Serialize agent preset (overrides + optional description)
       mkAgentPresetAttrs =
@@ -132,18 +165,20 @@ let
           max_iterations = agentCfg.agent.maxIterations;
           cache_ttl = agentCfg.agent.cacheTtl;
           max_tokens = agentCfg.agent.maxTokens;
+          system_prompt = map mkPromptInputYaml agentCfg.agent.systemPrompt;
+          permissions = {
+            safe_patterns = agentCfg.agent.permissions.safePatterns;
+            dangerous_patterns = agentCfg.agent.permissions.dangerousPatterns;
+            tool_policies = agentCfg.agent.permissions.toolPolicies;
+            default_policy = agentCfg.agent.permissions.defaultPolicy;
+            approval_timeout_seconds = agentCfg.agent.permissions.approvalTimeoutSeconds;
+          };
+        }
+        // lib.optionalAttrs (agentCfg.agent.toolSearch != null) {
+          tool_search = agentCfg.agent.toolSearch;
         };
         max_image_dimension = agentCfg.maxImageDimension;
         tool_use_messages = agentCfg.toolUseMessages;
-        system_prompt = map mkPromptInputYaml agentCfg.systemPrompt;
-
-        permissions = {
-          safe_patterns = agentCfg.permissions.safePatterns;
-          dangerous_patterns = agentCfg.permissions.dangerousPatterns;
-          tool_policies = agentCfg.permissions.toolPolicies;
-          default_policy = agentCfg.permissions.defaultPolicy;
-          approval_timeout_seconds = agentCfg.permissions.approvalTimeoutSeconds;
-        };
 
         compaction = {
           token_threshold = agentCfg.compaction.tokenThreshold;
@@ -165,9 +200,6 @@ let
           thinking_keep_turns = agentCfg.pruning.thinkingKeepTurns;
           tool_input_threshold = agentCfg.pruning.toolInputThreshold;
         };
-      }
-      // lib.optionalAttrs (agentCfg.toolSearch != null) {
-        tool_search = agentCfg.toolSearch;
       }
       // lib.optionalAttrs (mcpServersList != { }) {
         mcp_servers = mcpServersList;
@@ -211,7 +243,7 @@ let
         inputs:
         lib.filter (pi: pi.type == "workspace_file" && pi.path != null && pi.defaultContent != null) inputs;
 
-      systemPromptFiles = fromInputs agentCfg.systemPrompt;
+      systemPromptFiles = fromInputs agentCfg.agent.systemPrompt;
 
       webhookFiles = lib.concatMap (epCfg: fromInputs epCfg.prompt) (
         lib.attrValues agentCfg.webhook.endpoints
@@ -349,6 +381,55 @@ let
     };
   };
 
+  # Submodule for permission overrides (all fields nullable for selective override)
+  permissionOverrideModule = lib.types.submodule {
+    options = {
+      safePatterns = lib.mkOption {
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+        default = null;
+        description = "Regex patterns that override dangerousPatterns (always allowed).";
+      };
+
+      dangerousPatterns = lib.mkOption {
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+        default = null;
+        description = "Regex patterns that are always blocked.";
+      };
+
+      toolPolicies = lib.mkOption {
+        type = lib.types.nullOr (
+          lib.types.attrsOf (
+            lib.types.enum [
+              "allow"
+              "ask"
+              "deny"
+            ]
+          )
+        );
+        default = null;
+        description = "Per-tool policies (allow, ask, deny).";
+      };
+
+      defaultPolicy = lib.mkOption {
+        type = lib.types.nullOr (
+          lib.types.enum [
+            "allow"
+            "ask"
+            "deny"
+          ]
+        );
+        default = null;
+        description = "Default policy for tools not in toolPolicies.";
+      };
+
+      approvalTimeoutSeconds = lib.mkOption {
+        type = lib.types.nullOr lib.types.int;
+        default = null;
+        description = "Timeout for approval requests.";
+      };
+    };
+  };
+
   # Agent override options shared between per-chat, endpoint, and cron contexts
   agentOverrideOptions = {
     model = lib.mkOption {
@@ -385,6 +466,24 @@ let
       type = lib.types.nullOr lib.types.int;
       default = null;
       description = "Max tokens override for API responses. Null means use the agent's global value.";
+    };
+
+    systemPrompt = lib.mkOption {
+      type = lib.types.nullOr (lib.types.listOf promptInputModule);
+      default = null;
+      description = "System prompt override. Null means inherit from parent.";
+    };
+
+    toolSearch = lib.mkOption {
+      type = lib.types.nullOr (lib.types.listOf lib.types.str);
+      default = null;
+      description = "Tool search override. Null means inherit from parent. Empty list enables tool search with all tools deferred.";
+    };
+
+    permissions = lib.mkOption {
+      type = lib.types.nullOr permissionOverrideModule;
+      default = null;
+      description = "Permission overrides. Null means inherit from parent. Individual fields are merged, not replaced.";
     };
   };
 
@@ -571,6 +670,70 @@ let
             default = 16384;
             description = "Maximum tokens for API responses. Since billing is per actual token, a high limit costs nothing extra.";
           };
+
+          systemPrompt = lib.mkOption {
+            type = lib.types.listOf promptInputModule;
+            default = [
+              {
+                type = "workspace_file";
+                path = "SOUL.md";
+              }
+            ];
+            description = "System prompt inputs. Assembled in order to form the system prompt.";
+          };
+
+          toolSearch = lib.mkOption {
+            type = lib.types.nullOr (lib.types.listOf lib.types.str);
+            default = null;
+            description = "Tool names that are never deferred (always available). Null disables tool search.";
+            example = [ "run_command" ];
+          };
+
+          permissions = {
+            safePatterns = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              description = "Regex patterns that override dangerousPatterns (always allowed).";
+            };
+
+            dangerousPatterns = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              description = "Regex patterns that are always blocked.";
+            };
+
+            toolPolicies = lib.mkOption {
+              type = lib.types.attrsOf (
+                lib.types.enum [
+                  "allow"
+                  "ask"
+                  "deny"
+                ]
+              );
+              default = { };
+              description = "Per-tool policies (allow, ask, deny).";
+              example = {
+                run_command = "ask";
+                read_file = "allow";
+              };
+            };
+
+            defaultPolicy = lib.mkOption {
+              type = lib.types.enum [
+                "allow"
+                "ask"
+                "deny"
+              ];
+              default = "ask";
+              description = "Default policy for tools not in toolPolicies.";
+            };
+
+            approvalTimeoutSeconds = lib.mkOption {
+              type = lib.types.int;
+              default = 300;
+              description = "Timeout for approval requests.";
+            };
+          };
         };
 
         delegate = {
@@ -619,70 +782,6 @@ let
           type = lib.types.bool;
           default = true;
           description = "Send notification messages when the agent uses tools.";
-        };
-
-        systemPrompt = lib.mkOption {
-          type = lib.types.listOf promptInputModule;
-          default = [
-            {
-              type = "workspace_file";
-              path = "SOUL.md";
-            }
-          ];
-          description = "System prompt inputs. Assembled in order to form the system prompt.";
-        };
-
-        toolSearch = lib.mkOption {
-          type = lib.types.nullOr (lib.types.listOf lib.types.str);
-          default = null;
-          description = "Tool names that are never deferred (always available). Null disables tool search.";
-          example = [ "run_command" ];
-        };
-
-        permissions = {
-          safePatterns = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Regex patterns that override dangerousPatterns (always allowed).";
-          };
-
-          dangerousPatterns = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Regex patterns that are always blocked.";
-          };
-
-          toolPolicies = lib.mkOption {
-            type = lib.types.attrsOf (
-              lib.types.enum [
-                "allow"
-                "ask"
-                "deny"
-              ]
-            );
-            default = { };
-            description = "Per-tool policies (allow, ask, deny).";
-            example = {
-              run_command = "ask";
-              read_file = "allow";
-            };
-          };
-
-          defaultPolicy = lib.mkOption {
-            type = lib.types.enum [
-              "allow"
-              "ask"
-              "deny"
-            ];
-            default = "ask";
-            description = "Default policy for tools not in toolPolicies.";
-          };
-
-          approvalTimeoutSeconds = lib.mkOption {
-            type = lib.types.int;
-            default = 300;
-            description = "Timeout for approval requests.";
-          };
         };
 
         compaction = {

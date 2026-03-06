@@ -19,7 +19,7 @@ import Data.Text qualified as T
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.AgentSettings (AgentOverrides (..))
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
-import Elwood.Prompt (PromptInput (..), PromptInputFile (..))
+import Elwood.Prompt (PromptInput (..))
 import GHC.Generics (Generic)
 
 -- | Configuration for a single webhook endpoint
@@ -64,7 +64,7 @@ data WebhookServerConfigFile = WebhookServerConfigFile
 -- | YAML file configuration for a webhook endpoint
 data WebhookConfigFile = WebhookConfigFile
   { name :: Text,
-    prompt :: Maybe [PromptInputFile],
+    prompt :: Maybe [PromptInput],
     session :: Maybe Text,
     deliveryTarget :: Maybe DeliveryTargetFile,
     suppressIfContains :: Maybe Text,

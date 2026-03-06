@@ -2,7 +2,7 @@ module Elwood.Tools.Types
   ( -- * Tool Types
     Tool (..),
     ToolResult (..),
-    AgentContext (..),
+    ApprovalFunction,
     ApprovalOutcome (..),
 
     -- * Attachment Types
@@ -21,7 +21,6 @@ where
 import Data.Aeson (Value)
 import Data.Text (Text)
 import Elwood.Claude.Types qualified as Claude
-import Elwood.Permissions (PermissionConfig)
 
 -- | Result of executing a tool
 data ToolResult
@@ -31,13 +30,9 @@ data ToolResult
     ToolError Text
   deriving stock (Show, Eq)
 
--- | Agent-level context for policy checking and approval
-data AgentContext = AgentContext
-  { -- | Permission configuration for tool policy
-    permissionConfig :: PermissionConfig,
-    -- | Approval request function (transport-agnostic)
-    requestApproval :: Claude.ToolName -> Text -> IO ApprovalOutcome
-  }
+-- | Transport-agnostic approval request function.
+-- Takes a tool name and input summary, returns the approval outcome.
+type ApprovalFunction = Claude.ToolName -> Text -> IO ApprovalOutcome
 
 -- | Outcome of an approval request
 data ApprovalOutcome
@@ -50,7 +45,7 @@ data ApprovalOutcome
 
 -- | Default approval function for contexts without an interactive approval channel.
 -- Always returns 'ApprovalUnavailable'.
-noApprovalChannel :: Claude.ToolName -> Text -> IO ApprovalOutcome
+noApprovalChannel :: ApprovalFunction
 noApprovalChannel _ _ = pure ApprovalUnavailable
 
 -- | Type of attachment to send

@@ -228,10 +228,10 @@ mkStubDelegateToolWithModels =
     undefined -- client
     undefined -- baseRegistry
     undefined -- context
-    undefined -- agentSettings
+    undefined -- parentProfile
     undefined -- compaction
     undefined -- pruning
-    undefined -- systemPrompt
+    undefined -- workspaceDir
     undefined -- metrics
     (AgentPreset Nothing mempty) -- defaultAgentPreset
     Map.empty -- extraAgents
@@ -243,10 +243,10 @@ mkStubDelegateToolWithAgents agentNames =
     undefined -- client
     undefined -- baseRegistry
     undefined -- context
-    undefined -- agentSettings
+    undefined -- parentProfile
     undefined -- compaction
     undefined -- pruning
-    undefined -- systemPrompt
+    undefined -- workspaceDir
     undefined -- metrics
     (AgentPreset Nothing mempty) -- defaultAgentPreset
     (Map.fromList [(n, AgentPreset Nothing mempty) | n <- agentNames])
