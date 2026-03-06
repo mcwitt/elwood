@@ -19,10 +19,11 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Time (getCurrentTime)
+import Data.Time (diffUTCTime, getCurrentTime)
 import Elwood.AgentSettings (AgentProfile (..))
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Compaction qualified as Compaction
+import Elwood.Claude.Types (epoch)
 import Elwood.Command qualified as Cmd
 import Elwood.Config (TelegramChatConfig (..))
 import Elwood.Event
@@ -46,6 +47,7 @@ import Elwood.Notify (Severity (..), formatNotify)
 import Elwood.Positive (Positive (getPositive))
 import Elwood.Session (withSessionLock)
 import Elwood.Telegram qualified as Telegram
+import Numeric (showFFloat)
 import System.Exit (ExitCode (..))
 
 -- | Token count breakdown by category for /context display
@@ -223,6 +225,7 @@ handleTelegramMessage env msg =
           if null msgs
             then pure (Just $ formatNotify Info "Conversation is empty")
             else do
+              now <- getCurrentTime
               let msgCount = length msgs
                   totalTokens = Compaction.estimateTokens msgs
                   -- Walk all messages counting tokens per category
@@ -249,7 +252,15 @@ handleTelegramMessage env msg =
                       "• ~" <> formatKTok totalTokens <> " tokens (" <> T.pack (show thresholdPct) <> "% of compaction threshold)"
                     ]
                   catLines = map (\(label, tok) -> "• " <> label <> ": " <> pct tok) categories
-              pure (Just $ formatNotify Info $ T.intercalate "\n" (header : summary <> [""] <> ["Context breakdown:"] <> catLines))
+                  cacheTtl
+                    | conv.cacheExpiresAt == epoch = "no cache"
+                    | remaining <= 0 = "expired"
+                    | otherwise =
+                        let mins = (realToFrac remaining :: Double) / 60
+                         in T.pack (showFFloat (Just 1) mins "") <> " minutes"
+                    where
+                      remaining = diffUTCTime conv.cacheExpiresAt now
+              pure (Just $ formatNotify Info $ T.intercalate "\n" (header : summary <> [""] <> ["Context breakdown:"] <> catLines <> [""] <> ["Cache TTL: " <> cacheTtl]))
 
     countMessage :: TokenBreakdown -> Claude.ClaudeMessage -> TokenBreakdown
     countMessage acc msg_ = foldl' (countBlock msg_.role) acc msg_.content
