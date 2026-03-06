@@ -4,6 +4,7 @@ import Data.Aeson (Value (..), decode, encode)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Elwood.Claude.Types
+import Elwood.Thinking (ThinkingEffort (..))
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -15,7 +16,8 @@ tests =
       contentBlockTests,
       claudeMessageTests,
       usageTests,
-      roundTripTests
+      roundTripTests,
+      outputConfigTests
     ]
 
 roleTests :: TestTree
@@ -161,4 +163,60 @@ roundTripTests =
             KM.member "name" obj @?= True
             KM.member "description" obj @?= True
           _ -> assertFailure "Expected JSON object"
+    ]
+
+-- | Minimal MessagesRequest for testing serialization
+mkRequest :: Maybe ThinkingConfig -> Maybe OutputFormat -> MessagesRequest
+mkRequest thk fmt =
+  MessagesRequest
+    { model = "claude-sonnet-4-20250514",
+      maxTokens = 4096,
+      system = Nothing,
+      messages = [],
+      tools = [],
+      thinking = thk,
+      cacheControl = Nothing,
+      toolSearch = Nothing,
+      outputFormat = fmt
+    }
+
+-- | Look up a key in the encoded JSON of a MessagesRequest
+lookupField :: Aeson.Key -> MessagesRequest -> Maybe Value
+lookupField key req = case Aeson.decode (encode req) of
+  Just (Object obj) -> KM.lookup key obj
+  _ -> Nothing
+
+outputConfigTests :: TestTree
+outputConfigTests =
+  testGroup
+    "output_config serialization"
+    [ testCase "no thinking, no format -> no output_config" $ do
+        let req = mkRequest Nothing Nothing
+        lookupField "output_config" req @?= Nothing,
+      testCase "adaptive thinking, no format -> effort only" $ do
+        let req = mkRequest (Just (ThinkingConfigAdaptive EffortHigh)) Nothing
+        case lookupField "output_config" req of
+          Just (Object oc) -> do
+            KM.lookup "effort" oc @?= Just (Aeson.String "high")
+            KM.member "format" oc @?= False
+          other -> assertFailure $ "Expected output_config object, got: " <> show other,
+      testCase "no thinking, with format -> format only" $ do
+        let schema = Aeson.object ["type" Aeson..= ("object" :: String)]
+            req = mkRequest Nothing (Just (jsonSchemaFormat schema))
+        case lookupField "output_config" req of
+          Just (Object oc) -> do
+            KM.member "format" oc @?= True
+            KM.member "effort" oc @?= False
+          other -> assertFailure $ "Expected output_config object, got: " <> show other,
+      testCase "adaptive thinking + format -> both" $ do
+        let schema = Aeson.object ["type" Aeson..= ("object" :: String)]
+            req = mkRequest (Just (ThinkingConfigAdaptive EffortMedium)) (Just (jsonSchemaFormat schema))
+        case lookupField "output_config" req of
+          Just (Object oc) -> do
+            KM.lookup "effort" oc @?= Just (Aeson.String "medium")
+            KM.member "format" oc @?= True
+          other -> assertFailure $ "Expected output_config object, got: " <> show other,
+      testCase "budget thinking -> no output_config" $ do
+        let req = mkRequest (Just (ThinkingConfigBudget 8000)) Nothing
+        lookupField "output_config" req @?= Nothing
     ]

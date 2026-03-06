@@ -172,7 +172,8 @@ summarizeMessages client config onApiResponse msgs = do
             tools = [],
             thinking = Nothing,
             cacheControl = Nothing,
-            toolSearch = Nothing
+            toolSearch = Nothing,
+            outputFormat = Nothing
           }
 
   result <- sendMessages client request

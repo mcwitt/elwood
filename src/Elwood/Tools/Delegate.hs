@@ -12,7 +12,7 @@ import Data.Text qualified as T
 import Elwood.AgentSettings (AgentOverrides (..), AgentSettings (..), resolveAgent, toOverrides)
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
-import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..), Role (..), ToolSchema (..))
+import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..), Role (..), ToolSchema (..), jsonSchemaFormat)
 import Elwood.Config (CompactionConfig (..), PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
@@ -30,7 +30,8 @@ delegateDefaults = AgentOverrides Nothing Nothing (Just (unsafePositive 10)) (Ju
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
   { task :: Text,
-    overrides :: AgentOverrides
+    overrides :: AgentOverrides,
+    outputSchema :: Maybe Value
   }
 
 -- | Construct a delegate_task tool that spawns a sub-agent with an isolated
@@ -62,7 +63,9 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
                 <> "(e.g., reading/writing files, running scripts, using git). Reference existing files "
                 <> "by path rather than including their contents in the task description. "
                 <> "Use this to keep the main conversation context clean when a task "
-                <> "requires many tool calls (e.g., multi-file edits, long research).",
+                <> "requires many tool calls (e.g., multi-file edits, long research). "
+                <> "Pass output_schema to constrain the sub-agent's final response to a JSON schema, "
+                <> "making it easy to parse structured results programmatically.",
             inputSchema = delegateSchema allowedModels
           },
       execute = executeDelegateTask
@@ -86,6 +89,7 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
 
         let -- Disable compaction — sub-agent starts with empty history
             subCompaction = compaction {tokenThreshold = unsafePositive maxBound}
+            outputFmt = fmap jsonSchemaFormat di.outputSchema
             subConfig =
               AgentConfig
                 { logger = logger,
@@ -102,7 +106,8 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
                   onBeforeApiCall = Nothing,
                   toolSearch = Nothing,
                   pruningConfig = pruning,
-                  pruneHorizon = 0
+                  pruneHorizon = 0,
+                  outputFormat = outputFmt
                 }
             userMsg = ClaudeMessage User [TextBlock di.task]
 
@@ -147,6 +152,11 @@ delegateSchema allowedModels =
                     "description" .= ("Maximum agent loop iterations for the sub-agent (default: 10, max: 50)" :: Text),
                     "minimum" .= (1 :: Int),
                     "maximum" .= (50 :: Int)
+                  ],
+              "output_schema"
+                .= object
+                  [ "type" .= ("object" :: Text),
+                    "description" .= ("JSON Schema to constrain the sub-agent's final response. When provided, the response will be valid JSON matching this schema." :: Text)
                   ]
             ]
               ++ modelProp
@@ -198,6 +208,10 @@ parseDelegateInput allowedModels (Aeson.Object obj) = do
             else Right (Just (unsafePositive i))
     Just _ -> Left "Invalid 'max_iterations' parameter (must be an integer)"
     Nothing -> Right Nothing
+  outputSchemaParam <- case KM.lookup "output_schema" obj of
+    Just val@(Aeson.Object _) -> Right (Just val)
+    Just _ -> Left "Invalid 'output_schema' parameter (must be a JSON object)"
+    Nothing -> Right Nothing
   let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cacheTtl = Nothing}
-  Right DelegateInput {task, overrides = ovr}
+  Right DelegateInput {task, overrides = ovr, outputSchema = outputSchemaParam}
 parseDelegateInput _ _ = Left "Expected object input"

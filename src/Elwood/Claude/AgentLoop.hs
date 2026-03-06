@@ -24,6 +24,7 @@ import Elwood.Claude.Types
     ContentBlock (..),
     MessagesRequest (..),
     MessagesResponse (..),
+    OutputFormat,
     Role (..),
     StopReason (..),
     ThinkingConfig (..),
@@ -77,7 +78,11 @@ data AgentConfig = AgentConfig
     -- | Pruning configuration for tool results
     pruningConfig :: PruningConfig,
     -- | Prune horizon: tool results before this index are replaced with placeholders
-    pruneHorizon :: Int
+    pruneHorizon :: Int,
+    -- | Structured output format (e.g., JSON schema constraint).
+    -- Safe to pass on every iteration: the API only applies format
+    -- constraints when stop_reason is end_turn, not during tool_use.
+    outputFormat :: Maybe OutputFormat
   }
 
 -- | Convert a thinking level to the API thinking config
@@ -146,7 +151,8 @@ agentLoop cfg msgs iteration
                 tools = schemas,
                 thinking = thinkingToConfig thk,
                 cacheControl = Just cfg.agentSettings.cacheTtl,
-                toolSearch = cfg.toolSearch
+                toolSearch = cfg.toolSearch,
+                outputFormat = cfg.outputFormat
               }
 
       logInfo

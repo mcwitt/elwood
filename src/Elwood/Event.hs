@@ -229,7 +229,8 @@ handleEventCore env event callbacks = do
             onBeforeApiCall = callbacks.onBeforeApiCall,
             toolSearch = env.toolSearch,
             pruningConfig = env.pruning,
-            pruneHorizon = pruneHorizon
+            pruneHorizon = pruneHorizon,
+            outputFormat = Nothing
           }
 
   -- Run the agent turn

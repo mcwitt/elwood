@@ -25,6 +25,10 @@ module Elwood.Claude.Types
     CacheTtl (..),
     cacheTtlSeconds,
 
+    -- * Structured Output
+    OutputFormat (..),
+    jsonSchemaFormat,
+
     -- * API Request/Response
     MessagesRequest (..),
     MessagesResponse (..),
@@ -302,6 +306,17 @@ instance FromJSON CacheTtl where
     "1h" -> pure CacheTtl1Hour
     other -> fail $ "Invalid cache_ttl: " <> show other <> ". Expected \"5m\" or \"1h\""
 
+-- | Structured output format for the Claude Messages API.
+-- Currently only json_schema is supported, but this is left as
+-- an opaque Value to accommodate future API format types.
+newtype OutputFormat = OutputFormat {unOutputFormat :: Value}
+  deriving stock (Show)
+  deriving newtype (ToJSON)
+
+-- | Construct a JSON schema output format constraint.
+jsonSchemaFormat :: Value -> OutputFormat
+jsonSchemaFormat schema = OutputFormat (object ["type" .= ("json_schema" :: Text), "schema" .= schema])
+
 -- | Request to the Claude Messages API
 data MessagesRequest = MessagesRequest
   { -- | Model to use (e.g., "claude-sonnet-4-20250514")
@@ -319,7 +334,9 @@ data MessagesRequest = MessagesRequest
     -- | Prompt caching TTL (Nothing = disabled)
     cacheControl :: Maybe CacheTtl,
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
-    toolSearch :: Maybe (Set ToolName)
+    toolSearch :: Maybe (Set ToolName),
+    -- | Structured output format (e.g., JSON schema constraint)
+    outputFormat :: Maybe OutputFormat
   }
   deriving stock (Show, Generic)
 
@@ -332,7 +349,8 @@ instance ToJSON MessagesRequest where
       ]
         ++ systemField
         ++ toolsField
-        ++ maybe [] thinkingFields req.thinking
+        ++ thinkingField
+        ++ outputConfigField
         ++ maybe [] (\ttl -> ["cache_control" .= cacheTtlObj ttl]) req.cacheControl
     where
       -- When caching is enabled, send system as array of content blocks with
@@ -384,18 +402,31 @@ instance ToJSON MessagesRequest where
       effortToText EffortMedium = "medium"
       effortToText EffortHigh = "high"
 
-      thinkingFields :: ThinkingConfig -> [Pair]
-      thinkingFields (ThinkingConfigAdaptive effort) =
-        [ "thinking" .= object ["type" .= ("adaptive" :: Text)],
-          "output_config" .= object ["effort" .= effortToText effort]
-        ]
-      thinkingFields (ThinkingConfigBudget n) =
-        [ "thinking"
-            .= object
-              [ "type" .= ("enabled" :: Text),
-                "budget_tokens" .= n
-              ]
-        ]
+      -- "thinking" field (separate from output_config)
+      thinkingField :: [Pair]
+      thinkingField = case req.thinking of
+        Nothing -> []
+        Just (ThinkingConfigAdaptive _) ->
+          ["thinking" .= object ["type" .= ("adaptive" :: Text)]]
+        Just (ThinkingConfigBudget n) ->
+          [ "thinking"
+              .= object
+                [ "type" .= ("enabled" :: Text),
+                  "budget_tokens" .= n
+                ]
+          ]
+
+      -- Merged output_config from thinking effort + structured output format
+      outputConfigField :: [Pair]
+      outputConfigField =
+        let effortPairs = case req.thinking of
+              Just (ThinkingConfigAdaptive effort) -> ["effort" .= effortToText effort]
+              _ -> []
+            formatPairs = case req.outputFormat of
+              Just fmt -> ["format" .= fmt]
+              Nothing -> []
+            fields = effortPairs ++ formatPairs
+         in ["output_config" .= object fields | not (null fields)]
 
 -- | Token usage information
 data Usage = Usage
