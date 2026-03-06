@@ -186,7 +186,7 @@ handleTelegramMessage env msg =
                     Left _ ->
                       pure (Just $ formatNotify Error "Compaction failed")
                     Right compacted -> do
-                      env.conversations.updateConversation cid compacted
+                      env.conversations.updateConversation cid compacted env.agentProfile.cacheTtl
                       let afterTokens = Compaction.estimateTokens compacted
                           afterCount = length compacted
                       logInfo

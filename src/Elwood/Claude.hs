@@ -27,7 +27,6 @@ module Elwood.Claude
 
     -- * Types
     CacheTtl (..),
-    cacheTtlSeconds,
     ClaudeMessage (..),
     ContentBlock (..),
     Conversation (..),

@@ -24,6 +24,8 @@ module Elwood.Claude.Types
     -- * Cache Control
     CacheTtl (..),
     cacheTtlSeconds,
+    epoch,
+    extendCacheExpiry,
 
     -- * Structured Output
     OutputFormat (..),
@@ -47,7 +49,7 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.String (IsString)
 import Data.Text (Text)
-import Data.Time (NominalDiffTime, UTCTime)
+import Data.Time (NominalDiffTime, UTCTime (..), addUTCTime, fromGregorian)
 import Elwood.Thinking (ThinkingEffort (..))
 import GHC.Generics (Generic)
 
@@ -222,17 +224,25 @@ data Conversation = Conversation
     sessionId :: Text,
     -- | Message history (oldest first)
     messages :: [ClaudeMessage],
-    -- | When conversation was last updated
-    lastUpdated :: UTCTime
+    -- | When the prompt cache expires (max of all contributing TTLs)
+    cacheExpiresAt :: UTCTime
   }
   deriving stock (Show, Generic)
+
+-- | The epoch, used as a sentinel for "no cache exists yet".
+epoch :: UTCTime
+epoch = UTCTime (fromGregorian 1970 1 1) 0
+
+-- | Compute the new cache expiry: never shrink, only extend.
+extendCacheExpiry :: UTCTime -> CacheTtl -> UTCTime -> UTCTime
+extendCacheExpiry now ttl oldExpiry = max oldExpiry (addUTCTime (cacheTtlSeconds ttl) now)
 
 instance ToJSON Conversation where
   toJSON conv =
     object
       [ "sessionId" .= conv.sessionId,
         "messages" .= conv.messages,
-        "lastUpdated" .= conv.lastUpdated
+        "cacheExpiresAt" .= conv.cacheExpiresAt
       ]
 
 instance FromJSON Conversation where
@@ -240,7 +250,7 @@ instance FromJSON Conversation where
     Conversation
       <$> v .: "sessionId"
       <*> v .: "messages"
-      <*> v .: "lastUpdated"
+      <*> v .:? "cacheExpiresAt" .!= epoch
 
 -- | Why the model stopped generating
 data StopReason

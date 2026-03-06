@@ -25,8 +25,8 @@ type ConversationCache = Map.Map Text Conversation
 data ConversationStore = ConversationStore
   { -- | Get or create a conversation for a session
     getConversation :: Text -> IO Conversation,
-    -- | Update conversation with a complete message list
-    updateConversation :: Text -> [ClaudeMessage] -> IO (),
+    -- | Update conversation with a complete message list and cache TTL
+    updateConversation :: Text -> [ClaudeMessage] -> CacheTtl -> IO (),
     -- | Clear a conversation's history
     clearConversation :: Text -> IO (),
     -- | Get all conversations currently in the cache
@@ -96,7 +96,7 @@ fileLoadOrCreateConversation convDir cache sid = do
         case result of
           Right loadedConv -> pure loadedConv
           Left err -> fail $ "Failed to parse conversation file " <> path <> ": " <> err
-      else createEmptyConversation sid
+      else pure $ createEmptyConversation sid
 
   -- Update cache
   modifyMVar_ cache $ \c ->
@@ -104,26 +104,26 @@ fileLoadOrCreateConversation convDir cache sid = do
 
   pure conv
 
-fileUpdateConversation :: FilePath -> MVar ConversationCache -> Text -> [ClaudeMessage] -> IO ()
-fileUpdateConversation convDir cache sid msgs = do
+fileUpdateConversation :: FilePath -> MVar ConversationCache -> Text -> [ClaudeMessage] -> CacheTtl -> IO ()
+fileUpdateConversation convDir cache sid msgs ttl = do
   now <- getCurrentTime
 
-  let conv =
-        Conversation
-          { sessionId = sid,
-            messages = msgs,
-            lastUpdated = now
-          }
-
-  -- Update cache and persist
-  modifyMVar_ cache $ \c ->
-    pure $ Map.insert sid conv c
+  -- Atomically read old expiry and insert updated conversation
+  conv <- modifyMVar cache $ \c -> do
+    let oldExpiry = maybe epoch (.cacheExpiresAt) (Map.lookup sid c)
+        conv =
+          Conversation
+            { sessionId = sid,
+              messages = msgs,
+              cacheExpiresAt = extendCacheExpiry now ttl oldExpiry
+            }
+    pure (Map.insert sid conv c, conv)
 
   fileSaveConversation convDir conv
 
 fileClearConversation :: FilePath -> MVar ConversationCache -> Text -> IO ()
 fileClearConversation convDir cache sid = do
-  conv <- createEmptyConversation sid
+  let conv = createEmptyConversation sid
 
   -- Update cache
   modifyMVar_ cache $ \c ->
@@ -147,26 +147,27 @@ memGetConversation cache sid = do
   case Map.lookup sid c of
     Just conv -> pure conv
     Nothing -> do
-      conv <- createEmptyConversation sid
+      let conv = createEmptyConversation sid
       modifyMVar_ cache $ \c' ->
         pure $ Map.insert sid conv c'
       pure conv
 
-memUpdateConversation :: MVar ConversationCache -> Text -> [ClaudeMessage] -> IO ()
-memUpdateConversation cache sid msgs = do
+memUpdateConversation :: MVar ConversationCache -> Text -> [ClaudeMessage] -> CacheTtl -> IO ()
+memUpdateConversation cache sid msgs ttl = do
   now <- getCurrentTime
-  let conv =
-        Conversation
-          { sessionId = sid,
-            messages = msgs,
-            lastUpdated = now
-          }
-  modifyMVar_ cache $ \c ->
+  modifyMVar_ cache $ \c -> do
+    let oldExpiry = maybe epoch (.cacheExpiresAt) (Map.lookup sid c)
+        conv =
+          Conversation
+            { sessionId = sid,
+              messages = msgs,
+              cacheExpiresAt = extendCacheExpiry now ttl oldExpiry
+            }
     pure $ Map.insert sid conv c
 
 memClearConversation :: MVar ConversationCache -> Text -> IO ()
 memClearConversation cache sid = do
-  conv <- createEmptyConversation sid
+  let conv = createEmptyConversation sid
   modifyMVar_ cache $ \c ->
     pure $ Map.insert sid conv c
 
@@ -174,13 +175,11 @@ memClearConversation cache sid = do
 -- Shared helpers
 -- ============================================================
 
--- | Create an empty conversation
-createEmptyConversation :: Text -> IO Conversation
-createEmptyConversation sid = do
-  now <- getCurrentTime
-  pure
-    Conversation
-      { sessionId = sid,
-        messages = [],
-        lastUpdated = now
-      }
+-- | Create an empty conversation with epoch expiry (cache considered expired)
+createEmptyConversation :: Text -> Conversation
+createEmptyConversation sid =
+  Conversation
+    { sessionId = sid,
+      messages = [],
+      cacheExpiresAt = epoch
+    }

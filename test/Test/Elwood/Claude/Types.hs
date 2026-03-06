@@ -3,6 +3,9 @@ module Test.Elwood.Claude.Types (tests) where
 import Data.Aeson (Value (..), decode, encode)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
+import Data.Text (Text)
+import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
+import Elwood.Claude.Conversation (ConversationStore (..), newInMemoryConversationStore)
 import Elwood.Claude.Types
 import Elwood.Thinking (ThinkingEffort (..))
 import Test.Tasty
@@ -17,6 +20,7 @@ tests =
       claudeMessageTests,
       usageTests,
       roundTripTests,
+      conversationCacheTests,
       outputConfigTests
     ]
 
@@ -138,13 +142,24 @@ roundTripTests =
                     [ ClaudeMessage User [TextBlock "Hi"],
                       ClaudeMessage Assistant [TextBlock "Hello!"]
                     ],
-                  lastUpdated = read "2024-01-01 00:00:00 UTC"
+                  cacheExpiresAt = UTCTime (fromGregorian 2024 1 1) 0
                 }
         case decode (encode conv) :: Maybe Conversation of
           Just decoded -> do
             decoded.sessionId @?= conv.sessionId
             length decoded.messages @?= length conv.messages
+            decoded.cacheExpiresAt @?= conv.cacheExpiresAt
           Nothing -> assertFailure "Failed to decode Conversation",
+      testCase "old JSON without cacheExpiresAt defaults to epoch" $ do
+        let json =
+              Aeson.object
+                [ "sessionId" Aeson..= ("test" :: String),
+                  "messages" Aeson..= ([] :: [Value]),
+                  "lastUpdated" Aeson..= ("2024-01-01T00:00:00Z" :: String)
+                ]
+        case Aeson.fromJSON json :: Aeson.Result Conversation of
+          Aeson.Success conv -> conv.cacheExpiresAt @?= epoch
+          Aeson.Error err -> assertFailure $ "Failed to parse old Conversation JSON: " <> err,
       testCase "ToolSchema encodes name and description" $ do
         let schema =
               ToolSchema
@@ -163,6 +178,56 @@ roundTripTests =
             KM.member "name" obj @?= True
             KM.member "description" obj @?= True
           _ -> assertFailure "Expected JSON object"
+    ]
+
+conversationCacheTests :: TestTree
+conversationCacheTests =
+  testGroup
+    "Conversation cache expiry"
+    [ testCase "shorter TTL does not shrink cacheExpiresAt" $ do
+        store <- newInMemoryConversationStore
+        let sid :: Text = "test-session"
+            msgs = [ClaudeMessage User [TextBlock "hello"]]
+
+        -- First update with 1h TTL
+        store.updateConversation sid msgs CacheTtl1Hour
+        conv1 <- store.getConversation sid
+        let expiry1 = conv1.cacheExpiresAt
+
+        -- Second update with 5m TTL — must not shrink the expiry
+        store.updateConversation sid msgs CacheTtl5Min
+        conv2 <- store.getConversation sid
+        conv2.cacheExpiresAt @?= expiry1,
+      testCase "longer TTL extends cacheExpiresAt" $ do
+        store <- newInMemoryConversationStore
+        let sid :: Text = "test-session"
+            msgs = [ClaudeMessage User [TextBlock "hello"]]
+
+        -- First update with 5m TTL
+        store.updateConversation sid msgs CacheTtl5Min
+        conv1 <- store.getConversation sid
+
+        -- Second update with 1h TTL — should extend
+        store.updateConversation sid msgs CacheTtl1Hour
+        conv2 <- store.getConversation sid
+        assertBool "1h TTL should extend past 5m TTL" $
+          conv2.cacheExpiresAt > conv1.cacheExpiresAt,
+      testCase "new conversation has epoch expiry (always expired)" $ do
+        store <- newInMemoryConversationStore
+        conv <- store.getConversation ("fresh" :: Text)
+        conv.cacheExpiresAt @?= epoch,
+      testCase "extendCacheExpiry: old expiry wins when larger" $ do
+        let now = UTCTime (fromGregorian 2024 6 1) 43200
+            oldExpiry = addUTCTime 3600 now -- now + 1h
+            -- 5m TTL: now + 300s < oldExpiry, so old wins
+            result = extendCacheExpiry now CacheTtl5Min oldExpiry
+        result @?= oldExpiry,
+      testCase "extendCacheExpiry: new TTL wins when larger" $ do
+        let now = UTCTime (fromGregorian 2024 6 1) 43200
+            oldExpiry = addUTCTime 100 now -- old expires in 100s
+            -- 1h TTL: now + 3600s > oldExpiry, so new wins
+            result = extendCacheExpiry now CacheTtl1Hour oldExpiry
+        result @?= addUTCTime 3600 now
     ]
 
 -- | Minimal MessagesRequest for testing serialization

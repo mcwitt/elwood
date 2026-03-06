@@ -48,11 +48,10 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
+import Data.Time (UTCTime, getCurrentTime)
 import Elwood.AgentSettings (AgentPreset, AgentProfile (..), ToolSearchConfig (..))
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Pruning (PruneHorizons, getAndUpdateHorizon)
-import Elwood.Claude.Types (cacheTtlSeconds)
 import Elwood.Config (CompactionConfig, PruningConfig, TelegramChatConfig (..))
 import Elwood.Event.Types
   ( Base64Data (..),
@@ -180,7 +179,7 @@ handleEventCore env event callbacks = do
     Nothing -> pure ([], 0)
     Just cid -> do
       conv <- env.conversations.getConversation cid
-      let cacheExpired = diffUTCTime now conv.lastUpdated > cacheTtlSeconds prof.cacheTtl
+      let cacheExpired = now > conv.cacheExpiresAt
       h <- getAndUpdateHorizon env.pruneHorizons cid (length conv.messages) cacheExpired
       pure (conv.messages, h)
 
@@ -256,7 +255,7 @@ handleEventCore env event callbacks = do
       -- Update conversation (skip for isolated sessions)
       case mConversationId of
         Nothing -> pure ()
-        Just cid -> env.conversations.updateConversation cid allMessages
+        Just cid -> env.conversations.updateConversation cid allMessages prof.cacheTtl
 
       -- Deliver response
       callbacks.onResponse responseText
