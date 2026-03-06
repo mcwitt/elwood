@@ -172,7 +172,8 @@ runApp config = do
             pruneHorizons = pruneHorizons_,
             sessionLocks = sessionLocks_,
             toolUseMessages = config.toolUseMessages,
-            delegateOverrides = config.delegateOverrides,
+            delegateDefaultAgent = config.delegateDefaultAgent,
+            delegateExtraAgents = config.delegateExtraAgents,
             delegateAllowedModels = config.delegateAllowedModels,
             maxImageDimension = config.maxImageDimension
           }

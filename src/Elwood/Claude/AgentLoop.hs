@@ -38,7 +38,7 @@ import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
 import Elwood.Positive (Positive (getPositive))
-import Elwood.Thinking (ThinkingEffort (..), ThinkingLevel (..))
+import Elwood.Thinking (ThinkingLevel (..))
 import Elwood.Tools.Registry
   ( ToolRegistry,
     lookupTool,
@@ -91,14 +91,6 @@ thinkingToConfig ThinkingOff = Nothing
 thinkingToConfig (ThinkingAdaptive effort) = Just (ThinkingConfigAdaptive effort)
 thinkingToConfig (ThinkingBudget n) = Just (ThinkingConfigBudget n)
 
--- | Get the max_tokens value for a thinking level
-thinkingMaxTokens :: ThinkingLevel -> Int
-thinkingMaxTokens ThinkingOff = 4096
-thinkingMaxTokens (ThinkingAdaptive EffortLow) = 4096
-thinkingMaxTokens (ThinkingAdaptive EffortMedium) = 16000
-thinkingMaxTokens (ThinkingAdaptive EffortHigh) = 32768
-thinkingMaxTokens (ThinkingBudget n) = max 4096 (n * 2)
-
 -- | Run a complete agent turn, handling tool use loops
 runAgentTurn ::
   AgentConfig ->
@@ -145,7 +137,7 @@ agentLoop cfg msgs iteration
       let request =
             MessagesRequest
               { model = mdl,
-                maxTokens = thinkingMaxTokens thk,
+                maxTokens = cfg.agentSettings.maxTokens.getPositive,
                 system = cfg.systemPrompt,
                 messages = prunedMsgs,
                 tools = schemas,

@@ -29,7 +29,8 @@ data AgentOverrides = AgentOverrides
   { model :: Maybe Text,
     thinking :: Maybe ThinkingLevel,
     maxIterations :: Maybe Positive,
-    cacheTtl :: Maybe CacheTtl
+    cacheTtl :: Maybe CacheTtl,
+    maxTokens :: Maybe Positive
   }
   deriving stock (Show, Eq, Generic)
 
@@ -40,18 +41,20 @@ instance Semigroup AgentOverrides where
       { model = b.model <|> a.model,
         thinking = b.thinking <|> a.thinking,
         maxIterations = b.maxIterations <|> a.maxIterations,
-        cacheTtl = b.cacheTtl <|> a.cacheTtl
+        cacheTtl = b.cacheTtl <|> a.cacheTtl,
+        maxTokens = b.maxTokens <|> a.maxTokens
       }
 
 instance Monoid AgentOverrides where
-  mempty = AgentOverrides Nothing Nothing Nothing Nothing
+  mempty = AgentOverrides Nothing Nothing Nothing Nothing Nothing
 
 -- | Resolved agent settings — all fields concrete. Used at runtime.
 data AgentSettings = AgentSettings
   { model :: Text,
     thinking :: ThinkingLevel,
     maxIterations :: Positive,
-    cacheTtl :: CacheTtl
+    cacheTtl :: CacheTtl,
+    maxTokens :: Positive
   }
   deriving stock (Show, Eq, Generic)
 
@@ -62,7 +65,8 @@ agentDefaults =
     { model = Just "claude-sonnet-4-20250514",
       thinking = Just ThinkingOff,
       maxIterations = Just (unsafePositive 20),
-      cacheTtl = Just CacheTtl5Min
+      cacheTtl = Just CacheTtl5Min,
+      maxTokens = Just (unsafePositive 16384)
     }
 
 -- | Resolve overrides to concrete settings, using hardcoded fallbacks
@@ -73,7 +77,8 @@ resolveAgent o =
     { model = fromMaybe "claude-sonnet-4-20250514" o.model,
       thinking = fromMaybe ThinkingOff o.thinking,
       maxIterations = fromMaybe (unsafePositive 20) o.maxIterations,
-      cacheTtl = fromMaybe CacheTtl5Min o.cacheTtl
+      cacheTtl = fromMaybe CacheTtl5Min o.cacheTtl,
+      maxTokens = fromMaybe (unsafePositive 16384) o.maxTokens
     }
 
 -- | Wrap resolved settings back into overrides (all 'Just').
@@ -83,14 +88,16 @@ toOverrides s =
     { model = Just s.model,
       thinking = Just s.thinking,
       maxIterations = Just s.maxIterations,
-      cacheTtl = Just s.cacheTtl
+      cacheTtl = Just s.cacheTtl,
+      maxTokens = Just s.maxTokens
     }
 
 instance FromJSON AgentOverrides where
   parseJSON = withObject "AgentOverrides" $ \v -> do
-    rejectUnknownKeys "AgentOverrides" ["model", "thinking", "max_iterations", "cache_ttl"] v
+    rejectUnknownKeys "AgentOverrides" ["model", "thinking", "max_iterations", "cache_ttl", "max_tokens"] v
     AgentOverrides
       <$> v .:? "model"
       <*> v .:? "thinking"
       <*> v .:? "max_iterations"
       <*> v .:? "cache_ttl"
+      <*> v .:? "max_tokens"

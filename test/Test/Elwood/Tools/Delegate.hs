@@ -1,6 +1,7 @@
 module Test.Elwood.Tools.Delegate (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
 import Elwood.Tools.Delegate (mkDelegateTaskTool)
@@ -16,7 +17,8 @@ tests =
       inputParsingTests,
       modelValidationTests,
       thinkingValidationTests,
-      maxIterationsValidationTests
+      maxIterationsValidationTests,
+      agentSelectionTests
     ]
 
 schemaTests :: TestTree
@@ -75,14 +77,18 @@ thinkingValidationTests :: TestTree
 thinkingValidationTests =
   testGroup
     "Thinking validation"
-    [ testCase "invalid thinking returns error" $ do
+    [ testCase "string thinking returns error" $ do
         let tool = mkStubDelegateTool
-        result <- tool.execute (object ["task" .= ("test" :: Text), "thinking" .= ("ultra" :: Text)])
-        result @?= ToolError "Invalid thinking level 'ultra'. Allowed: off, low, medium, high",
-      testCase "non-string thinking returns error" $ do
+        result <- tool.execute (object ["task" .= ("test" :: Text), "thinking" .= ("medium" :: Text)])
+        result @?= ToolError "Invalid 'thinking' parameter (must be an object like {\"type\": \"adaptive\", \"effort\": \"medium\"})",
+      testCase "non-object thinking returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "thinking" .= (42 :: Int)])
-        result @?= ToolError "Invalid 'thinking' parameter (must be a string)"
+        result @?= ToolError "Invalid 'thinking' parameter (must be an object like {\"type\": \"adaptive\", \"effort\": \"medium\"})",
+      testCase "invalid thinking type in object returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "thinking" .= object ["type" .= ("turbo" :: Text)]])
+        result @?= ToolError "Invalid thinking config: Invalid thinking type 'turbo'. Allowed: off, adaptive, fixed"
     ]
 
 maxIterationsValidationTests :: TestTree
@@ -101,6 +107,24 @@ maxIterationsValidationTests =
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "max_iterations" .= (0 :: Int)])
         result @?= ToolError "max_iterations must be between 1 and 50"
+    ]
+
+agentSelectionTests :: TestTree
+agentSelectionTests =
+  testGroup
+    "Agent selection"
+    [ testCase "agent rejected when extra_agents is empty" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "agent" .= ("fast" :: Text)])
+        result @?= ToolError "Agent selection is not enabled (configure delegate.extra_agents)",
+      testCase "invalid agent name returns error" $ do
+        let tool = mkStubDelegateToolWithAgents ["fast", "deep"]
+        result <- tool.execute (object ["task" .= ("test" :: Text), "agent" .= ("turbo" :: Text)])
+        result @?= ToolError "Invalid agent 'turbo'. Available: deep, fast",
+      testCase "non-string agent returns error" $ do
+        let tool = mkStubDelegateToolWithAgents ["fast"]
+        result <- tool.execute (object ["task" .= ("test" :: Text), "agent" .= (42 :: Int)])
+        result @?= ToolError "Invalid 'agent' parameter (must be a string)"
     ]
 
 -- | Build a delegate tool that will fail at the API call level but can
@@ -122,4 +146,21 @@ mkStubDelegateToolWithModels =
     undefined -- pruning
     undefined -- systemPrompt
     undefined -- metrics
-    mempty -- configOverrides
+    mempty -- defaultAgentOverrides
+    Map.empty -- extraAgents
+
+mkStubDelegateToolWithAgents :: [Text] -> Tool
+mkStubDelegateToolWithAgents agentNames =
+  mkDelegateTaskTool
+    undefined -- logger
+    undefined -- client
+    undefined -- baseRegistry
+    undefined -- context
+    undefined -- agentSettings
+    undefined -- compaction
+    undefined -- pruning
+    undefined -- systemPrompt
+    undefined -- metrics
+    mempty -- defaultAgentOverrides
+    (Map.fromList [(n, mempty) | n <- agentNames])
+    [] -- allowedModels

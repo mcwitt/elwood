@@ -36,22 +36,29 @@ let
           inherit (pi) content;
         };
 
+      # Serialize agent overrides to a flat attrset of YAML keys (no wrapper)
+      mkAgentOverridesAttrs =
+        agentOvr:
+        { }
+        // lib.optionalAttrs (agentOvr.model != null) { model = agentOvr.model; }
+        // lib.optionalAttrs (agentOvr.thinking != null) {
+          thinking = mkThinkingConfig agentOvr.thinking;
+        }
+        // lib.optionalAttrs (agentOvr.maxIterations != null) {
+          max_iterations = agentOvr.maxIterations;
+        }
+        // lib.optionalAttrs (agentOvr.cacheTtl != null) {
+          cache_ttl = agentOvr.cacheTtl;
+        }
+        // lib.optionalAttrs (agentOvr.maxTokens != null) {
+          max_tokens = agentOvr.maxTokens;
+        };
+
       # Serialize agent overrides to a nested `agent` attrset (omitted when empty)
       mkAgentOverrides =
         agentOvr:
         let
-          attrs =
-            { }
-            // lib.optionalAttrs (agentOvr.model != null) { model = agentOvr.model; }
-            // lib.optionalAttrs (agentOvr.thinking != null) {
-              thinking = mkThinkingConfig agentOvr.thinking;
-            }
-            // lib.optionalAttrs (agentOvr.maxIterations != null) {
-              max_iterations = agentOvr.maxIterations;
-            }
-            // lib.optionalAttrs (agentOvr.cacheTtl != null) {
-              cache_ttl = agentOvr.cacheTtl;
-            };
+          attrs = mkAgentOverridesAttrs agentOvr;
         in
         lib.optionalAttrs (attrs != { }) { agent = attrs; };
 
@@ -116,6 +123,7 @@ let
           thinking = mkThinkingConfig agentCfg.agent.thinking;
           max_iterations = agentCfg.agent.maxIterations;
           cache_ttl = agentCfg.agent.cacheTtl;
+          max_tokens = agentCfg.agent.maxTokens;
         };
         max_image_dimension = agentCfg.maxImageDimension;
         tool_use_messages = agentCfg.toolUseMessages;
@@ -167,8 +175,15 @@ let
       }
       // (
         let
+          defaultAgentAttrs = mkAgentOverridesAttrs agentCfg.delegate.defaultAgent;
+          extraAgentsAttrs = lib.mapAttrs (_: mkAgentOverridesAttrs) agentCfg.delegate.extraAgents;
           delegateAttrs =
-            mkAgentOverrides agentCfg.delegate.agent
+            lib.optionalAttrs (defaultAgentAttrs != { }) {
+              default_agent = defaultAgentAttrs;
+            }
+            // lib.optionalAttrs (extraAgentsAttrs != { }) {
+              extra_agents = extraAgentsAttrs;
+            }
             // lib.optionalAttrs (agentCfg.delegate.allowedModels != null) {
               allowed_models = agentCfg.delegate.allowedModels;
             };
@@ -357,6 +372,12 @@ let
       default = null;
       description = "Cache TTL override. Null means use the agent's global value.";
     };
+
+    maxTokens = lib.mkOption {
+      type = lib.types.nullOr lib.types.int;
+      default = null;
+      description = "Max tokens override for API responses. Null means use the agent's global value.";
+    };
   };
 
   # Options shared between webhook endpoints and cron jobs
@@ -536,10 +557,22 @@ let
               "1h" for 1-hour extended cache (2x write cost).
             '';
           };
+
+          maxTokens = lib.mkOption {
+            type = lib.types.int;
+            default = 16384;
+            description = "Maximum tokens for API responses. Since billing is per actual token, a high limit costs nothing extra.";
+          };
         };
 
         delegate = {
-          agent = agentOverrideOptions;
+          defaultAgent = agentOverrideOptions;
+
+          extraAgents = lib.mkOption {
+            type = lib.types.attrsOf (lib.types.submodule { options = agentOverrideOptions; });
+            default = { };
+            description = "Named agent configurations selectable via delegate_task's 'agent' parameter.";
+          };
 
           allowedModels = lib.mkOption {
             type = lib.types.nullOr (lib.types.listOf lib.types.str);

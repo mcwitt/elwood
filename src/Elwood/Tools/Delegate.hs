@@ -7,6 +7,9 @@ import Control.Exception (SomeException, catch)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.AgentSettings (AgentOverrides (..), AgentSettings (..), resolveAgent, toOverrides)
@@ -17,7 +20,7 @@ import Elwood.Config (CompactionConfig (..), PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
 import Elwood.Positive (Positive (getPositive), unsafePositive)
-import Elwood.Thinking (ThinkingLevel (..), parseThinkingLevel)
+import Elwood.Thinking (parseThinkingLevel)
 import Elwood.Tools.Registry (ToolRegistry)
 import Elwood.Tools.Types
 
@@ -25,11 +28,12 @@ import Elwood.Tools.Types
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
 -- Model and thinking inherit from the parent agent.
 delegateDefaults :: AgentOverrides
-delegateDefaults = AgentOverrides Nothing Nothing (Just (unsafePositive 10)) (Just CacheTtl5Min)
+delegateDefaults = AgentOverrides Nothing Nothing (Just (unsafePositive 10)) (Just CacheTtl5Min) Nothing
 
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
   { task :: Text,
+    agentName :: Maybe Text,
     overrides :: AgentOverrides,
     outputSchema :: Maybe Value
   }
@@ -48,9 +52,10 @@ mkDelegateTaskTool ::
   Maybe Text ->
   MetricsStore ->
   AgentOverrides ->
+  Map Text AgentOverrides ->
   [Text] ->
   Tool
-mkDelegateTaskTool logger client baseRegistry context agentSettings compaction pruning systemPrompt metrics configOverrides allowedModels =
+mkDelegateTaskTool logger client baseRegistry context agentSettings compaction pruning systemPrompt metrics defaultAgentOverrides extraAgents allowedModels =
   Tool
     { schema =
         ToolSchema
@@ -65,18 +70,25 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
                 <> "Use this to keep the main conversation context clean when a task "
                 <> "requires many tool calls (e.g., multi-file edits, long research). "
                 <> "Pass output_schema to constrain the sub-agent's final response to a JSON schema, "
-                <> "making it easy to parse structured results programmatically.",
-            inputSchema = delegateSchema allowedModels
+                <> "making it easy to parse structured results programmatically. "
+                <> "When using a named agent preset, you can further override individual "
+                <> "settings (model, thinking, max_iterations) via tool parameters. "
+                <> "Note: when overriding model or thinking, ensure they are compatible "
+                <> "(e.g., Haiku does not support adaptive thinking).",
+            inputSchema = delegateSchema allowedModels extraAgentKeys
           },
       execute = executeDelegateTask
     }
   where
+    extraAgentKeys = Map.keys extraAgents
+
     executeDelegateTask :: Value -> IO ToolResult
-    executeDelegateTask input = case parseDelegateInput allowedModels input of
+    executeDelegateTask input = case parseDelegateInput allowedModels extraAgentKeys input of
       Left err -> pure $ toolError err
       Right di -> do
-        -- Layering: parent settings < delegate defaults < config overrides < tool params
-        let baseOverrides = toOverrides agentSettings <> delegateDefaults <> configOverrides
+        -- Layering: parent settings < delegate defaults < config default_agent < extra agent < tool params
+        let extraAgentOvr = maybe mempty (\n -> fromMaybe mempty (Map.lookup n extraAgents)) di.agentName
+            baseOverrides = toOverrides agentSettings <> delegateDefaults <> defaultAgentOverrides <> extraAgentOvr
             subSettings = resolveAgent (baseOverrides <> di.overrides)
 
         logInfo
@@ -129,8 +141,8 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
             pure $ toolError err
 
 -- | JSON Schema for delegate_task input
-delegateSchema :: [Text] -> Value
-delegateSchema allowedModels =
+delegateSchema :: [Text] -> [Text] -> Value
+delegateSchema allowedModels agentKeys =
   object
     [ "type" .= ("object" :: Text),
       "properties"
@@ -142,9 +154,27 @@ delegateSchema allowedModels =
                   ],
               "thinking"
                 .= object
-                  [ "type" .= ("string" :: Text),
-                    "description" .= ("Thinking level for the sub-agent (default: inherit from config)" :: Text),
-                    "enum" .= (["off", "low", "medium", "high"] :: [Text])
+                  [ "type" .= ("object" :: Text),
+                    "description" .= ("Thinking config for the sub-agent. Example: {\"type\": \"adaptive\", \"effort\": \"medium\"} or {\"type\": \"off\"}. Ensure compatibility with the model (e.g., Haiku does not support adaptive thinking)." :: Text),
+                    "properties"
+                      .= object
+                        [ "type"
+                            .= object
+                              [ "type" .= ("string" :: Text),
+                                "enum" .= (["off", "adaptive", "fixed"] :: [Text])
+                              ],
+                          "effort"
+                            .= object
+                              [ "type" .= ("string" :: Text),
+                                "enum" .= (["low", "medium", "high"] :: [Text])
+                              ],
+                          "budget_tokens"
+                            .= object
+                              [ "type" .= ("integer" :: Text),
+                                "minimum" .= (1 :: Int)
+                              ]
+                        ],
+                    "required" .= (["type"] :: [Text])
                   ],
               "max_iterations"
                 .= object
@@ -160,6 +190,7 @@ delegateSchema allowedModels =
                   ]
             ]
               ++ modelProp
+              ++ agentProp
           ),
       "required" .= (["task"] :: [Text])
     ]
@@ -174,15 +205,34 @@ delegateSchema allowedModels =
                   "enum" .= allowedModels
                 ]
           ]
+    agentProp
+      | null agentKeys = []
+      | otherwise =
+          [ "agent"
+              .= object
+                [ "type" .= ("string" :: Text),
+                  "description" .= ("Named agent preset to use (preconfigured model+thinking combo)" :: Text),
+                  "enum" .= agentKeys
+                ]
+          ]
 
 -- | Parse delegate_task input
-parseDelegateInput :: [Text] -> Value -> Either Text DelegateInput
-parseDelegateInput allowedModels (Aeson.Object obj) = do
+parseDelegateInput :: [Text] -> [Text] -> Value -> Either Text DelegateInput
+parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
   task <- case KM.lookup "task" obj of
     Just (Aeson.String t)
       | T.null (T.strip t) -> Left "Task description must not be empty"
       | otherwise -> Right t
     _ -> Left "Missing or invalid 'task' parameter"
+  agentParam <- case KM.lookup "agent" obj of
+    Just (Aeson.String a)
+      | null agentKeys ->
+          Left "Agent selection is not enabled (configure delegate.extra_agents)"
+      | a `notElem` agentKeys ->
+          Left $ "Invalid agent '" <> a <> "'. Available: " <> T.intercalate ", " agentKeys
+      | otherwise -> Right (Just a)
+    Just _ -> Left "Invalid 'agent' parameter (must be a string)"
+    Nothing -> Right Nothing
   modelParam <- case KM.lookup "model" obj of
     Just (Aeson.String m)
       | null allowedModels ->
@@ -193,12 +243,10 @@ parseDelegateInput allowedModels (Aeson.Object obj) = do
     Just _ -> Left "Invalid 'model' parameter (must be a string)"
     Nothing -> Right Nothing
   thinkingParam <- case KM.lookup "thinking" obj of
-    Just (Aeson.String t) -> case parseThinkingLevel (Aeson.String t) of
-      ThinkingOff
-        | T.toLower t /= "off" ->
-            Left $ "Invalid thinking level '" <> t <> "'. Allowed: off, low, medium, high"
-      level -> Right (Just level)
-    Just _ -> Left "Invalid 'thinking' parameter (must be a string)"
+    Just val@(Aeson.Object _) -> case parseThinkingLevel val of
+      Right level -> Right (Just level)
+      Left err -> Left $ "Invalid thinking config: " <> err
+    Just _ -> Left "Invalid 'thinking' parameter (must be an object like {\"type\": \"adaptive\", \"effort\": \"medium\"})"
     Nothing -> Right Nothing
   maxIterParam <- case KM.lookup "max_iterations" obj of
     Just (Aeson.Number n) ->
@@ -212,6 +260,6 @@ parseDelegateInput allowedModels (Aeson.Object obj) = do
     Just val@(Aeson.Object _) -> Right (Just val)
     Just _ -> Left "Invalid 'output_schema' parameter (must be a JSON object)"
     Nothing -> Right Nothing
-  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cacheTtl = Nothing}
-  Right DelegateInput {task, overrides = ovr, outputSchema = outputSchemaParam}
-parseDelegateInput _ _ = Left "Expected object input"
+  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cacheTtl = Nothing, maxTokens = Nothing}
+  Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam}
+parseDelegateInput _ _ _ = Left "Expected object input"

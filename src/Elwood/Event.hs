@@ -121,8 +121,10 @@ data AppEnv = AppEnv
     sessionLocks :: SessionLocks,
     -- | Send notification messages when the agent uses tools
     toolUseMessages :: Bool,
-    -- | Delegate sub-agent overrides (model, thinking, max_iterations)
-    delegateOverrides :: AgentOverrides,
+    -- | Default delegate sub-agent overrides (model, thinking, max_iterations)
+    delegateDefaultAgent :: AgentOverrides,
+    -- | Named agent presets for delegate_task
+    delegateExtraAgents :: Map Text AgentOverrides,
     -- | Allowed models for delegate_task tool parameter
     delegateAllowedModels :: [Text],
     -- | Maximum image dimension for resizing (Nothing = disabled)
@@ -208,7 +210,8 @@ handleEventCore env event callbacks = do
           env.pruning
           systemPrompt
           env.metrics
-          env.delegateOverrides
+          env.delegateDefaultAgent
+          env.delegateExtraAgents
           env.delegateAllowedModels
       registryWithDelegate = Tools.registerTool delegateTool env.registry
 

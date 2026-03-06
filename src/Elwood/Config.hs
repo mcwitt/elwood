@@ -96,8 +96,10 @@ data Config = Config
     systemPrompt :: [PromptInput],
     -- | Send notification messages when the agent uses tools
     toolUseMessages :: Bool,
-    -- | Delegate sub-agent overrides (model, thinking, max_iterations)
-    delegateOverrides :: AgentOverrides,
+    -- | Default delegate sub-agent overrides (model, thinking, max_iterations)
+    delegateDefaultAgent :: AgentOverrides,
+    -- | Named agent presets for delegate_task
+    delegateExtraAgents :: Map Text AgentOverrides,
     -- | Allowed models for delegate_task tool parameter
     delegateAllowedModels :: [Text],
     -- | Maximum image dimension (Nothing = disabled, Just n = resize to n)
@@ -187,7 +189,8 @@ data ConfigFile = ConfigFile
 
 -- | Delegate sub-agent configuration from YAML file
 data DelegateConfigFile = DelegateConfigFile
-  { agentOverrides :: AgentOverrides,
+  { defaultAgent :: AgentOverrides,
+    extraAgents :: Map Text AgentOverrides,
     allowedModels :: Maybe [Text]
   }
   deriving stock (Show, Generic)
@@ -386,9 +389,10 @@ instance FromJSON PruningConfigFile where
 
 instance FromJSON DelegateConfigFile where
   parseJSON = withObject "DelegateConfigFile" $ \v -> do
-    rejectUnknownKeys "DelegateConfigFile" ["agent", "allowed_models"] v
+    rejectUnknownKeys "DelegateConfigFile" ["default_agent", "extra_agents", "allowed_models"] v
     DelegateConfigFile
-      <$> v .:? "agent" .!= mempty
+      <$> v .:? "default_agent" .!= mempty
+      <*> v .:? "extra_agents" .!= Map.empty
       <*> v .:? "allowed_models"
 
 instance FromJSON MCPServerConfigFile where
@@ -508,7 +512,7 @@ loadConfig path = do
     Just n | n < 50 -> fail "max_image_dimension must be >= 50"
     _ -> pure ()
 
-  let delCfg = fromMaybe (DelegateConfigFile mempty Nothing) configFile.delegate
+  let delCfg = fromMaybe (DelegateConfigFile mempty Map.empty Nothing) configFile.delegate
 
   pure
     Config
@@ -526,7 +530,8 @@ loadConfig path = do
         toolSearch = parseToolSearch =<< configFile.toolSearch,
         systemPrompt = systemPrompt_,
         toolUseMessages = fromMaybe True configFile.toolUseMessages,
-        delegateOverrides = delCfg.agentOverrides,
+        delegateDefaultAgent = delCfg.defaultAgent,
+        delegateExtraAgents = delCfg.extraAgents,
         delegateAllowedModels = fromMaybe [] delCfg.allowedModels,
         maxImageDimension = maxImgDim
       }

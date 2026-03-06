@@ -67,34 +67,46 @@ thinkingLevelTests =
         ThinkingBudget 1024 == ThinkingBudget 1024 @?= True
         ThinkingBudget 1024 == ThinkingBudget 2048 @?= False,
       testCase "parseThinkingLevel parses Bool False as off" $ do
-        parseThinkingLevel (Bool False) @?= ThinkingOff,
-      testCase "parseThinkingLevel parses string off" $ do
-        parseThinkingLevel (String "off") @?= ThinkingOff,
+        parseThinkingLevel (Bool False) @?= Right ThinkingOff,
+      testCase "parseThinkingLevel rejects string values" $ do
+        case parseThinkingLevel (String "off") of
+          Left _ -> pure ()
+          Right _ -> assertFailure "Expected Left for string input",
       testCase "parseThinkingLevel parses adaptive object" $ do
         parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("low" :: String)])
-          @?= ThinkingAdaptive EffortLow
+          @?= Right (ThinkingAdaptive EffortLow)
         parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("medium" :: String)])
-          @?= ThinkingAdaptive EffortMedium
+          @?= Right (ThinkingAdaptive EffortMedium)
         parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("high" :: String)])
-          @?= ThinkingAdaptive EffortHigh,
+          @?= Right (ThinkingAdaptive EffortHigh),
       testCase "parseThinkingLevel defaults effort to medium" $ do
         parseThinkingLevel (object ["type" .= ("adaptive" :: String)])
-          @?= ThinkingAdaptive EffortMedium,
+          @?= Right (ThinkingAdaptive EffortMedium),
       testCase "parseThinkingLevel parses fixed object" $ do
         parseThinkingLevel (object ["type" .= ("fixed" :: String), "budget_tokens" .= (4096 :: Int)])
-          @?= ThinkingBudget 4096
+          @?= Right (ThinkingBudget 4096)
         parseThinkingLevel (object ["type" .= ("fixed" :: String), "budget_tokens" .= (1024 :: Int)])
-          @?= ThinkingBudget 1024,
+          @?= Right (ThinkingBudget 1024),
       testCase "parseThinkingLevel parses off object" $ do
         parseThinkingLevel (object ["type" .= ("off" :: String)])
-          @?= ThinkingOff,
-      testCase "parseThinkingLevel handles invalid fixed config" $ do
+          @?= Right ThinkingOff,
+      testCase "parseThinkingLevel rejects invalid fixed config" $ do
         -- Missing budgetTokens
-        parseThinkingLevel (object ["type" .= ("fixed" :: String)])
-          @?= ThinkingOff
+        case parseThinkingLevel (object ["type" .= ("fixed" :: String)]) of
+          Left _ -> pure ()
+          Right _ -> assertFailure "Expected Left for missing budget_tokens"
         -- Zero budgetTokens
-        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budget_tokens" .= (0 :: Int)])
-          @?= ThinkingOff
+        case parseThinkingLevel (object ["type" .= ("fixed" :: String), "budget_tokens" .= (0 :: Int)]) of
+          Left _ -> pure ()
+          Right _ -> assertFailure "Expected Left for zero budget_tokens",
+      testCase "parseThinkingLevel rejects invalid effort" $ do
+        case parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("ultra" :: String)]) of
+          Left _ -> pure ()
+          Right _ -> assertFailure "Expected Left for invalid effort",
+      testCase "parseThinkingLevel rejects invalid type" $ do
+        case parseThinkingLevel (object ["type" .= ("turbo" :: String)]) of
+          Left _ -> pure ()
+          Right _ -> assertFailure "Expected Left for invalid type"
     ]
 
 toolSearchTests :: TestTree
@@ -146,6 +158,7 @@ exampleConfigTests =
         let wh = head webhooks
         wh.deliveryTarget @?= TelegramBroadcast
         -- Verify delegate defaults
-        config.delegateOverrides @?= AgentOverrides Nothing Nothing Nothing Nothing
+        config.delegateDefaultAgent @?= AgentOverrides Nothing Nothing Nothing Nothing Nothing
+        null config.delegateExtraAgents @?= True
         null config.delegateAllowedModels @?= True
     ]

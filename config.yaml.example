@@ -22,6 +22,7 @@ telegram_chats:
     #     type: adaptive
     #     effort: low
     #   max_iterations: 10
+    #   max_tokens: 8192
     #   cache_ttl: 5m
 
 # Agent settings (model, thinking, iteration limit)
@@ -32,19 +33,26 @@ agent:
 
   # Extended thinking configuration
   # Controls Claude's internal reasoning before responding.
-  # Default: off (omit or set to "off" to disable)
+  # Default: off
   #
-  # Adaptive thinking (recommended for newer models):
+  # Structured format only:
+  #   thinking:
+  #     type: off
+  #
   #   thinking:
   #     type: adaptive
-  #     effort: medium          # low | medium | high
-  #     # max_tokens by effort: low=4096, medium=16000, high=32768
+  #     effort: medium          # low | medium | high (default: medium)
   #
-  # Fixed budget (for older models):
   #   thinking:
   #     type: fixed
   #     budget_tokens: 4096      # explicit budget_tokens value
-  thinking: off
+  thinking:
+    type: off
+
+  # Maximum tokens for API responses
+  # Since billing is per actual token used, a high limit costs nothing extra.
+  # Default: 16384
+  max_tokens: 16384
 
   # Maximum agent loop iterations per turn (prevents infinite tool-use loops)
   # Default: 20
@@ -59,12 +67,29 @@ agent:
 # Delegate sub-agent configuration for delegate_task.
 # The main agent can further override model, thinking, and max_iterations
 # per-call via tool parameters.
+#
+# Layering precedence (highest wins):
+#   tool parameters > extra_agents preset > default_agent > delegate defaults > parent agent
 # delegate:
-#   agent:                        # overrides parent agent settings (omit to inherit)
+#   default_agent:                # overrides parent agent settings (omit to inherit)
 #     model: claude-haiku-4-20250414
-#     thinking: off
+#     thinking:
+#       type: off
 #     max_iterations: 10          # default: 10
+#     max_tokens: 8192
 #     cache_ttl: 5m
+#   extra_agents:                 # named presets selectable via delegate_task's 'agent' parameter
+#     fast:
+#       model: claude-haiku-4-20250414
+#       thinking:
+#         type: off
+#       max_tokens: 4096
+#     deep:
+#       model: claude-sonnet-4-20250514
+#       thinking:
+#         type: adaptive
+#         effort: high
+#       max_tokens: 32768
 #   allowed_models:               # models the main agent can choose from
 #     - claude-haiku-4-20250414
 #     - claude-sonnet-4-20250514
@@ -188,6 +213,7 @@ webhook:
       #     type: adaptive
       #     effort: low
       #   max_iterations: 5
+      #   max_tokens: 8192
       #   cache_ttl: 5m
       delivery_target:                      # where to send responses (default: telegram_broadcast)
         type: telegram_broadcast          # broadcast to all telegram_chats
