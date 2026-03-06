@@ -1,6 +1,6 @@
 -- | Telegram-specific message and command handling.
--- Dispatches /clear, /compact, /context, /run commands and
--- converts Telegram messages into events for the generic pipeline.
+-- Dispatches slash commands and converts Telegram messages
+-- into events for the generic pipeline.
 module Elwood.Telegram.Handler
   ( handleTelegramMessage,
   )
@@ -12,7 +12,7 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as LBS
 import Data.Int (Int64)
-import Data.List (sortOn)
+import Data.List (find, sortOn)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isNothing, listToMaybe)
 import Data.Ord (Down (..))
@@ -63,6 +63,30 @@ emptyBreakdown = TokenBreakdown 0 0 0 0 0
 breakdownTotal :: TokenBreakdown -> Int64
 breakdownTotal tb = tb.userTokens + tb.assistantTokens + tb.thinkingTokens + tb.toolCallTokens + tb.toolResultTokens
 
+-- | How a command handles arguments.
+data CommandHandler
+  = -- | Command takes no arguments.
+    NoArgs (IO (Maybe Text))
+  | -- | Command requires an argument. The 'Text' is the arg label for help/usage.
+    WithArg Text (Text -> IO (Maybe Text))
+
+-- | A slash command: name, help description, and handler.
+data Command = Command
+  { name :: Text,
+    description :: Text,
+    handler :: CommandHandler
+  }
+
+-- | Parse a @/command args@ from message text.
+-- Returns @(commandName, remainingArgs)@ with both stripped.
+parseCommand :: Text -> Maybe (Text, Text)
+parseCommand txt =
+  case T.stripPrefix "/" (T.strip txt) of
+    Nothing -> Nothing
+    Just rest ->
+      let (cmd, args) = T.break (== ' ') rest
+       in if T.null cmd then Nothing else Just (cmd, T.strip args)
+
 -- | Handle a Telegram message: commands, image fetching, and event dispatch.
 --
 -- Returns 'Nothing' on success (the event system delivers via Telegram),
@@ -70,16 +94,14 @@ breakdownTotal tb = tb.userTokens + tb.assistantTokens + tb.thinkingTokens + tb.
 handleTelegramMessage :: AppEnv -> Telegram.Message -> IO (Maybe Text)
 handleTelegramMessage env msg =
   case (msg.text, msg.photo) of
-    -- Handle /clear command
-    (Just txt, _) | T.strip txt == "/clear" -> handleClear
-    -- Handle /compact command
-    (Just txt, _) | T.strip txt == "/compact" -> handleCompact
-    -- Handle /context command
-    (Just txt, _) | T.strip txt == "/context" -> handleContext
-    -- Handle /run <cmd>
-    (Just txt, _) | Just cmd <- T.stripPrefix "/run " (T.strip txt), not (T.null (T.strip cmd)) -> handleRun (T.strip cmd)
-    -- Ignore other slash commands
-    (Just txt, _) | T.isPrefixOf "/" txt -> pure Nothing
+    -- Slash commands: dispatch via command list
+    (Just txt, _)
+      | Just (cmdName, args) <- parseCommand txt ->
+          case find (\c -> c.name == cmdName) commands of
+            Just cmd -> runCommand cmd args
+            Nothing -> pure Nothing -- unknown command, ignore
+            -- Ignore bare "/" or other non-parseable slash input
+    (Just txt, _) | T.isPrefixOf "/" (T.strip txt) -> pure Nothing
     -- Handle text with optional photo
     (Just txt, photos) -> handleMessageWithPhoto txt photos
     -- Handle photo with caption only
@@ -98,6 +120,30 @@ handleTelegramMessage env msg =
 
     chatSession :: SessionConfig
     chatSession = maybe Isolated (.session) chatConfig
+
+    -- All slash commands. Adding a command here automatically includes it in /help.
+    commands :: [Command]
+    commands =
+      [ Command "help" "List available commands" $ NoArgs handleHelp,
+        Command "clear" "Clear conversation history" $ NoArgs handleClear,
+        Command "compact" "Compact conversation to save context" $ NoArgs handleCompact,
+        Command "context" "Show token usage breakdown" $ NoArgs handleContext,
+        Command "run" "Execute a shell command" $ WithArg "command" handleRun
+      ]
+
+    runCommand :: Command -> Text -> IO (Maybe Text)
+    runCommand cmd args = case cmd.handler of
+      NoArgs action -> action
+      WithArg argLabel action
+        | T.null args -> pure (Just $ formatNotify Info $ "Usage: /" <> cmd.name <> " \\<" <> argLabel <> "\\>")
+        | otherwise -> action args
+
+    handleHelp :: IO (Maybe Text)
+    handleHelp = do
+      let formatCmd c = case c.handler of
+            NoArgs _ -> "/" <> c.name <> " — " <> c.description
+            WithArg argLabel _ -> "/" <> c.name <> " \\<" <> argLabel <> "\\> — " <> c.description
+      pure (Just $ formatNotify Info $ T.intercalate "\n" ("Available commands:" : map formatCmd commands))
 
     handleClear :: IO (Maybe Text)
     handleClear = do
