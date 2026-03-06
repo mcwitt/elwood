@@ -9,10 +9,9 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Elwood.AgentSettings (AgentOverrides (..), AgentSettings (..), resolveAgent, toOverrides)
+import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentSettings (..), resolveAgent, toOverrides)
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..), Role (..), ToolSchema (..), jsonSchemaFormat)
@@ -51,11 +50,11 @@ mkDelegateTaskTool ::
   PruningConfig ->
   Maybe Text ->
   MetricsStore ->
-  AgentOverrides ->
-  Map Text AgentOverrides ->
+  AgentPreset ->
+  Map Text AgentPreset ->
   [Text] ->
   Tool
-mkDelegateTaskTool logger client baseRegistry context agentSettings compaction pruning systemPrompt metrics defaultAgentOverrides extraAgents allowedModels =
+mkDelegateTaskTool logger client baseRegistry context agentSettings compaction pruning systemPrompt metrics defaultAgentPreset extraAgents allowedModels =
   Tool
     { schema =
         ToolSchema
@@ -74,8 +73,9 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
                 <> "When using a named agent preset, you can further override individual "
                 <> "settings (model, thinking, max_iterations) via tool parameters. "
                 <> "Note: when overriding model or thinking, ensure they are compatible "
-                <> "(e.g., Haiku does not support adaptive thinking).",
-            inputSchema = delegateSchema allowedModels extraAgentKeys
+                <> "(e.g., Haiku does not support adaptive thinking)."
+                <> maybe "" (\d -> " Default agent: " <> d <> ".") defaultAgentPreset.description,
+            inputSchema = delegateSchema allowedModels extraAgents
           },
       execute = executeDelegateTask
     }
@@ -87,8 +87,8 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
       Left err -> pure $ toolError err
       Right di -> do
         -- Layering: parent settings < delegate defaults < config default_agent < extra agent < tool params
-        let extraAgentOvr = maybe mempty (\n -> fromMaybe mempty (Map.lookup n extraAgents)) di.agentName
-            baseOverrides = toOverrides agentSettings <> delegateDefaults <> defaultAgentOverrides <> extraAgentOvr
+        let extraAgentOvr = maybe mempty (\n -> maybe mempty (.overrides) (Map.lookup n extraAgents)) di.agentName
+            baseOverrides = toOverrides agentSettings <> delegateDefaults <> defaultAgentPreset.overrides <> extraAgentOvr
             subSettings = resolveAgent (baseOverrides <> di.overrides)
 
         logInfo
@@ -141,8 +141,8 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
             pure $ toolError err
 
 -- | JSON Schema for delegate_task input
-delegateSchema :: [Text] -> [Text] -> Value
-delegateSchema allowedModels agentKeys =
+delegateSchema :: [Text] -> Map Text AgentPreset -> Value
+delegateSchema allowedModels presets =
   object
     [ "type" .= ("object" :: Text),
       "properties"
@@ -195,6 +195,7 @@ delegateSchema allowedModels agentKeys =
       "required" .= (["task"] :: [Text])
     ]
   where
+    agentKeys = Map.keys presets
     modelProp
       | null allowedModels = []
       | otherwise =
@@ -211,10 +212,17 @@ delegateSchema allowedModels agentKeys =
           [ "agent"
               .= object
                 [ "type" .= ("string" :: Text),
-                  "description" .= ("Named agent preset to use (preconfigured model+thinking combo)" :: Text),
+                  "description" .= agentDescription,
                   "enum" .= agentKeys
                 ]
           ]
+    agentDescription :: Text
+    agentDescription =
+      let descs =
+            [ n <> maybe "" (\d -> " (" <> d <> ")") p.description
+            | (n, p) <- Map.toAscList presets
+            ]
+       in "Named agent preset. Available: " <> T.intercalate ", " descs
 
 -- | Parse delegate_task input
 parseDelegateInput :: [Text] -> [Text] -> Value -> Either Text DelegateInput

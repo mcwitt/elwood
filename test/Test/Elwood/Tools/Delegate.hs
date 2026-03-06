@@ -1,8 +1,12 @@
 module Test.Elwood.Tools.Delegate (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as T
+import Elwood.AgentSettings (AgentPreset (..))
 import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
 import Elwood.Tools.Delegate (mkDelegateTaskTool)
 import Elwood.Tools.Types
@@ -18,7 +22,8 @@ tests =
       modelValidationTests,
       thinkingValidationTests,
       maxIterationsValidationTests,
-      agentSelectionTests
+      agentSelectionTests,
+      descriptionTests
     ]
 
 schemaTests :: TestTree
@@ -127,6 +132,88 @@ agentSelectionTests =
         result @?= ToolError "Invalid 'agent' parameter (must be a string)"
     ]
 
+descriptionTests :: TestTree
+descriptionTests =
+  testGroup
+    "Descriptions"
+    [ testCase "preset descriptions appear in agent parameter description" $ do
+        let presets =
+              Map.fromList
+                [ ("fast", AgentPreset (Just "Quick Haiku responses") mempty),
+                  ("deep", AgentPreset (Just "Extended thinking for complex analysis") mempty)
+                ]
+            tool =
+              mkDelegateTaskTool
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                (AgentPreset Nothing mempty)
+                presets
+                []
+            agentDesc = extractAgentDescription tool.schema.inputSchema
+        assertBool "should contain 'fast'" (T.isInfixOf "fast" agentDesc)
+        assertBool "should contain fast description" (T.isInfixOf "Quick Haiku responses" agentDesc)
+        assertBool "should contain 'deep'" (T.isInfixOf "deep" agentDesc)
+        assertBool "should contain deep description" (T.isInfixOf "Extended thinking for complex analysis" agentDesc),
+      testCase "default agent description appears in tool description" $ do
+        let tool =
+              mkDelegateTaskTool
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                (AgentPreset (Just "General-purpose sub-agent") mempty)
+                Map.empty
+                []
+        assertBool "tool description should contain default agent description" $
+          T.isInfixOf "General-purpose sub-agent" tool.schema.description,
+      testCase "preset without description shows just the name" $ do
+        let presets = Map.fromList [("fast", AgentPreset Nothing mempty)]
+            tool =
+              mkDelegateTaskTool
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                undefined
+                (AgentPreset Nothing mempty)
+                presets
+                []
+            agentDesc = extractAgentDescription tool.schema.inputSchema
+        assertBool "should contain 'fast'" (T.isInfixOf "fast" agentDesc)
+        -- Should not have parentheses for a description-less preset
+        assertBool "should not have parens" (not (T.isInfixOf "(" agentDesc))
+    ]
+
+-- | Extract the agent parameter description from the input schema
+extractAgentDescription :: Value -> Text
+extractAgentDescription (Aeson.Object schema) =
+  case KM.lookup "properties" schema of
+    Just (Aeson.Object props) ->
+      case KM.lookup "agent" props of
+        Just (Aeson.Object agentObj) ->
+          case KM.lookup "description" agentObj of
+            Just (Aeson.String d) -> d
+            _ -> ""
+        _ -> ""
+    _ -> ""
+extractAgentDescription _ = ""
+
 -- | Build a delegate tool that will fail at the API call level but can
 -- validate input parsing. Uses undefined for fields only needed at
 -- runtime (logger, client, registry, etc.) since input validation
@@ -146,7 +233,7 @@ mkStubDelegateToolWithModels =
     undefined -- pruning
     undefined -- systemPrompt
     undefined -- metrics
-    mempty -- defaultAgentOverrides
+    (AgentPreset Nothing mempty) -- defaultAgentPreset
     Map.empty -- extraAgents
 
 mkStubDelegateToolWithAgents :: [Text] -> Tool
@@ -161,6 +248,6 @@ mkStubDelegateToolWithAgents agentNames =
     undefined -- pruning
     undefined -- systemPrompt
     undefined -- metrics
-    mempty -- defaultAgentOverrides
-    (Map.fromList [(n, mempty) | n <- agentNames])
+    (AgentPreset Nothing mempty) -- defaultAgentPreset
+    (Map.fromList [(n, AgentPreset Nothing mempty) | n <- agentNames])
     [] -- allowedModels

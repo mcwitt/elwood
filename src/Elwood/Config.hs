@@ -28,6 +28,7 @@ import Data.Yaml qualified as Yaml
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.AgentSettings
   ( AgentOverrides (..),
+    AgentPreset (..),
     AgentSettings (..),
     agentDefaults,
     resolveAgent,
@@ -96,10 +97,10 @@ data Config = Config
     systemPrompt :: [PromptInput],
     -- | Send notification messages when the agent uses tools
     toolUseMessages :: Bool,
-    -- | Default delegate sub-agent overrides (model, thinking, max_iterations)
-    delegateDefaultAgent :: AgentOverrides,
+    -- | Default delegate sub-agent preset (overrides + optional description)
+    delegateDefaultAgent :: AgentPreset,
     -- | Named agent presets for delegate_task
-    delegateExtraAgents :: Map Text AgentOverrides,
+    delegateExtraAgents :: Map Text AgentPreset,
     -- | Allowed models for delegate_task tool parameter
     delegateAllowedModels :: [Text],
     -- | Maximum image dimension (Nothing = disabled, Just n = resize to n)
@@ -189,8 +190,8 @@ data ConfigFile = ConfigFile
 
 -- | Delegate sub-agent configuration from YAML file
 data DelegateConfigFile = DelegateConfigFile
-  { defaultAgent :: AgentOverrides,
-    extraAgents :: Map Text AgentOverrides,
+  { defaultAgent :: AgentPreset,
+    extraAgents :: Map Text AgentPreset,
     allowedModels :: Maybe [Text]
   }
   deriving stock (Show, Generic)
@@ -391,7 +392,7 @@ instance FromJSON DelegateConfigFile where
   parseJSON = withObject "DelegateConfigFile" $ \v -> do
     rejectUnknownKeys "DelegateConfigFile" ["default_agent", "extra_agents", "allowed_models"] v
     DelegateConfigFile
-      <$> v .:? "default_agent" .!= mempty
+      <$> v .:? "default_agent" .!= AgentPreset Nothing mempty
       <*> v .:? "extra_agents" .!= Map.empty
       <*> v .:? "allowed_models"
 
@@ -512,7 +513,7 @@ loadConfig path = do
     Just n | n < 50 -> fail "max_image_dimension must be >= 50"
     _ -> pure ()
 
-  let delCfg = fromMaybe (DelegateConfigFile mempty Map.empty Nothing) configFile.delegate
+  let delCfg = fromMaybe (DelegateConfigFile (AgentPreset Nothing mempty) Map.empty Nothing) configFile.delegate
 
   pure
     Config

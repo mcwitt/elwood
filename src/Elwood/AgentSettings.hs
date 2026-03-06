@@ -2,6 +2,9 @@ module Elwood.AgentSettings
   ( -- * Partial (monoidal) type for layering overrides
     AgentOverrides (..),
 
+    -- * Preset wrapper (overrides + description)
+    AgentPreset (..),
+
     -- * Resolved (concrete) type for runtime use
     AgentSettings (..),
 
@@ -101,3 +104,24 @@ instance FromJSON AgentOverrides where
       <*> v .:? "max_iterations"
       <*> v .:? "cache_ttl"
       <*> v .:? "max_tokens"
+
+-- | Agent preset: overrides plus an optional description.
+-- Used in delegate config to document what each preset is for.
+data AgentPreset = AgentPreset
+  { description :: Maybe Text,
+    overrides :: AgentOverrides
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON AgentPreset where
+  parseJSON = withObject "AgentPreset" $ \v -> do
+    rejectUnknownKeys "AgentPreset" ["description", "model", "thinking", "max_iterations", "cache_ttl", "max_tokens"] v
+    AgentPreset
+      <$> v .:? "description"
+      <*> ( AgentOverrides
+              <$> v .:? "model"
+              <*> v .:? "thinking"
+              <*> v .:? "max_iterations"
+              <*> v .:? "cache_ttl"
+              <*> v .:? "max_tokens"
+          )

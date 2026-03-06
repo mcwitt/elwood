@@ -72,6 +72,7 @@ agent:
 #   tool parameters > extra_agents preset > default_agent > delegate defaults > parent agent
 # delegate:
 #   default_agent:                # overrides parent agent settings (omit to inherit)
+#     description: General-purpose sub-agent   # optional, surfaced in tool description
 #     model: claude-haiku-4-20250414
 #     thinking:
 #       type: off
@@ -80,11 +81,13 @@ agent:
 #     cache_ttl: 5m
 #   extra_agents:                 # named presets selectable via delegate_task's 'agent' parameter
 #     fast:
+#       description: Quick Haiku responses     # optional, surfaced in agent param description
 #       model: claude-haiku-4-20250414
 #       thinking:
 #         type: off
 #       max_tokens: 4096
 #     deep:
+#       description: Extended thinking for complex analysis
 #       model: claude-sonnet-4-20250514
 #       thinking:
 #         type: adaptive

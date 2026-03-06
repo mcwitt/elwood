@@ -54,6 +54,14 @@ let
           max_tokens = agentOvr.maxTokens;
         };
 
+      # Serialize agent preset (overrides + optional description)
+      mkAgentPresetAttrs =
+        preset:
+        mkAgentOverridesAttrs preset
+        // lib.optionalAttrs (preset.description != null) {
+          description = preset.description;
+        };
+
       # Serialize agent overrides to a nested `agent` attrset (omitted when empty)
       mkAgentOverrides =
         agentOvr:
@@ -175,8 +183,8 @@ let
       }
       // (
         let
-          defaultAgentAttrs = mkAgentOverridesAttrs agentCfg.delegate.defaultAgent;
-          extraAgentsAttrs = lib.mapAttrs (_: mkAgentOverridesAttrs) agentCfg.delegate.extraAgents;
+          defaultAgentAttrs = mkAgentPresetAttrs agentCfg.delegate.defaultAgent;
+          extraAgentsAttrs = lib.mapAttrs (_: mkAgentPresetAttrs) agentCfg.delegate.extraAgents;
           delegateAttrs =
             lib.optionalAttrs (defaultAgentAttrs != { }) {
               default_agent = defaultAgentAttrs;
@@ -566,10 +574,26 @@ let
         };
 
         delegate = {
-          defaultAgent = agentOverrideOptions;
+          defaultAgent = agentOverrideOptions // {
+            description = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Human-readable description of the default delegate agent. Surfaced in the delegate_task tool description.";
+            };
+          };
 
           extraAgents = lib.mkOption {
-            type = lib.types.attrsOf (lib.types.submodule { options = agentOverrideOptions; });
+            type = lib.types.attrsOf (
+              lib.types.submodule {
+                options = agentOverrideOptions // {
+                  description = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Human-readable description of this agent preset. Surfaced in the delegate_task tool's agent parameter description.";
+                  };
+                };
+              }
+            );
             default = { };
             description = "Named agent configurations selectable via delegate_task's 'agent' parameter.";
           };

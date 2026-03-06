@@ -74,10 +74,12 @@ agent:
 
 # delegate:                      # sub-agent defaults for delegate_task
 #   default_agent:
+#     description: General-purpose sub-agent
 #     model: claude-haiku-4-20250414
 #     max_iterations: 10
 #   extra_agents:                # named presets for delegate_task 'agent' parameter
 #     fast:
+#       description: Quick Haiku responses
 #       model: claude-haiku-4-20250414
 #       thinking: { type: off }
 

@@ -49,7 +49,7 @@ import Data.Set (Set)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
-import Elwood.AgentSettings (AgentOverrides, AgentSettings (..))
+import Elwood.AgentSettings (AgentPreset, AgentSettings (..))
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Pruning (PruneHorizons, getAndUpdateHorizon)
 import Elwood.Claude.Types (cacheTtlSeconds)
@@ -121,10 +121,10 @@ data AppEnv = AppEnv
     sessionLocks :: SessionLocks,
     -- | Send notification messages when the agent uses tools
     toolUseMessages :: Bool,
-    -- | Default delegate sub-agent overrides (model, thinking, max_iterations)
-    delegateDefaultAgent :: AgentOverrides,
+    -- | Default delegate sub-agent preset (overrides + optional description)
+    delegateDefaultAgent :: AgentPreset,
     -- | Named agent presets for delegate_task
-    delegateExtraAgents :: Map Text AgentOverrides,
+    delegateExtraAgents :: Map Text AgentPreset,
     -- | Allowed models for delegate_task tool parameter
     delegateAllowedModels :: [Text],
     -- | Maximum image dimension for resizing (Nothing = disabled)
