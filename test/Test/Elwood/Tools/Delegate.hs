@@ -23,6 +23,7 @@ tests =
       thinkingValidationTests,
       maxIterationsValidationTests,
       agentSelectionTests,
+      systemPromptValidationTests,
       descriptionTests
     ]
 
@@ -130,6 +131,20 @@ agentSelectionTests =
         let tool = mkStubDelegateToolWithAgents ["fast"]
         result <- tool.execute (object ["task" .= ("test" :: Text), "agent" .= (42 :: Int)])
         result @?= ToolError "Invalid 'agent' parameter (must be a string)"
+    ]
+
+systemPromptValidationTests :: TestTree
+systemPromptValidationTests =
+  testGroup
+    "system_prompt validation"
+    [ testCase "non-string system_prompt returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "system_prompt" .= (42 :: Int)])
+        result @?= ToolError "Invalid 'system_prompt' parameter (must be a string)",
+      testCase "empty system_prompt returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "system_prompt" .= ("  " :: Text)])
+        result @?= ToolError "system_prompt must not be empty"
     ]
 
 descriptionTests :: TestTree

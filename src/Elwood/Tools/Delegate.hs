@@ -20,7 +20,7 @@ import Elwood.Config (CompactionConfig (..), PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
 import Elwood.Positive (Positive (getPositive), unsafePositive)
-import Elwood.Prompt (assemblePrompt)
+import Elwood.Prompt (PromptInput (InlineText), assemblePrompt)
 import Elwood.Thinking (parseThinkingLevel)
 import Elwood.Tools.Command (mkRunCommandTool)
 import Elwood.Tools.Registry (ToolRegistry, registerTool)
@@ -199,6 +199,11 @@ delegateSchema allowedModels presets =
                     "minimum" .= (1 :: Int),
                     "maximum" .= (50 :: Int)
                   ],
+              "system_prompt"
+                .= object
+                  [ "type" .= ("string" :: Text),
+                    "description" .= ("Override the sub-agent's system prompt with this text." :: Text)
+                  ],
               "output_schema"
                 .= object
                   [ "type" .= ("object" :: Text),
@@ -280,10 +285,16 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
             else Right (Just (unsafePositive i))
     Just _ -> Left "Invalid 'max_iterations' parameter (must be an integer)"
     Nothing -> Right Nothing
+  systemPromptParam <- case KM.lookup "system_prompt" obj of
+    Just (Aeson.String t)
+      | T.null (T.strip t) -> Left "system_prompt must not be empty"
+      | otherwise -> Right (Just [InlineText t])
+    Just _ -> Left "Invalid 'system_prompt' parameter (must be a string)"
+    Nothing -> Right Nothing
   outputSchemaParam <- case KM.lookup "output_schema" obj of
     Just val@(Aeson.Object _) -> Right (Just val)
     Just _ -> Left "Invalid 'output_schema' parameter (must be a JSON object)"
     Nothing -> Right Nothing
-  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cacheTtl = Nothing, maxTokens = Nothing, systemPrompt = Nothing, toolSearch = Nothing, permissions = Nothing}
+  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cacheTtl = Nothing, maxTokens = Nothing, systemPrompt = systemPromptParam, toolSearch = Nothing, permissions = Nothing}
   Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam}
 parseDelegateInput _ _ _ = Left "Expected object input"
