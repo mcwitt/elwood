@@ -58,6 +58,9 @@ mkDelegateTaskTool logger client baseRegistry context agentSettings compaction p
               "Delegate a task to a sub-agent with its own isolated conversation context. "
                 <> "The sub-agent has access to all the same tools (except delegate_task) "
                 <> "and runs independently, returning only a text summary. "
+                <> "Sub-agents share the same workspace, so they have full access to the filesystem "
+                <> "(e.g., reading/writing files, running scripts, using git). Reference existing files "
+                <> "by path rather than including their contents in the task description. "
                 <> "Use this to keep the main conversation context clean when a task "
                 <> "requires many tool calls (e.g., multi-file edits, long research).",
             inputSchema = delegateSchema allowedModels
