@@ -15,7 +15,7 @@ import GHC.Generics (Generic)
 -- | Extended thinking level for Claude
 data ThinkingLevel
   = ThinkingOff
-  | ThinkingAdaptive ThinkingEffort
+  | ThinkingAdaptive (Maybe ThinkingEffort)
   | -- | Explicit budget_tokens (for older models)
     ThinkingBudget Int
   deriving stock (Show, Eq, Generic)
@@ -34,18 +34,19 @@ instance FromJSON ThinkingLevel where
 -- Supported formats:
 --   false            -> ThinkingOff (YAML parses bare "off" as boolean False)
 --   {type: off}      -> ThinkingOff
---   {type: adaptive, effort: low}    -> ThinkingAdaptive EffortLow
---   {type: adaptive, effort: medium} -> ThinkingAdaptive EffortMedium
---   {type: adaptive, effort: high}   -> ThinkingAdaptive EffortHigh
+--   {type: adaptive}                 -> ThinkingAdaptive Nothing (API default)
+--   {type: adaptive, effort: low}    -> ThinkingAdaptive (Just EffortLow)
+--   {type: adaptive, effort: medium} -> ThinkingAdaptive (Just EffortMedium)
+--   {type: adaptive, effort: high}   -> ThinkingAdaptive (Just EffortHigh)
 --   {type: fixed, budget_tokens: N}  -> ThinkingBudget N
 parseThinkingLevel :: Value -> Either Text ThinkingLevel
 parseThinkingLevel (Bool False) = Right ThinkingOff
 parseThinkingLevel (Object obj) = case lookupText "type" obj of
   Just "adaptive" -> case lookupText "effort" obj of
-    Just "low" -> Right (ThinkingAdaptive EffortLow)
-    Just "medium" -> Right (ThinkingAdaptive EffortMedium)
-    Just "high" -> Right (ThinkingAdaptive EffortHigh)
-    Nothing -> Right (ThinkingAdaptive EffortMedium) -- default effort
+    Just "low" -> Right (ThinkingAdaptive (Just EffortLow))
+    Just "medium" -> Right (ThinkingAdaptive (Just EffortMedium))
+    Just "high" -> Right (ThinkingAdaptive (Just EffortHigh))
+    Nothing -> Right (ThinkingAdaptive Nothing) -- let API use its own default
     Just other -> Left $ "Invalid effort '" <> other <> "'. Allowed: low, medium, high"
   Just "fixed" -> case KM.lookup (Key.fromText "budget_tokens") obj of
     Just (Number n) | n > 0 -> Right (ThinkingBudget (round n))

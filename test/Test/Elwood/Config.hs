@@ -51,16 +51,16 @@ thinkingLevelTests =
     [ testCase "all constructors exist" $ do
         let levels =
               [ ThinkingOff,
-                ThinkingAdaptive EffortLow,
-                ThinkingAdaptive EffortMedium,
-                ThinkingAdaptive EffortHigh,
+                ThinkingAdaptive (Just EffortLow),
+                ThinkingAdaptive (Just EffortMedium),
+                ThinkingAdaptive (Just EffortHigh),
                 ThinkingBudget 4096
               ]
         length levels @?= 5,
       testCase "equality works" $ do
         ThinkingOff == ThinkingOff @?= True
-        ThinkingOff == ThinkingAdaptive EffortHigh @?= False
-        ThinkingAdaptive EffortLow == ThinkingAdaptive EffortLow @?= True
+        ThinkingOff == ThinkingAdaptive (Just EffortHigh) @?= False
+        ThinkingAdaptive (Just EffortLow) == ThinkingAdaptive (Just EffortLow) @?= True
         ThinkingBudget 1024 == ThinkingBudget 1024 @?= True
         ThinkingBudget 1024 == ThinkingBudget 2048 @?= False,
       testCase "parseThinkingLevel parses Bool False as off" $ do
@@ -71,14 +71,14 @@ thinkingLevelTests =
           Right _ -> assertFailure "Expected Left for string input",
       testCase "parseThinkingLevel parses adaptive object" $ do
         parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("low" :: String)])
-          @?= Right (ThinkingAdaptive EffortLow)
+          @?= Right (ThinkingAdaptive (Just EffortLow))
         parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("medium" :: String)])
-          @?= Right (ThinkingAdaptive EffortMedium)
+          @?= Right (ThinkingAdaptive (Just EffortMedium))
         parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("high" :: String)])
-          @?= Right (ThinkingAdaptive EffortHigh),
-      testCase "parseThinkingLevel defaults effort to medium" $ do
+          @?= Right (ThinkingAdaptive (Just EffortHigh)),
+      testCase "parseThinkingLevel omits effort when not specified" $ do
         parseThinkingLevel (object ["type" .= ("adaptive" :: String)])
-          @?= Right (ThinkingAdaptive EffortMedium),
+          @?= Right (ThinkingAdaptive Nothing),
       testCase "parseThinkingLevel parses fixed object" $ do
         parseThinkingLevel (object ["type" .= ("fixed" :: String), "budget_tokens" .= (4096 :: Int)])
           @?= Right (ThinkingBudget 4096)

@@ -294,7 +294,7 @@ outputConfigTests =
         let req = mkRequest Nothing Nothing
         lookupField "output_config" req @?= Nothing,
       testCase "adaptive thinking, no format -> effort only" $ do
-        let req = mkRequest (Just (ThinkingConfigAdaptive EffortHigh)) Nothing
+        let req = mkRequest (Just (ThinkingConfigAdaptive (Just EffortHigh))) Nothing
         case lookupField "output_config" req of
           Just (Object oc) -> do
             KM.lookup "effort" oc @?= Just (Aeson.String "high")
@@ -310,11 +310,22 @@ outputConfigTests =
           other -> assertFailure $ "Expected output_config object, got: " <> show other,
       testCase "adaptive thinking + format -> both" $ do
         let schema = Aeson.object ["type" Aeson..= ("object" :: String)]
-            req = mkRequest (Just (ThinkingConfigAdaptive EffortMedium)) (Just (jsonSchemaFormat schema))
+            req = mkRequest (Just (ThinkingConfigAdaptive (Just EffortMedium))) (Just (jsonSchemaFormat schema))
         case lookupField "output_config" req of
           Just (Object oc) -> do
             KM.lookup "effort" oc @?= Just (Aeson.String "medium")
             KM.member "format" oc @?= True
+          other -> assertFailure $ "Expected output_config object, got: " <> show other,
+      testCase "adaptive thinking without effort -> no output_config" $ do
+        let req = mkRequest (Just (ThinkingConfigAdaptive Nothing)) Nothing
+        lookupField "output_config" req @?= Nothing,
+      testCase "adaptive thinking without effort + format -> format only" $ do
+        let schema = Aeson.object ["type" Aeson..= ("object" :: String)]
+            req = mkRequest (Just (ThinkingConfigAdaptive Nothing)) (Just (jsonSchemaFormat schema))
+        case lookupField "output_config" req of
+          Just (Object oc) -> do
+            KM.member "format" oc @?= True
+            KM.member "effort" oc @?= False
           other -> assertFailure $ "Expected output_config object, got: " <> show other,
       testCase "budget thinking -> no output_config" $ do
         let req = mkRequest (Just (ThinkingConfigBudget 8000)) Nothing

@@ -79,8 +79,8 @@ instance FromJSON Role where
 
 -- | Configuration for extended thinking
 data ThinkingConfig
-  = -- | Adaptive thinking with effort level
-    ThinkingConfigAdaptive ThinkingEffort
+  = -- | Adaptive thinking with optional effort level (Nothing = API default)
+    ThinkingConfigAdaptive (Maybe ThinkingEffort)
   | -- | Fixed budget_tokens for older models
     ThinkingConfigBudget Int
   deriving stock (Show, Eq, Generic)
@@ -430,7 +430,7 @@ instance ToJSON MessagesRequest where
       outputConfigField :: [Pair]
       outputConfigField =
         let effortPairs = case req.thinking of
-              Just (ThinkingConfigAdaptive effort) -> ["effort" .= effortToText effort]
+              Just (ThinkingConfigAdaptive (Just effort)) -> ["effort" .= effortToText effort]
               _ -> []
             formatPairs = case req.outputFormat of
               Just fmt -> ["format" .= fmt]
