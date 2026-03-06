@@ -44,6 +44,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Elwood.Claude.Conversation qualified as Claude
 import Elwood.Claude.Observer (AgentObserver (..))
 import Elwood.Claude.Types qualified as Claude
@@ -374,6 +375,18 @@ renderConversationGauges convs
           [ metricLine "elwood_conversation_estimated_tokens" [("session", conv.sessionId)] (fromIntegral (estimateMessageTokens conv.messages))
           | conv <- Map.elems convs
           ]
+        <> helpLine "elwood_conversation_cache_expires_at" "Unix timestamp when prompt cache expires (0 = no cache)"
+        <> typeLine "elwood_conversation_cache_expires_at" "gauge"
+        <> mconcat
+          [ metricLine "elwood_conversation_cache_expires_at" [("session", conv.sessionId)] (cacheExpiryUnix conv.cacheExpiresAt)
+          | conv <- Map.elems convs
+          ]
+
+-- | Convert a cache expiry time to Unix seconds, using 0 for the epoch sentinel
+cacheExpiryUnix :: UTCTime -> Int64
+cacheExpiryUnix t
+  | t == Claude.epoch = 0
+  | otherwise = floor (utcTimeToPOSIXSeconds t)
 
 -- | Render tools registered gauge
 renderToolGauge :: [Tools.Tool] -> B.Builder

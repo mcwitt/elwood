@@ -3,8 +3,8 @@ module Test.Elwood.Metrics (tests) where
 import Data.ByteString.Lazy qualified as LBS
 import Data.ByteString.Lazy.Char8 qualified as LBS8
 import Data.Text qualified as T
-import Elwood.Claude.Conversation (newInMemoryConversationStore)
-import Elwood.Claude.Types (StopReason (..), Usage (..))
+import Elwood.Claude.Conversation (ConversationStore (..), newInMemoryConversationStore)
+import Elwood.Claude.Types (CacheTtl (..), StopReason (..), Usage (..))
 import Elwood.Event.Types (EventSource (..))
 import Elwood.Metrics
   ( metricsSource,
@@ -103,6 +103,15 @@ renderingTests =
         output <- renderMetrics store convStore newToolRegistry
         let s = LBS8.unpack output
         assertBool "mcp count is 3" ("elwood_mcp_servers_active 3" `isIn` s),
+      testCase "cache_expires_at rendered for conversations" $ do
+        store <- newMetricsStore
+        convStore <- newInMemoryConversationStore
+        convStore.updateConversation "test-session" [] CacheTtl5Min
+        output <- renderMetrics store convStore newToolRegistry
+        let s = LBS8.unpack output
+        assertBool "contains cache_expires_at metric" ("elwood_conversation_cache_expires_at{session=\"test-session\"}" `isIn` s)
+        -- Value should be a real timestamp (> year 2020 in unix seconds)
+        assertBool "cache_expires_at is not zero" (not $ "elwood_conversation_cache_expires_at{session=\"test-session\"} 0" `isIn` s),
       testCase "no trailing content after last newline" $ do
         store <- newMetricsStore
         convStore <- newInMemoryConversationStore
