@@ -34,8 +34,9 @@ estimateTokens msgs =
   let jsonBytes = LBS.length $ encode msgs
    in fromIntegral jsonBytes `div` 4
 
--- | Compact messages if they exceed the token threshold
--- Returns the (possibly compacted) message list
+-- | Compact messages if they exceed the token threshold.
+-- When compaction occurs, the persist callback is called with the
+-- compacted messages (e.g. to call 'replaceMessages' and reset cache expiry).
 compactIfNeeded ::
   Logger ->
   ClaudeClient ->
@@ -44,9 +45,11 @@ compactIfNeeded ::
   IO () ->
   -- | API response callback
   (StopReason -> Usage -> IO ()) ->
+  -- | Persist compacted messages (called only when messages change)
+  ([ClaudeMessage] -> IO ()) ->
   [ClaudeMessage] ->
   IO [ClaudeMessage]
-compactIfNeeded logger client config onCompaction onApiResponse msgs = do
+compactIfNeeded logger client config onCompaction onApiResponse persist msgs = do
   let tokens = estimateTokens msgs
   if tokens < config.tokenThreshold.getPositive
     then pure msgs
@@ -58,18 +61,21 @@ compactIfNeeded logger client config onCompaction onApiResponse msgs = do
           ("threshold", T.pack (show config.tokenThreshold.getPositive)),
           ("message_count", T.pack (show (length msgs)))
         ]
-      compactMessages logger client config onCompaction onApiResponse msgs
+      compactMessages logger client config onCompaction onApiResponse persist msgs
 
--- | Perform the actual compaction
+-- | Perform the actual compaction.
+-- When messages are rewritten, the persist callback is called.
 compactMessages ::
   Logger ->
   ClaudeClient ->
   CompactionConfig ->
   IO () ->
   (StopReason -> Usage -> IO ()) ->
+  -- | Persist compacted messages (called only when messages change)
+  ([ClaudeMessage] -> IO ()) ->
   [ClaudeMessage] ->
   IO [ClaudeMessage]
-compactMessages logger client config onCompaction onApiResponse msgs =
+compactMessages logger client config onCompaction onApiResponse persist msgs =
   case strategySplit config.strategy config.tokenThreshold msgs of
     Nothing -> do
       logWarn
@@ -95,8 +101,8 @@ compactMessages logger client config onCompaction onApiResponse msgs =
 
       case summaryResult of
         Left err -> do
-          logWarn logger "Compaction failed, keeping original" [("error", err)]
-          -- If summarization fails, just truncate to recent messages
+          logWarn logger "Compaction summary failed, truncating to recent messages" [("error", err)]
+          persist recentMsgs
           pure recentMsgs
         Right summary -> do
           logInfo
@@ -112,7 +118,9 @@ compactMessages logger client config onCompaction onApiResponse msgs =
                           "[Previous conversation summary]\n\n" <> summary
                       ]
                   }
-          pure $ summaryMsg : recentMsgs
+              result = summaryMsg : recentMsgs
+          persist result
+          pure result
 
 -- | Default structured compaction prompt.
 --

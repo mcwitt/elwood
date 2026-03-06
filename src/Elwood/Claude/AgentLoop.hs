@@ -15,7 +15,6 @@ import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
 import Elwood.AgentSettings (AgentProfile (..))
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
-import Elwood.Claude.Compaction (CompactionConfig, compactIfNeeded)
 import Elwood.Claude.Observer (AgentObserver (..), RateLimitCallback, TextCallback, ToolUseCallback)
 import Elwood.Claude.Pruning (pruneThinkingBlocks, pruneToolInputs, pruneToolResults)
 import Elwood.Claude.Types
@@ -60,7 +59,6 @@ data AgentConfig = AgentConfig
     client :: ClaudeClient,
     registry :: ToolRegistry,
     requestApproval :: ApprovalFunction,
-    compaction :: CompactionConfig,
     systemPrompt :: Maybe Text,
     agentProfile :: AgentProfile,
     -- | Observer for metrics and telemetry
@@ -91,7 +89,9 @@ thinkingToConfig ThinkingOff = Nothing
 thinkingToConfig (ThinkingAdaptive effort) = Just (ThinkingConfigAdaptive effort)
 thinkingToConfig (ThinkingBudget n) = Just (ThinkingConfigBudget n)
 
--- | Run a complete agent turn, handling tool use loops
+-- | Run a complete agent turn, handling tool use loops.
+-- Returns only the new messages produced during this turn (the delta),
+-- not the full conversation history.
 runAgentTurn ::
   AgentConfig ->
   -- | Existing conversation history
@@ -100,12 +100,12 @@ runAgentTurn ::
   ClaudeMessage ->
   IO AgentResult
 runAgentTurn cfg history userMessage = do
-  -- Compact history if needed before adding new message
-  compactedHistory <- compactIfNeeded cfg.logger cfg.client cfg.compaction cfg.observer.onCompaction cfg.observer.onApiResponse history
-  let adjustedHorizon = min cfg.pruneHorizon (length compactedHistory)
-      msgs = compactedHistory ++ [userMessage]
-
-  agentLoop cfg {pruneHorizon = adjustedHorizon} msgs 0
+  let msgs = history ++ [userMessage]
+      histLen = length history
+  result <- agentLoop cfg msgs 0
+  pure $ case result of
+    AgentSuccess text allMsgs -> AgentSuccess text (drop histLen allMsgs)
+    err -> err
 
 -- | The main agent loop
 agentLoop ::

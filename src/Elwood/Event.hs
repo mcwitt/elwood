@@ -51,6 +51,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime, getCurrentTime)
 import Elwood.AgentSettings (AgentPreset, AgentProfile (..), ToolSearchConfig (..))
 import Elwood.Claude qualified as Claude
+import Elwood.Claude.Compaction (compactIfNeeded)
 import Elwood.Claude.Pruning (PruneHorizons, getAndUpdateHorizon)
 import Elwood.Config (CompactionConfig, PruningConfig, TelegramChatConfig (..))
 import Elwood.Event.Types
@@ -173,15 +174,29 @@ handleEventCore env event callbacks = do
 
   let prof = env.agentProfile
 
-  -- Get existing conversation (empty for Isolated)
+  -- Get existing conversation, run compaction if needed (empty for Isolated)
+  let observer = metricsObserver env.metrics prof.model (metricsSource src)
   now <- getCurrentTime
   (history, pruneHorizon) <- case mConversationId of
     Nothing -> pure ([], 0)
     Just cid -> do
       conv <- env.conversations.getConversation cid
-      let cacheExpired = now > conv.cacheExpiresAt
-      h <- getAndUpdateHorizon env.pruneHorizons cid (length conv.messages) cacheExpired
-      pure (conv.messages, h)
+      -- Run compaction before the agent turn; if compaction occurs,
+      -- replaceMessages is called internally (resetting cache expiry to epoch)
+      history <-
+        compactIfNeeded
+          lgr
+          env.claude
+          env.compaction
+          observer.onCompaction
+          observer.onApiResponse
+          (env.conversations.replaceMessages cid)
+          conv.messages
+      -- Re-read conversation for possibly updated cache expiry
+      conv' <- env.conversations.getConversation cid
+      let cacheExpired = now > conv'.cacheExpiresAt
+      h <- getAndUpdateHorizon env.pruneHorizons cid (length history) cacheExpired
+      pure (history, h)
 
   -- Assemble system prompt from workspace files (re-read each request)
   systemPrompt <- assemblePrompt env.workspaceDir prof.systemPrompt
@@ -213,7 +228,6 @@ handleEventCore env event callbacks = do
           registryWithPerms
           env.requestApproval
           prof
-          env.compaction
           env.pruning
           env.workspaceDir
           env.metrics
@@ -229,10 +243,9 @@ handleEventCore env event callbacks = do
             client = env.claude,
             registry = registryWithDelegate,
             requestApproval = env.requestApproval,
-            compaction = env.compaction,
             systemPrompt = systemPrompt,
             agentProfile = prof,
-            observer = metricsObserver env.metrics prof.model (metricsSource src),
+            observer = observer,
             onRateLimit = callbacks.onRateLimit,
             onText = callbacks.onText,
             onToolUse = callbacks.onToolUse,
@@ -251,11 +264,11 @@ handleEventCore env event callbacks = do
         pure $ Claude.AgentError $ formatNotify Error $ "**Agent error:** `" <> sanitizeBackticks (T.pack (show e)) <> "`"
 
   case result of
-    Claude.AgentSuccess responseText allMessages -> do
-      -- Update conversation (skip for isolated sessions)
+    Claude.AgentSuccess responseText newMessages -> do
+      -- Append new messages to conversation (skip for isolated sessions)
       case mConversationId of
         Nothing -> pure ()
-        Just cid -> env.conversations.updateConversation cid allMessages prof.cacheTtl
+        Just cid -> env.conversations.appendMessages cid newMessages prof.cacheTtl
 
       -- Deliver response
       callbacks.onResponse responseText

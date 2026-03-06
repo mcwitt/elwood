@@ -178,7 +178,7 @@ handleTelegramMessage env msg =
                 else do
                   let beforeTokens = Compaction.estimateTokens msgs
                   result <-
-                    (Right <$> Compaction.compactMessages lgr env.claude env.compaction (recordCompaction env.metrics) (recordApiResponse env.metrics env.agentProfile.model "telegram") msgs)
+                    (Right <$> Compaction.compactMessages lgr env.claude env.compaction (recordCompaction env.metrics) (recordApiResponse env.metrics env.agentProfile.model "telegram") (env.conversations.replaceMessages cid) msgs)
                       `catch` \(e :: SomeException) -> do
                         logError lgr "Manual compaction failed" [("chat_id", T.pack (show chatIdVal)), ("error", T.pack (show e))]
                         pure (Left e)
@@ -186,7 +186,6 @@ handleTelegramMessage env msg =
                     Left _ ->
                       pure (Just $ formatNotify Error "Compaction failed")
                     Right compacted -> do
-                      env.conversations.updateConversation cid compacted env.agentProfile.cacheTtl
                       let afterTokens = Compaction.estimateTokens compacted
                           afterCount = length compacted
                       logInfo

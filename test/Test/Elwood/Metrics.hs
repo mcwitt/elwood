@@ -4,7 +4,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.ByteString.Lazy.Char8 qualified as LBS8
 import Data.Text qualified as T
 import Elwood.Claude.Conversation (ConversationStore (..), newInMemoryConversationStore)
-import Elwood.Claude.Types (CacheTtl (..), StopReason (..), Usage (..))
+import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..), Role (..), StopReason (..), Usage (..))
 import Elwood.Event.Types (EventSource (..))
 import Elwood.Metrics
   ( metricsSource,
@@ -106,7 +106,7 @@ renderingTests =
       testCase "cache_expires_at rendered for conversations" $ do
         store <- newMetricsStore
         convStore <- newInMemoryConversationStore
-        convStore.updateConversation "test-session" [] CacheTtl5Min
+        convStore.appendMessages "test-session" [ClaudeMessage User [TextBlock "hi"]] CacheTtl5Min
         output <- renderMetrics store convStore newToolRegistry
         let s = LBS8.unpack output
         assertBool "contains cache_expires_at metric" ("elwood_conversation_cache_expires_at{session=\"test-session\"}" `isIn` s)

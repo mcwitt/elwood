@@ -16,7 +16,7 @@ import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolSchema (..), jsonSchemaFormat)
-import Elwood.Config (CompactionConfig (..), PruningConfig)
+import Elwood.Config (PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
 import Elwood.Positive (Positive (getPositive), unsafePositive)
@@ -49,7 +49,6 @@ mkDelegateTaskTool ::
   ToolRegistry ->
   ApprovalFunction ->
   AgentProfile ->
-  CompactionConfig ->
   PruningConfig ->
   FilePath ->
   MetricsStore ->
@@ -57,7 +56,7 @@ mkDelegateTaskTool ::
   Map Text AgentPreset ->
   [Text] ->
   Tool
-mkDelegateTaskTool logger client baseRegistry approve parentProfile compaction pruning workspaceDir metrics defaultAgentPreset extraAgents allowedModels =
+mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspaceDir metrics defaultAgentPreset extraAgents allowedModels =
   Tool
     { schema =
         ToolSchema
@@ -115,16 +114,13 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile compaction p
         let subRunCmd = mkRunCommandTool logger workspaceDir subProfile.permissions
             subRegistry = registerTool subRunCmd baseRegistry
 
-        let -- Disable compaction — sub-agent starts with empty history
-            subCompaction = compaction {tokenThreshold = unsafePositive maxBound}
-            outputFmt = fmap jsonSchemaFormat di.outputSchema
+        let outputFmt = fmap jsonSchemaFormat di.outputSchema
             subConfig =
               AgentConfig
                 { logger = logger,
                   client = client,
                   registry = subRegistry,
                   requestApproval = approve,
-                  compaction = subCompaction,
                   systemPrompt = subSystemPrompt,
                   agentProfile = subProfile,
                   observer = metricsObserver metrics subProfile.model "delegate",

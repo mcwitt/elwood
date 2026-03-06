@@ -25,8 +25,10 @@ type ConversationCache = Map.Map Text Conversation
 data ConversationStore = ConversationStore
   { -- | Get or create a conversation for a session
     getConversation :: Text -> IO Conversation,
-    -- | Update conversation with a complete message list and cache TTL
-    updateConversation :: Text -> [ClaudeMessage] -> CacheTtl -> IO (),
+    -- | Append messages and extend the cache expiry (single write)
+    appendMessages :: Text -> [ClaudeMessage] -> CacheTtl -> IO (),
+    -- | Replace all messages and reset cache expiry to epoch
+    replaceMessages :: Text -> [ClaudeMessage] -> IO (),
     -- | Clear a conversation's history
     clearConversation :: Text -> IO (),
     -- | Get all conversations currently in the cache
@@ -42,7 +44,8 @@ newConversationStore dir = do
   pure
     ConversationStore
       { getConversation = fileGetConversation convDir cache,
-        updateConversation = fileUpdateConversation convDir cache,
+        appendMessages = fileAppendMessages convDir cache,
+        replaceMessages = fileReplaceMessages convDir cache,
         clearConversation = fileClearConversation convDir cache,
         allConversations = readMVar cache
       }
@@ -54,7 +57,8 @@ newInMemoryConversationStore = do
   pure
     ConversationStore
       { getConversation = memGetConversation cache,
-        updateConversation = memUpdateConversation cache,
+        appendMessages = memAppendMessages cache,
+        replaceMessages = memReplaceMessages cache,
         clearConversation = memClearConversation cache,
         allConversations = readMVar cache
       }
@@ -104,20 +108,34 @@ fileLoadOrCreateConversation convDir cache sid = do
 
   pure conv
 
-fileUpdateConversation :: FilePath -> MVar ConversationCache -> Text -> [ClaudeMessage] -> CacheTtl -> IO ()
-fileUpdateConversation convDir cache sid msgs ttl = do
+fileAppendMessages :: FilePath -> MVar ConversationCache -> Text -> [ClaudeMessage] -> CacheTtl -> IO ()
+fileAppendMessages convDir cache sid msgs ttl = do
   now <- getCurrentTime
 
-  -- Atomically read old expiry and insert updated conversation
+  -- Atomically read old conversation, append messages, extend expiry
   conv <- modifyMVar cache $ \c -> do
-    let oldExpiry = maybe epoch (.cacheExpiresAt) (Map.lookup sid c)
+    let old = Map.findWithDefault (createEmptyConversation sid) sid c
         conv =
           Conversation
             { sessionId = sid,
-              messages = msgs,
-              cacheExpiresAt = extendCacheExpiry now ttl oldExpiry
+              messages = old.messages ++ msgs,
+              cacheExpiresAt = extendCacheExpiry now ttl old.cacheExpiresAt
             }
     pure (Map.insert sid conv c, conv)
+
+  fileSaveConversation convDir conv
+
+fileReplaceMessages :: FilePath -> MVar ConversationCache -> Text -> [ClaudeMessage] -> IO ()
+fileReplaceMessages convDir cache sid msgs = do
+  let conv =
+        Conversation
+          { sessionId = sid,
+            messages = msgs,
+            cacheExpiresAt = epoch
+          }
+
+  modifyMVar_ cache $ \c ->
+    pure $ Map.insert sid conv c
 
   fileSaveConversation convDir conv
 
@@ -152,17 +170,28 @@ memGetConversation cache sid = do
         pure $ Map.insert sid conv c'
       pure conv
 
-memUpdateConversation :: MVar ConversationCache -> Text -> [ClaudeMessage] -> CacheTtl -> IO ()
-memUpdateConversation cache sid msgs ttl = do
+memAppendMessages :: MVar ConversationCache -> Text -> [ClaudeMessage] -> CacheTtl -> IO ()
+memAppendMessages cache sid msgs ttl = do
   now <- getCurrentTime
   modifyMVar_ cache $ \c -> do
-    let oldExpiry = maybe epoch (.cacheExpiresAt) (Map.lookup sid c)
+    let old = Map.findWithDefault (createEmptyConversation sid) sid c
         conv =
           Conversation
             { sessionId = sid,
-              messages = msgs,
-              cacheExpiresAt = extendCacheExpiry now ttl oldExpiry
+              messages = old.messages ++ msgs,
+              cacheExpiresAt = extendCacheExpiry now ttl old.cacheExpiresAt
             }
+    pure $ Map.insert sid conv c
+
+memReplaceMessages :: MVar ConversationCache -> Text -> [ClaudeMessage] -> IO ()
+memReplaceMessages cache sid msgs = do
+  let conv =
+        Conversation
+          { sessionId = sid,
+            messages = msgs,
+            cacheExpiresAt = epoch
+          }
+  modifyMVar_ cache $ \c ->
     pure $ Map.insert sid conv c
 
 memClearConversation :: MVar ConversationCache -> Text -> IO ()

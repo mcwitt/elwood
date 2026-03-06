@@ -187,28 +187,28 @@ conversationCacheTests =
     [ testCase "shorter TTL does not shrink cacheExpiresAt" $ do
         store <- newInMemoryConversationStore
         let sid :: Text = "test-session"
-            msgs = [ClaudeMessage User [TextBlock "hello"]]
+            msg = ClaudeMessage User [TextBlock "hello"]
 
-        -- First update with 1h TTL
-        store.updateConversation sid msgs CacheTtl1Hour
+        -- First append with 1h TTL
+        store.appendMessages sid [msg] CacheTtl1Hour
         conv1 <- store.getConversation sid
         let expiry1 = conv1.cacheExpiresAt
 
-        -- Second update with 5m TTL — must not shrink the expiry
-        store.updateConversation sid msgs CacheTtl5Min
+        -- Second append with 5m TTL — must not shrink the expiry
+        store.appendMessages sid [msg] CacheTtl5Min
         conv2 <- store.getConversation sid
         conv2.cacheExpiresAt @?= expiry1,
       testCase "longer TTL extends cacheExpiresAt" $ do
         store <- newInMemoryConversationStore
         let sid :: Text = "test-session"
-            msgs = [ClaudeMessage User [TextBlock "hello"]]
+            msg = ClaudeMessage User [TextBlock "hello"]
 
-        -- First update with 5m TTL
-        store.updateConversation sid msgs CacheTtl5Min
+        -- First append with 5m TTL
+        store.appendMessages sid [msg] CacheTtl5Min
         conv1 <- store.getConversation sid
 
-        -- Second update with 1h TTL — should extend
-        store.updateConversation sid msgs CacheTtl1Hour
+        -- Second append with 1h TTL — should extend
+        store.appendMessages sid [msg] CacheTtl1Hour
         conv2 <- store.getConversation sid
         assertBool "1h TTL should extend past 5m TTL" $
           conv2.cacheExpiresAt > conv1.cacheExpiresAt,
@@ -216,6 +216,41 @@ conversationCacheTests =
         store <- newInMemoryConversationStore
         conv <- store.getConversation ("fresh" :: Text)
         conv.cacheExpiresAt @?= epoch,
+      testCase "replaceMessages resets cacheExpiresAt to epoch" $ do
+        store <- newInMemoryConversationStore
+        let sid :: Text = "test-session"
+            msg = ClaudeMessage User [TextBlock "hello"]
+
+        -- First append to establish a non-epoch expiry
+        store.appendMessages sid [msg] CacheTtl1Hour
+        conv1 <- store.getConversation sid
+        assertBool "expiry should be after epoch" $ conv1.cacheExpiresAt > epoch
+
+        -- replaceMessages should reset to epoch
+        store.replaceMessages sid [msg]
+        conv2 <- store.getConversation sid
+        conv2.cacheExpiresAt @?= epoch,
+      testCase "appendMessages after replaceMessages gives now + ttl (not stale)" $ do
+        store <- newInMemoryConversationStore
+        let sid :: Text = "test-session"
+            msg = ClaudeMessage User [TextBlock "hello"]
+
+        -- Establish a large expiry with 1h TTL
+        store.appendMessages sid [msg] CacheTtl1Hour
+        conv1h <- store.getConversation sid
+        let expiry1h = conv1h.cacheExpiresAt
+
+        -- Reset via replaceMessages
+        store.replaceMessages sid [msg]
+        conv1 <- store.getConversation sid
+        conv1.cacheExpiresAt @?= epoch
+
+        -- appendMessages with 5m TTL should give now + 5m, not restore the old 1h expiry
+        store.appendMessages sid [msg] CacheTtl5Min
+        conv2 <- store.getConversation sid
+        assertBool "expiry should be after epoch" $ conv2.cacheExpiresAt > epoch
+        assertBool "5m TTL should not reach old 1h expiry" $
+          conv2.cacheExpiresAt < expiry1h,
       testCase "extendCacheExpiry: old expiry wins when larger" $ do
         let now = UTCTime (fromGregorian 2024 6 1) 43200
             oldExpiry = addUTCTime 3600 now -- now + 1h
