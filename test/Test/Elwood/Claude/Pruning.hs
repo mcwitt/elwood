@@ -45,8 +45,10 @@ tests =
       thinkingPruneStripsOldTurns,
       thinkingPruneProtectsRecentTurn,
       thinkingPruneKeepsNonThinkingBlocks,
-      -- thinking pruning edge case
+      -- thinking pruning edge cases
       thinkingPruneKeepZeroStripsAll,
+      thinkingPruneRespectsHorizon,
+      thinkingPrunePartialHorizon,
       -- tool input pruning tests
       toolInputPruneDisabled,
       toolInputPruneLargeInputs,
@@ -403,7 +405,7 @@ thinkingPruneDisabled =
     let msgs =
           [ ClaudeMessage Assistant [ThinkingBlock "deep thought" "sig1", TextBlock "reply"]
           ]
-    pruneThinkingBlocks Nothing msgs @?= msgs
+    pruneThinkingBlocks Nothing 100 msgs @?= msgs
 
 -- | Strips thinking from old turns
 thinkingPruneStripsOldTurns :: TestTree
@@ -415,7 +417,7 @@ thinkingPruneStripsOldTurns =
             ClaudeMessage User [TextBlock "turn 2"],
             ClaudeMessage Assistant [ThinkingBlock "thought 2" "sig2", TextBlock "reply 2"]
           ]
-        result = pruneThinkingBlocks (Just 1) msgs
+        result = pruneThinkingBlocks (Just 1) (length msgs) msgs
     -- Turn 1 thinking should be stripped (before boundary at index 2)
     (result !! 1).content @?= [TextBlock "reply 1"]
     -- Turn 2 thinking should be kept (protected)
@@ -434,7 +436,7 @@ thinkingPruneProtectsRecentTurn =
             ClaudeMessage Assistant [ThinkingBlock "t3" "s3", TextBlock "r3"]
           ]
         -- keepN = 2 protects turns 2 and 3
-        result = pruneThinkingBlocks (Just 2) msgs
+        result = pruneThinkingBlocks (Just 2) (length msgs) msgs
     -- Turn 1 thinking stripped
     (result !! 1).content @?= [TextBlock "r1"]
     -- Turns 2 and 3 thinking kept
@@ -451,7 +453,7 @@ thinkingPruneKeepsNonThinkingBlocks =
             ClaudeMessage User [TextBlock "turn 2"],
             ClaudeMessage Assistant [TextBlock "reply 2"]
           ]
-        result = pruneThinkingBlocks (Just 1) msgs
+        result = pruneThinkingBlocks (Just 1) (length msgs) msgs
     -- ThinkingBlock and RedactedThinkingBlock stripped, others kept
     (result !! 1).content @?= [TextBlock "reply", ToolUseBlock (ToolUseId "t1") (ToolName "tool") (Aeson.object [])]
 
@@ -465,9 +467,45 @@ thinkingPruneKeepZeroStripsAll =
             ClaudeMessage User [TextBlock "turn 2"],
             ClaudeMessage Assistant [ThinkingBlock "t2" "s2", TextBlock "r2"]
           ]
-        result = pruneThinkingBlocks (Just 0) msgs
+        result = pruneThinkingBlocks (Just 0) (length msgs) msgs
     (result !! 1).content @?= [TextBlock "r1"]
     (result !! 3).content @?= [TextBlock "r2"]
+
+-- | Horizon = 0 prevents thinking pruning even with keepN set
+thinkingPruneRespectsHorizon :: TestTree
+thinkingPruneRespectsHorizon =
+  testCase "pruneThinkingBlocks: horizon 0 prevents stripping" $ do
+    let msgs =
+          [ ClaudeMessage User [TextBlock "turn 1"],
+            ClaudeMessage Assistant [ThinkingBlock "t1" "s1", TextBlock "r1"],
+            ClaudeMessage User [TextBlock "turn 2"],
+            ClaudeMessage Assistant [ThinkingBlock "t2" "s2", TextBlock "r2"]
+          ]
+        result = pruneThinkingBlocks (Just 1) 0 msgs
+    -- Horizon 0 means nothing is eligible for stripping
+    (result !! 1).content @?= [ThinkingBlock "t1" "s1", TextBlock "r1"]
+    (result !! 3).content @?= [ThinkingBlock "t2" "s2", TextBlock "r2"]
+
+-- | Partial horizon only strips messages within the horizon
+thinkingPrunePartialHorizon :: TestTree
+thinkingPrunePartialHorizon =
+  testCase "pruneThinkingBlocks: partial horizon strips only prefix" $ do
+    let msgs =
+          [ ClaudeMessage User [TextBlock "turn 1"],
+            ClaudeMessage Assistant [ThinkingBlock "t1" "s1", TextBlock "r1"],
+            ClaudeMessage User [TextBlock "turn 2"],
+            ClaudeMessage Assistant [ThinkingBlock "t2" "s2", TextBlock "r2"],
+            ClaudeMessage User [TextBlock "turn 3"],
+            ClaudeMessage Assistant [ThinkingBlock "t3" "s3", TextBlock "r3"]
+          ]
+        -- keepN = 0 (protect nothing), horizon = 2 (only first 2 messages eligible)
+        result = pruneThinkingBlocks (Just 0) 2 msgs
+    -- Index 1 (within horizon): thinking stripped
+    (result !! 1).content @?= [TextBlock "r1"]
+    -- Index 3 (beyond horizon): thinking kept
+    (result !! 3).content @?= [ThinkingBlock "t2" "s2", TextBlock "r2"]
+    -- Index 5 (beyond horizon): thinking kept
+    (result !! 5).content @?= [ThinkingBlock "t3" "s3", TextBlock "r3"]
 
 -- ---------------------------------------------------------------------------
 -- Tool input pruning tests

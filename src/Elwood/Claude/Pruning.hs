@@ -95,17 +95,23 @@ pruneBlock _ block = block
 -- Thinking block pruning
 -- ---------------------------------------------------------------------------
 
--- | Strip thinking blocks from assistant messages before the protected
--- boundary.  Messages within the last @keepN@ turns are left untouched.
+-- | Strip thinking blocks from assistant messages before the effective
+-- horizon.  The effective horizon is the minimum of the given horizon and
+-- the protected boundary (last @keepN@ turns are never pruned).
+--
+-- This is gated by the cache-aware prune horizon so that thinking blocks
+-- are only stripped from messages the API cache has already absorbed,
+-- avoiding unnecessary cache invalidation.
 --
 -- NOTE: Anthropic's context editing API beta (context-management-2025-06-27)
 -- offers a server-side @clear_thinking_20251015@ strategy that does the same
 -- thing.  We prune client-side to avoid the beta dependency for now.
-pruneThinkingBlocks :: Maybe Int -> [ClaudeMessage] -> [ClaudeMessage]
-pruneThinkingBlocks Nothing msgs = msgs
-pruneThinkingBlocks (Just keepN) msgs =
+pruneThinkingBlocks :: Maybe Int -> Int -> [ClaudeMessage] -> [ClaudeMessage]
+pruneThinkingBlocks Nothing _ msgs = msgs
+pruneThinkingBlocks (Just keepN) n msgs =
   let boundary = protectedBoundary keepN msgs
-      (prefix, suffix) = splitAt boundary msgs
+      effectiveHorizon = max 0 (min n boundary)
+      (prefix, suffix) = splitAt effectiveHorizon msgs
    in map stripThinking prefix ++ suffix
 
 -- | Remove thinking blocks from a single assistant message.

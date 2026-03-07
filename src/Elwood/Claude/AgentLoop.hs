@@ -126,7 +126,7 @@ agentLoop cfg msgs iteration
       -- Always send all tool schemas (tool search handles filtering server-side)
       let schemas = toolSchemas reg
           prunedMsgs =
-            pruneThinkingBlocks cfg.pruningConfig.thinkingKeepTurns
+            pruneThinkingBlocks cfg.pruningConfig.thinkingKeepTurns cfg.pruneHorizon
               . pruneToolInputs cfg.pruningConfig cfg.pruneHorizon
               $ pruneToolResults cfg.pruningConfig cfg.pruneHorizon msgs
 
