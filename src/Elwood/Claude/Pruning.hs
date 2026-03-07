@@ -22,7 +22,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), turnBoundaryIndices)
-import Elwood.Config (PruningConfig (..))
+import Elwood.Config (PruningConfig (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
 
 -- | Conservative overhead estimate for the pruning indicator text.
 indicatorOverhead :: Int
@@ -30,21 +30,23 @@ indicatorOverhead = 60
 
 -- | Soft-prune a text value: keep the first @headChars@ and last @tailChars@
 -- characters with an indicator in between showing how much was removed.
--- Returns the text unchanged if it's short enough to fit without pruning.
-softPrune :: Int -> Int -> Text -> Text
+-- Returns 'Nothing' if the text is short enough to fit without pruning,
+-- or @'Just' pruned@ when content was truncated.
+softPrune :: Int -> Int -> Text -> Maybe Text
 softPrune headC tailC content
-  | total <= headC + tailC + indicatorOverhead = content
+  | total <= headC + tailC + indicatorOverhead = Nothing
   | otherwise =
       let headPart = T.take headC content
           tailPart = T.takeEnd tailC content
           pruned = total - headC - tailC
-       in headPart
-            <> "\n\n... [pruned "
-            <> T.pack (show pruned)
-            <> " of "
-            <> T.pack (show total)
-            <> " characters] ...\n\n"
-            <> tailPart
+       in Just $
+            headPart
+              <> "\n\n... [pruned "
+              <> T.pack (show pruned)
+              <> " of "
+              <> T.pack (show total)
+              <> " characters] ...\n\n"
+              <> tailPart
   where
     total = T.length content
 
@@ -64,31 +66,46 @@ protectedBoundary keepN msgs
   where
     bs = turnBoundaryIndices msgs
 
--- | Replace tool-result content with soft-pruned versions in messages before
--- the effective horizon.  The effective horizon is the minimum of the given
--- horizon and the protected boundary (last N turns are never pruned).
--- Error results ('isError' = True) are never pruned.
+-- | Apply a transformation to messages before the effective horizon.
+-- The effective horizon is the minimum of the given horizon and the
+-- protected boundary (last @keepN@ turns are never modified).
 --
 -- The horizon is clamped to the list length so callers need not bounds-check.
-pruneToolResults :: PruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
-pruneToolResults cfg n msgs =
-  let boundary = protectedBoundary cfg.keepTurns msgs
+pruneBeforeHorizon ::
+  -- | Number of recent turns to protect
+  Int ->
+  -- | Cache-aware prune horizon
+  Int ->
+  -- | Transformation to apply to each message in the prefix
+  (ClaudeMessage -> ClaudeMessage) ->
+  [ClaudeMessage] ->
+  [ClaudeMessage]
+pruneBeforeHorizon keepN n f msgs =
+  let boundary = protectedBoundary keepN msgs
       effectiveHorizon = max 0 (min n boundary)
       (prefix, suffix) = splitAt effectiveHorizon msgs
-   in map (pruneMessage cfg) prefix ++ suffix
+   in map f prefix ++ suffix
+
+-- | Replace tool-result content with soft-pruned versions in messages before
+-- the effective horizon.
+-- Error results ('isError' = True) are never pruned.
+pruneToolResults :: PruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
+pruneToolResults cfg n = pruneBeforeHorizon cfg.tools.output.keepTurns n (pruneMessage cfg.tools.output)
 
 -- | Prune tool results inside a single message.
 -- Only user messages can contain 'ToolResultBlock's, but we pattern-match
 -- exhaustively for safety.
-pruneMessage :: PruningConfig -> ClaudeMessage -> ClaudeMessage
-pruneMessage cfg (ClaudeMessage User blocks) =
-  ClaudeMessage User (map (pruneBlock cfg) blocks)
+pruneMessage :: ToolDirectionConfig -> ClaudeMessage -> ClaudeMessage
+pruneMessage dir (ClaudeMessage User blocks) =
+  ClaudeMessage User (map (pruneBlock dir) blocks)
 pruneMessage _ msg = msg
 
 -- | Soft-prune the content of a non-error 'ToolResultBlock'.
-pruneBlock :: PruningConfig -> ContentBlock -> ContentBlock
-pruneBlock cfg (ToolResultBlock tid content False) =
-  ToolResultBlock tid (softPrune cfg.headChars cfg.tailChars content) False
+pruneBlock :: ToolDirectionConfig -> ContentBlock -> ContentBlock
+pruneBlock dir (ToolResultBlock tid content False) =
+  case softPrune dir.headChars dir.tailChars content of
+    Nothing -> ToolResultBlock tid content False
+    Just pruned -> ToolResultBlock tid pruned False
 pruneBlock _ block = block
 
 -- ---------------------------------------------------------------------------
@@ -106,13 +123,9 @@ pruneBlock _ block = block
 -- NOTE: Anthropic's context editing API beta (context-management-2025-06-27)
 -- offers a server-side @clear_thinking_20251015@ strategy that does the same
 -- thing.  We prune client-side to avoid the beta dependency for now.
-pruneThinkingBlocks :: Maybe Int -> Int -> [ClaudeMessage] -> [ClaudeMessage]
-pruneThinkingBlocks Nothing _ msgs = msgs
-pruneThinkingBlocks (Just keepN) n msgs =
-  let boundary = protectedBoundary keepN msgs
-      effectiveHorizon = max 0 (min n boundary)
-      (prefix, suffix) = splitAt effectiveHorizon msgs
-   in map stripThinking prefix ++ suffix
+pruneThinkingBlocks :: Maybe ThinkingPruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
+pruneThinkingBlocks Nothing _ = id
+pruneThinkingBlocks (Just tcfg) n = pruneBeforeHorizon tcfg.keepTurns n stripThinking
 
 -- | Remove thinking blocks from a single assistant message.
 stripThinking :: ClaudeMessage -> ClaudeMessage
@@ -130,31 +143,25 @@ isThinking _ = False
 -- ---------------------------------------------------------------------------
 
 -- | Soft-prune large tool use inputs in assistant messages before the
--- protected boundary.  Inputs exceeding @threshold@ characters (when
--- serialized to JSON text) are replaced with a soft-pruned text summary.
+-- protected boundary.  Inputs are serialized to JSON text and soft-pruned;
+-- only replaced when 'softPrune' returns 'Just' (i.e. the content is large
+-- enough to warrant truncation).
 pruneToolInputs :: PruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
-pruneToolInputs cfg n msgs =
-  case cfg.toolInputThreshold of
-    Nothing -> msgs
-    Just threshold ->
-      let boundary = protectedBoundary cfg.keepTurns msgs
-          effectiveHorizon = max 0 (min n boundary)
-          (prefix, suffix) = splitAt effectiveHorizon msgs
-       in map (pruneAssistantInputs cfg threshold) prefix ++ suffix
+pruneToolInputs cfg n = pruneBeforeHorizon cfg.tools.input.keepTurns n (pruneAssistantInputs cfg.tools.input)
 
-pruneAssistantInputs :: PruningConfig -> Int -> ClaudeMessage -> ClaudeMessage
-pruneAssistantInputs cfg threshold (ClaudeMessage Assistant blocks) =
-  ClaudeMessage Assistant (map (pruneToolInput cfg threshold) blocks)
-pruneAssistantInputs _ _ msg = msg
+pruneAssistantInputs :: ToolDirectionConfig -> ClaudeMessage -> ClaudeMessage
+pruneAssistantInputs dir (ClaudeMessage Assistant blocks) =
+  ClaudeMessage Assistant (map (pruneToolInput dir) blocks)
+pruneAssistantInputs _ msg = msg
 
-pruneToolInput :: PruningConfig -> Int -> ContentBlock -> ContentBlock
-pruneToolInput cfg threshold (ToolUseBlock tid name input)
-  | let serialized = decodeUtf8 (LBS.toStrict (encode input)),
-    T.length serialized > threshold =
-      -- Wrap in an object to preserve the JSON type contract (API expects object for input)
-      let pruned = softPrune cfg.headChars cfg.tailChars serialized
-       in ToolUseBlock tid name (object ["_pruned" .= pruned])
-pruneToolInput _ _ block = block
+pruneToolInput :: ToolDirectionConfig -> ContentBlock -> ContentBlock
+pruneToolInput dir (ToolUseBlock tid name input) =
+  let serialized = decodeUtf8 (LBS.toStrict (encode input))
+   in case softPrune dir.headChars dir.tailChars serialized of
+        Nothing -> ToolUseBlock tid name input
+        -- Wrap in an object to preserve the JSON type contract (API expects object for input)
+        Just pruned -> ToolUseBlock tid name (object ["_pruned" .= pruned])
+pruneToolInput _ block = block
 
 -- ---------------------------------------------------------------------------
 -- Horizon state

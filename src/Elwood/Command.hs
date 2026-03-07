@@ -6,6 +6,7 @@ module Elwood.Command
 where
 
 import Control.Exception (SomeException, try)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Claude.Pruning (softPrune)
@@ -60,8 +61,10 @@ runCommand cmd workDir = do
     ec <- waitForProcess ph
 
     -- Pack to Text and limit size
-    let stdoutText = softPrune 5000 5000 (T.pack stdoutStr)
-        stderrText = softPrune 2500 2500 (T.pack stderrStr)
+    let stdoutRaw = T.pack stdoutStr
+        stderrRaw = T.pack stderrStr
+        stdoutText = fromMaybe stdoutRaw (softPrune 5000 5000 stdoutRaw)
+        stderrText = fromMaybe stderrRaw (softPrune 2500 2500 stderrRaw)
 
     pure (ec, stdoutText, stderrText)
 

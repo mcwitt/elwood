@@ -192,11 +192,17 @@ compaction:
 # soft-pruned: head and tail are kept with an indicator in between. Recent
 # turns are protected from pruning entirely.
 pruning:
-  head_chars: 500       # characters to keep from start of pruned content (default: 500)
-  tail_chars: 500       # characters to keep from end of pruned content (default: 500)
-  keep_turns: 3         # recent turns protected from pruning (default: 3)
-  thinking_keep_turns: 1  # keep thinking blocks for last N turns, independent of keep_turns (default: 1, null = keep all)
-  tool_input_threshold: 5000  # prune tool inputs exceeding this many chars (default: 5000, null = disabled)
+  keep_turns: 3           # global default for protected recent turns (default: 3)
+  thinking:               # thinking block pruning (null = keep all, omit = keep last keep_turns)
+    keep_turns: 1         # keep thinking for last N turns (default: inherits global keep_turns)
+  tools:
+    head_chars: 500       # characters to keep from start of pruned content (default: 500)
+    tail_chars: 500       # characters to keep from end of pruned content (default: 500)
+    # input:              # per-direction overrides for tool inputs (optional)
+    #   keep_turns: 5     # override protected turns for inputs (default: inherits global)
+    #   head_chars: 250   # override head_chars for inputs (default: inherits tools)
+    # output:             # per-direction overrides for tool outputs (optional)
+    #   tail_chars: 250   # override tail_chars for outputs (default: inherits tools)
 
 # Built-in meta-tool: delegate_task
 # Always available. Spawns a sub-agent with an isolated conversation to handle

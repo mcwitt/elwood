@@ -194,11 +194,65 @@ let
         };
 
         pruning = {
-          head_chars = agentCfg.pruning.headChars;
-          tail_chars = agentCfg.pruning.tailChars;
           keep_turns = agentCfg.pruning.keepTurns;
-          thinking_keep_turns = agentCfg.pruning.thinkingKeepTurns;
-          tool_input_threshold = agentCfg.pruning.toolInputThreshold;
+        }
+        // (
+          if agentCfg.pruning.thinking.enable then
+            {
+              thinking =
+                { }
+                // lib.optionalAttrs (agentCfg.pruning.thinking.keepTurns != null) {
+                  keep_turns = agentCfg.pruning.thinking.keepTurns;
+                };
+            }
+          else
+            { thinking = null; }
+        )
+        // {
+          tools = {
+            head_chars = agentCfg.pruning.tools.headChars;
+            tail_chars = agentCfg.pruning.tools.tailChars;
+          }
+          //
+            lib.optionalAttrs
+              (
+                agentCfg.pruning.tools.input.keepTurns != null
+                || agentCfg.pruning.tools.input.headChars != null
+                || agentCfg.pruning.tools.input.tailChars != null
+              )
+              {
+                input =
+                  { }
+                  // lib.optionalAttrs (agentCfg.pruning.tools.input.keepTurns != null) {
+                    keep_turns = agentCfg.pruning.tools.input.keepTurns;
+                  }
+                  // lib.optionalAttrs (agentCfg.pruning.tools.input.headChars != null) {
+                    head_chars = agentCfg.pruning.tools.input.headChars;
+                  }
+                  // lib.optionalAttrs (agentCfg.pruning.tools.input.tailChars != null) {
+                    tail_chars = agentCfg.pruning.tools.input.tailChars;
+                  };
+              }
+          //
+            lib.optionalAttrs
+              (
+                agentCfg.pruning.tools.output.keepTurns != null
+                || agentCfg.pruning.tools.output.headChars != null
+                || agentCfg.pruning.tools.output.tailChars != null
+              )
+              {
+                output =
+                  { }
+                  // lib.optionalAttrs (agentCfg.pruning.tools.output.keepTurns != null) {
+                    keep_turns = agentCfg.pruning.tools.output.keepTurns;
+                  }
+                  // lib.optionalAttrs (agentCfg.pruning.tools.output.headChars != null) {
+                    head_chars = agentCfg.pruning.tools.output.headChars;
+                  }
+                  // lib.optionalAttrs (agentCfg.pruning.tools.output.tailChars != null) {
+                    tail_chars = agentCfg.pruning.tools.output.tailChars;
+                  };
+              };
         };
       }
       // lib.optionalAttrs (mcpServersList != { }) {
@@ -828,34 +882,78 @@ let
         };
 
         pruning = {
-          headChars = lib.mkOption {
-            type = lib.types.int;
-            default = 500;
-            description = "Characters to keep from start of pruned content.";
-          };
-
-          tailChars = lib.mkOption {
-            type = lib.types.int;
-            default = 500;
-            description = "Characters to keep from end of pruned content.";
-          };
-
           keepTurns = lib.mkOption {
             type = lib.types.int;
             default = 3;
-            description = "Number of recent turns protected from pruning.";
+            description = "Global default for recent turns protected from pruning.";
           };
 
-          thinkingKeepTurns = lib.mkOption {
-            type = lib.types.nullOr lib.types.int;
-            default = 1;
-            description = "Keep thinking blocks for last N turns. Null keeps all thinking blocks.";
+          thinking = {
+            enable = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Enable thinking block pruning. When false, all thinking blocks are kept.";
+            };
+
+            keepTurns = lib.mkOption {
+              type = lib.types.nullOr lib.types.int;
+              default = null;
+              description = "Keep thinking blocks for last N turns. Null inherits global keepTurns.";
+            };
           };
 
-          toolInputThreshold = lib.mkOption {
-            type = lib.types.nullOr lib.types.int;
-            default = 5000;
-            description = "Prune tool use inputs exceeding this many characters. Null disables pruning.";
+          tools = {
+            headChars = lib.mkOption {
+              type = lib.types.int;
+              default = 500;
+              description = "Characters to keep from start of pruned content.";
+            };
+
+            tailChars = lib.mkOption {
+              type = lib.types.int;
+              default = 500;
+              description = "Characters to keep from end of pruned content.";
+            };
+
+            input = {
+              keepTurns = lib.mkOption {
+                type = lib.types.nullOr lib.types.int;
+                default = null;
+                description = "Override keep_turns for tool inputs. Null inherits global.";
+              };
+
+              headChars = lib.mkOption {
+                type = lib.types.nullOr lib.types.int;
+                default = null;
+                description = "Override head_chars for tool inputs. Null inherits from tools.";
+              };
+
+              tailChars = lib.mkOption {
+                type = lib.types.nullOr lib.types.int;
+                default = null;
+                description = "Override tail_chars for tool inputs. Null inherits from tools.";
+              };
+            };
+
+            output = {
+              keepTurns = lib.mkOption {
+                type = lib.types.nullOr lib.types.int;
+                default = null;
+                description = "Override keep_turns for tool outputs. Null inherits global.";
+              };
+
+              headChars = lib.mkOption {
+                type = lib.types.nullOr lib.types.int;
+                default = null;
+                description = "Override head_chars for tool outputs. Null inherits from tools.";
+              };
+
+              tailChars = lib.mkOption {
+                type = lib.types.nullOr lib.types.int;
+                default = null;
+                description = "Override tail_chars for tool outputs. Null inherits from tools.";
+              };
+            };
           };
         };
 

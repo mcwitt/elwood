@@ -1,13 +1,22 @@
 module Test.Elwood.Config (tests) where
 
-import Data.Aeson (Value (..), object, (.=))
+import Data.Aeson (Result (..), Value (..), fromJSON, object, (.=))
 import Elwood.AgentSettings (AgentPreset (..), AgentProfile (..), ToolSearchConfig (..))
 import Elwood.Config
   ( CompactionConfig (..),
     CompactionStrategy (..),
     Config (..),
+    PruningConfig (..),
+    PruningConfigFile (..),
     TelegramChatConfig (..),
+    ThinkingPruningConfig (..),
+    ThinkingPruningConfigFile (..),
+    ToolDirectionConfig (..),
+    ToolDirectionConfigFile (..),
+    ToolPruningConfig (..),
+    ToolPruningConfigFile (..),
     loadConfig,
+    resolvePruning,
   )
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Positive (unsafePositive)
@@ -24,6 +33,8 @@ tests =
     "Config"
     [ compactionConfigTests,
       thinkingLevelTests,
+      pruningResolutionTests,
+      pruningFromJsonTests,
       exampleConfigTests
     ]
 
@@ -104,6 +115,153 @@ thinkingLevelTests =
         case parseThinkingLevel (object ["type" .= ("turbo" :: String)]) of
           Left _ -> pure ()
           Right _ -> assertFailure "Expected Left for invalid type"
+    ]
+
+-- ---------------------------------------------------------------------------
+-- resolvePruning tests
+-- ---------------------------------------------------------------------------
+
+pruningResolutionTests :: TestTree
+pruningResolutionTests =
+  testGroup
+    "PruningConfig resolution"
+    [ testCase "empty config resolves to defaults" $ do
+        let cfg = resolvePruning mempty
+        cfg.keepTurns @?= 3
+        cfg.thinking @?= Just ThinkingPruningConfig {keepTurns = 3}
+        cfg.tools.headChars @?= 500
+        cfg.tools.tailChars @?= 500
+        cfg.tools.input.keepTurns @?= 3
+        cfg.tools.input.headChars @?= 500
+        cfg.tools.input.tailChars @?= 500
+        cfg.tools.output.keepTurns @?= 3
+        cfg.tools.output.headChars @?= 500
+        cfg.tools.output.tailChars @?= 500,
+      testCase "global keepTurns cascades to thinking and directions" $ do
+        let cfg = resolvePruning (PruningConfigFile {keepTurns = Just 7, thinking = Nothing, tools = Nothing})
+        cfg.keepTurns @?= 7
+        cfg.thinking @?= Just ThinkingPruningConfig {keepTurns = 7}
+        cfg.tools.input.keepTurns @?= 7
+        cfg.tools.output.keepTurns @?= 7,
+      testCase "per-direction keepTurns overrides global" $ do
+        let inputCf = ToolDirectionConfigFile {keepTurns = Just 10, headChars = Nothing, tailChars = Nothing}
+            toolsCf = ToolPruningConfigFile {headChars = Nothing, tailChars = Nothing, input = Just inputCf, output = Nothing}
+            cfg = resolvePruning (PruningConfigFile {keepTurns = Just 5, thinking = Nothing, tools = Just toolsCf})
+        cfg.tools.input.keepTurns @?= 10
+        cfg.tools.output.keepTurns @?= 5, -- output inherits global
+      testCase "thinking: null disables thinking pruning" $ do
+        let cfg = resolvePruning (PruningConfigFile {keepTurns = Nothing, thinking = Just Nothing, tools = Nothing})
+        cfg.thinking @?= Nothing,
+      testCase "thinking: {} inherits global keepTurns" $ do
+        let cfg = resolvePruning (PruningConfigFile {keepTurns = Just 5, thinking = Just (Just (ThinkingPruningConfigFile Nothing)), tools = Nothing})
+        cfg.thinking @?= Just ThinkingPruningConfig {keepTurns = 5},
+      testCase "thinking keepTurns overrides global" $ do
+        let cfg = resolvePruning (PruningConfigFile {keepTurns = Just 5, thinking = Just (Just (ThinkingPruningConfigFile (Just 2))), tools = Nothing})
+        cfg.thinking @?= Just ThinkingPruningConfig {keepTurns = 2},
+      testCase "tools headChars/tailChars cascade to directions" $ do
+        let toolsCf = ToolPruningConfigFile {headChars = Just 100, tailChars = Just 200, input = Nothing, output = Nothing}
+            cfg = resolvePruning (PruningConfigFile {keepTurns = Nothing, thinking = Nothing, tools = Just toolsCf})
+        cfg.tools.headChars @?= 100
+        cfg.tools.tailChars @?= 200
+        cfg.tools.input.headChars @?= 100
+        cfg.tools.input.tailChars @?= 200
+        cfg.tools.output.headChars @?= 100
+        cfg.tools.output.tailChars @?= 200,
+      testCase "direction headChars/tailChars override tools level" $ do
+        let outputCf = ToolDirectionConfigFile {keepTurns = Nothing, headChars = Just 50, tailChars = Just 75}
+            toolsCf = ToolPruningConfigFile {headChars = Just 100, tailChars = Just 200, input = Nothing, output = Just outputCf}
+            cfg = resolvePruning (PruningConfigFile {keepTurns = Nothing, thinking = Nothing, tools = Just toolsCf})
+        cfg.tools.input.headChars @?= 100 -- inherits tools
+        cfg.tools.input.tailChars @?= 200 -- inherits tools
+        cfg.tools.output.headChars @?= 50 -- overridden
+        cfg.tools.output.tailChars @?= 75 -- overridden
+    ]
+
+-- ---------------------------------------------------------------------------
+-- FromJSON tests for pruning config types
+-- ---------------------------------------------------------------------------
+
+pruningFromJsonTests :: TestTree
+pruningFromJsonTests =
+  testGroup
+    "PruningConfigFile FromJSON"
+    [ testCase "parses full nested config" $ do
+        let json =
+              object
+                [ "keep_turns" .= (5 :: Int),
+                  "thinking" .= object ["keep_turns" .= (2 :: Int)],
+                  "tools"
+                    .= object
+                      [ "head_chars" .= (100 :: Int),
+                        "tail_chars" .= (200 :: Int),
+                        "input" .= object ["keep_turns" .= (10 :: Int), "head_chars" .= (50 :: Int)],
+                        "output" .= object ["tail_chars" .= (75 :: Int)]
+                      ]
+                ]
+        case fromJSON json of
+          Error err -> assertFailure $ "Parse failed: " <> err
+          Success (pcf :: PruningConfigFile) -> do
+            pcf.keepTurns @?= Just 5
+            case pcf.thinking of
+              Just (Just tcf) -> tcf.keepTurns @?= Just 2
+              other -> assertFailure $ "Expected Just (Just ...), got: " <> show other
+            case pcf.tools of
+              Just tc -> do
+                tc.headChars @?= Just 100
+                tc.tailChars @?= Just 200
+                case tc.input of
+                  Just ic -> do
+                    ic.keepTurns @?= Just 10
+                    ic.headChars @?= Just 50
+                    ic.tailChars @?= Nothing
+                  Nothing -> assertFailure "Expected Just for input"
+                case tc.output of
+                  Just oc -> do
+                    oc.keepTurns @?= Nothing
+                    oc.headChars @?= Nothing
+                    oc.tailChars @?= Just 75
+                  Nothing -> assertFailure "Expected Just for output"
+              Nothing -> assertFailure "Expected Just for tools",
+      testCase "parses thinking: null as disabled" $ do
+        let json = object ["thinking" .= Null]
+        case fromJSON json of
+          Error err -> assertFailure $ "Parse failed: " <> err
+          Success (pcf :: PruningConfigFile) ->
+            pcf.thinking @?= Just Nothing,
+      testCase "absent thinking parses as Nothing (inherit defaults)" $ do
+        let json = object ["keep_turns" .= (3 :: Int)]
+        case fromJSON json of
+          Error err -> assertFailure $ "Parse failed: " <> err
+          Success (pcf :: PruningConfigFile) ->
+            pcf.thinking @?= Nothing,
+      testCase "empty object parses with all Nothing" $ do
+        let json = object []
+        case fromJSON json of
+          Error err -> assertFailure $ "Parse failed: " <> err
+          Success (pcf :: PruningConfigFile) -> do
+            pcf.keepTurns @?= Nothing
+            pcf.thinking @?= Nothing
+            pcf.tools @?= Nothing,
+      testCase "rejects unknown keys at top level" $ do
+        let json = object ["keep_turns" .= (3 :: Int), "bogus" .= True]
+        case fromJSON json :: Result PruningConfigFile of
+          Error _ -> pure ()
+          Success _ -> assertFailure "Expected parse failure for unknown key",
+      testCase "rejects unknown keys in thinking" $ do
+        let json = object ["thinking" .= object ["keep_turns" .= (1 :: Int), "bogus" .= True]]
+        case fromJSON json :: Result PruningConfigFile of
+          Error _ -> pure ()
+          Success _ -> assertFailure "Expected parse failure for unknown key in thinking",
+      testCase "rejects unknown keys in tools" $ do
+        let json = object ["tools" .= object ["head_chars" .= (100 :: Int), "bogus" .= True]]
+        case fromJSON json :: Result PruningConfigFile of
+          Error _ -> pure ()
+          Success _ -> assertFailure "Expected parse failure for unknown key in tools",
+      testCase "rejects unknown keys in tools direction" $ do
+        let json = object ["tools" .= object ["input" .= object ["keep_turns" .= (1 :: Int), "bogus" .= True]]]
+        case fromJSON json :: Result PruningConfigFile of
+          Error _ -> pure ()
+          Success _ -> assertFailure "Expected parse failure for unknown key in tools.input"
     ]
 
 exampleConfigTests :: TestTree

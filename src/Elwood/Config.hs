@@ -4,6 +4,14 @@ module Elwood.Config
     CompactionConfig (..),
     CompactionStrategy (..),
     PruningConfig (..),
+    ThinkingPruningConfig (..),
+    ToolPruningConfig (..),
+    ToolDirectionConfig (..),
+    PruningConfigFile (..),
+    ThinkingPruningConfigFile (..),
+    ToolPruningConfigFile (..),
+    ToolDirectionConfigFile (..),
+    resolvePruning,
     MCPServerConfig (..),
     PermissionConfig (..),
     PermissionConfigFile (..),
@@ -114,16 +122,43 @@ data CompactionConfig = CompactionConfig
 
 -- | Configuration for tool result pruning
 data PruningConfig = PruningConfig
+  { -- | Global default for recent turns protected from pruning
+    keepTurns :: Int,
+    -- | Thinking block pruning (Nothing = keep all thinking blocks)
+    thinking :: Maybe ThinkingPruningConfig,
+    -- | Tool result/input pruning configuration
+    tools :: ToolPruningConfig
+  }
+  deriving stock (Show, Generic)
+
+-- | Configuration for thinking block pruning
+newtype ThinkingPruningConfig = ThinkingPruningConfig
+  { -- | Number of recent turns to keep thinking blocks for
+    keepTurns :: Int
+  }
+  deriving stock (Show, Eq, Generic)
+
+-- | Configuration for tool content pruning (head/tail chars, per-direction overrides)
+data ToolPruningConfig = ToolPruningConfig
   { -- | Characters to keep from the start of pruned content
     headChars :: Int,
     -- | Characters to keep from the end of pruned content
     tailChars :: Int,
-    -- | Number of recent turns protected from pruning
+    -- | Resolved configuration for tool inputs
+    input :: ToolDirectionConfig,
+    -- | Resolved configuration for tool outputs
+    output :: ToolDirectionConfig
+  }
+  deriving stock (Show, Generic)
+
+-- | Per-direction (input/output) pruning configuration
+data ToolDirectionConfig = ToolDirectionConfig
+  { -- | Number of recent turns protected from pruning
     keepTurns :: Int,
-    -- | How many recent turns to keep thinking blocks for (Nothing = keep all)
-    thinkingKeepTurns :: Maybe Int,
-    -- | Prune tool use inputs exceeding this character count (Nothing = disabled)
-    toolInputThreshold :: Maybe Int
+    -- | Characters to keep from the start
+    headChars :: Int,
+    -- | Characters to keep from the end
+    tailChars :: Int
   }
   deriving stock (Show, Generic)
 
@@ -229,53 +264,86 @@ resolveCompaction ccf =
 
 -- | Pruning configuration from YAML file
 data PruningConfigFile = PruningConfigFile
-  { headChars :: Maybe Int,
-    tailChars :: Maybe Int,
-    keepTurns :: Maybe Int,
+  { keepTurns :: Maybe Int,
     -- | Outer 'Maybe' = "not specified in this layer";
-    -- inner 'Maybe' = "explicitly set to null/disabled".
-    -- Works correctly with '<|>' for layering.
-    thinkingKeepTurns :: Maybe (Maybe Int),
-    -- | Same dual-Maybe semantics as 'thinkingKeepTurns'.
-    toolInputThreshold :: Maybe (Maybe Int)
+    -- inner 'Maybe' = "explicitly set to null (disable thinking pruning)".
+    thinking :: Maybe (Maybe ThinkingPruningConfigFile),
+    tools :: Maybe ToolPruningConfigFile
   }
   deriving stock (Show, Generic)
+
+-- | Thinking pruning configuration from YAML file
+newtype ThinkingPruningConfigFile = ThinkingPruningConfigFile
+  { keepTurns :: Maybe Int
+  }
+  deriving stock (Show, Eq, Generic)
+
+-- | Tool pruning configuration from YAML file
+data ToolPruningConfigFile = ToolPruningConfigFile
+  { headChars :: Maybe Int,
+    tailChars :: Maybe Int,
+    input :: Maybe ToolDirectionConfigFile,
+    output :: Maybe ToolDirectionConfigFile
+  }
+  deriving stock (Show, Eq, Generic)
+
+-- | Per-direction tool pruning configuration from YAML file
+data ToolDirectionConfigFile = ToolDirectionConfigFile
+  { keepTurns :: Maybe Int,
+    headChars :: Maybe Int,
+    tailChars :: Maybe Int
+  }
+  deriving stock (Show, Eq, Generic)
 
 -- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
 instance Semigroup PruningConfigFile where
   a <> b =
     PruningConfigFile
-      { headChars = b.headChars <|> a.headChars,
-        tailChars = b.tailChars <|> a.tailChars,
-        keepTurns = b.keepTurns <|> a.keepTurns,
-        thinkingKeepTurns = b.thinkingKeepTurns <|> a.thinkingKeepTurns,
-        toolInputThreshold = b.toolInputThreshold <|> a.toolInputThreshold
+      { keepTurns = b.keepTurns <|> a.keepTurns,
+        thinking = b.thinking <|> a.thinking,
+        tools = b.tools <|> a.tools
       }
 
 instance Monoid PruningConfigFile where
-  mempty = PruningConfigFile Nothing Nothing Nothing Nothing Nothing
+  mempty = PruningConfigFile Nothing Nothing Nothing
 
 -- | Default pruning overrides (all 'Just' with hardcoded defaults).
 pruningDefaults :: PruningConfigFile
 pruningDefaults =
   PruningConfigFile
-    { headChars = Just 500,
-      tailChars = Just 500,
-      keepTurns = Just 3,
-      thinkingKeepTurns = Just (Just 1),
-      toolInputThreshold = Just (Just 5000)
+    { keepTurns = Just 3,
+      thinking = Just (Just (ThinkingPruningConfigFile Nothing)),
+      tools = Nothing
     }
 
 -- | Resolve a partial pruning config by layering over 'pruningDefaults'.
 resolvePruning :: PruningConfigFile -> PruningConfig
 resolvePruning pcf =
   let d = pruningDefaults <> pcf
+      globalKeepTurns = fromMaybe 3 d.keepTurns
+      thinkingCfg = case fromMaybe (Just (ThinkingPruningConfigFile Nothing)) d.thinking of
+        Nothing -> Nothing
+        Just tcf -> Just ThinkingPruningConfig {keepTurns = fromMaybe globalKeepTurns tcf.keepTurns}
+      toolsCf = fromMaybe (ToolPruningConfigFile Nothing Nothing Nothing Nothing) d.tools
+      toolsHeadChars = fromMaybe 500 toolsCf.headChars
+      toolsTailChars = fromMaybe 500 toolsCf.tailChars
+      mkDirection dcf =
+        let dc = fromMaybe (ToolDirectionConfigFile Nothing Nothing Nothing) dcf
+         in ToolDirectionConfig
+              { keepTurns = fromMaybe globalKeepTurns dc.keepTurns,
+                headChars = fromMaybe toolsHeadChars dc.headChars,
+                tailChars = fromMaybe toolsTailChars dc.tailChars
+              }
    in PruningConfig
-        { headChars = fromMaybe 500 d.headChars,
-          tailChars = fromMaybe 500 d.tailChars,
-          keepTurns = fromMaybe 3 d.keepTurns,
-          thinkingKeepTurns = fromMaybe (Just 1) d.thinkingKeepTurns,
-          toolInputThreshold = fromMaybe (Just 5000) d.toolInputThreshold
+        { keepTurns = globalKeepTurns,
+          thinking = thinkingCfg,
+          tools =
+            ToolPruningConfig
+              { headChars = toolsHeadChars,
+                tailChars = toolsTailChars,
+                input = mkDirection toolsCf.input,
+                output = mkDirection toolsCf.output
+              }
         }
 
 -- | MCP server configuration from YAML file
@@ -322,13 +390,33 @@ instance FromJSON CompactionConfigFile where
 
 instance FromJSON PruningConfigFile where
   parseJSON = withObject "PruningConfigFile" $ \v -> do
-    rejectUnknownKeys "PruningConfigFile" ["head_chars", "tail_chars", "keep_turns", "thinking_keep_turns", "tool_input_threshold"] v
+    rejectUnknownKeys "PruningConfigFile" ["keep_turns", "thinking", "tools"] v
     PruningConfigFile
+      <$> v .:? "keep_turns"
+      <*> v .:! "thinking"
+      <*> v .:? "tools"
+
+instance FromJSON ThinkingPruningConfigFile where
+  parseJSON = withObject "ThinkingPruningConfigFile" $ \v -> do
+    rejectUnknownKeys "ThinkingPruningConfigFile" ["keep_turns"] v
+    ThinkingPruningConfigFile <$> v .:? "keep_turns"
+
+instance FromJSON ToolPruningConfigFile where
+  parseJSON = withObject "ToolPruningConfigFile" $ \v -> do
+    rejectUnknownKeys "ToolPruningConfigFile" ["head_chars", "tail_chars", "input", "output"] v
+    ToolPruningConfigFile
       <$> v .:? "head_chars"
       <*> v .:? "tail_chars"
-      <*> v .:? "keep_turns"
-      <*> v .:? "thinking_keep_turns"
-      <*> v .:? "tool_input_threshold"
+      <*> v .:? "input"
+      <*> v .:? "output"
+
+instance FromJSON ToolDirectionConfigFile where
+  parseJSON = withObject "ToolDirectionConfigFile" $ \v -> do
+    rejectUnknownKeys "ToolDirectionConfigFile" ["keep_turns", "head_chars", "tail_chars"] v
+    ToolDirectionConfigFile
+      <$> v .:? "keep_turns"
+      <*> v .:? "head_chars"
+      <*> v .:? "tail_chars"
 
 instance FromJSON DelegateConfigFile where
   parseJSON = withObject "DelegateConfigFile" $ \v -> do
