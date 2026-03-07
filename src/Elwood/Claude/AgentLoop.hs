@@ -142,7 +142,7 @@ agentLoop cfg msgs iteration
                 messages = prunedMsgs,
                 tools = schemas,
                 thinking = thinkingToConfig thk,
-                cacheControl = Just cfg.agentProfile.cacheTtl,
+                cacheControl = cfg.agentProfile.cache,
                 toolSearch = cfg.toolSearch,
                 outputFormat = cfg.outputFormat
               }

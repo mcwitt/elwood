@@ -67,9 +67,15 @@ let
         // lib.optionalAttrs (agentOvr.maxIterations != null) {
           max_iterations = agentOvr.maxIterations;
         }
-        // lib.optionalAttrs (agentOvr.cacheTtl != null) {
-          cache_ttl = agentOvr.cacheTtl;
-        }
+        // (
+          let
+            cacheAttrs =
+              { }
+              // lib.optionalAttrs (agentOvr.cache.enable != null) { enable = agentOvr.cache.enable; }
+              // lib.optionalAttrs (agentOvr.cache.ttl != null) { ttl = agentOvr.cache.ttl; };
+          in
+          lib.optionalAttrs (cacheAttrs != { }) { cache = cacheAttrs; }
+        )
         // lib.optionalAttrs (agentOvr.maxTokens != null) {
           max_tokens = agentOvr.maxTokens;
         }
@@ -163,7 +169,10 @@ let
           model = agentCfg.agent.model;
           thinking = mkThinkingConfig agentCfg.agent.thinking;
           max_iterations = agentCfg.agent.maxIterations;
-          cache_ttl = agentCfg.agent.cacheTtl;
+          cache = {
+            enable = agentCfg.agent.cache.enable;
+            ttl = agentCfg.agent.cache.ttl;
+          };
           max_tokens = agentCfg.agent.maxTokens;
           system_prompt = map mkPromptInputYaml agentCfg.agent.systemPrompt;
           permissions = {
@@ -269,11 +278,11 @@ let
       }
       // (
         let
-          defaultAgentAttrs = mkAgentPresetAttrs agentCfg.delegate.defaultAgent;
+          delegateAgentAttrs = mkAgentPresetAttrs agentCfg.delegate.agent;
           extraAgentsAttrs = lib.mapAttrs (_: mkAgentPresetAttrs) agentCfg.delegate.extraAgents;
           delegateAttrs =
-            lib.optionalAttrs (defaultAgentAttrs != { }) {
-              default_agent = defaultAgentAttrs;
+            lib.optionalAttrs (delegateAgentAttrs != { }) {
+              agent = delegateAgentAttrs;
             }
             // lib.optionalAttrs (extraAgentsAttrs != { }) {
               extra_agents = extraAgentsAttrs;
@@ -505,15 +514,22 @@ let
       description = "Max iterations override. Null means use the agent's global value.";
     };
 
-    cacheTtl = lib.mkOption {
-      type = lib.types.nullOr (
-        lib.types.enum [
-          "5m"
-          "1h"
-        ]
-      );
-      default = null;
-      description = "Cache TTL override. Null means use the agent's global value.";
+    cache = {
+      enable = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Cache enable override. Null means use the agent's global value.";
+      };
+      ttl = lib.mkOption {
+        type = lib.types.nullOr (
+          lib.types.enum [
+            "5m"
+            "1h"
+          ]
+        );
+        default = null;
+        description = "Cache TTL override. Null means use the agent's global value.";
+      };
     };
 
     maxTokens = lib.mkOption {
@@ -707,16 +723,23 @@ let
             description = "Maximum agent loop iterations per turn (prevents infinite tool-use loops).";
           };
 
-          cacheTtl = lib.mkOption {
-            type = lib.types.enum [
-              "5m"
-              "1h"
-            ];
-            default = "5m";
-            description = ''
-              Prompt cache TTL. "5m" for 5-minute ephemeral cache (1.25x write cost),
-              "1h" for 1-hour extended cache (2x write cost).
-            '';
+          cache = {
+            enable = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Enable prompt caching.";
+            };
+            ttl = lib.mkOption {
+              type = lib.types.enum [
+                "5m"
+                "1h"
+              ];
+              default = "5m";
+              description = ''
+                Prompt cache TTL. "5m" for 5-minute ephemeral cache (1.25x write cost),
+                "1h" for 1-hour extended cache (2x write cost).
+              '';
+            };
           };
 
           maxTokens = lib.mkOption {
@@ -791,11 +814,11 @@ let
         };
 
         delegate = {
-          defaultAgent = agentOverrideOptions // {
+          agent = agentOverrideOptions // {
             description = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
-              description = "Human-readable description of the default delegate agent. Surfaced in the delegate_task tool description.";
+              description = "Human-readable description of the delegate agent. Surfaced in the delegate_task tool description.";
             };
           };
 

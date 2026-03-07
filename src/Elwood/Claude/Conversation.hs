@@ -25,8 +25,9 @@ type ConversationCache = Map.Map Text Conversation
 data ConversationStore = ConversationStore
   { -- | Get or create a conversation for a session
     getConversation :: Text -> IO Conversation,
-    -- | Append messages and extend the cache expiry (single write)
-    appendMessages :: Text -> [ClaudeMessage] -> CacheTtl -> IO (),
+    -- | Append messages and optionally extend the cache expiry (single write).
+    -- 'Nothing' keeps the existing expiry unchanged; 'Just ttl' extends it.
+    appendMessages :: Text -> [ClaudeMessage] -> Maybe CacheTtl -> IO (),
     -- | Replace all messages and reset cache expiry to epoch
     replaceMessages :: Text -> [ClaudeMessage] -> IO (),
     -- | Clear a conversation's history
@@ -108,8 +109,8 @@ fileLoadOrCreateConversation convDir cache sid = do
 
   pure conv
 
-fileAppendMessages :: FilePath -> MVar ConversationCache -> Text -> [ClaudeMessage] -> CacheTtl -> IO ()
-fileAppendMessages convDir cache sid msgs ttl = do
+fileAppendMessages :: FilePath -> MVar ConversationCache -> Text -> [ClaudeMessage] -> Maybe CacheTtl -> IO ()
+fileAppendMessages convDir cache sid msgs mTtl = do
   now <- getCurrentTime
 
   -- Atomically read old conversation, append messages, extend expiry
@@ -119,7 +120,9 @@ fileAppendMessages convDir cache sid msgs ttl = do
           Conversation
             { sessionId = sid,
               messages = old.messages ++ msgs,
-              cacheExpiresAt = extendCacheExpiry now ttl old.cacheExpiresAt
+              cacheExpiresAt = case mTtl of
+                Nothing -> old.cacheExpiresAt
+                Just ttl -> extendCacheExpiry now ttl old.cacheExpiresAt
             }
     pure (Map.insert sid conv c, conv)
 
@@ -170,8 +173,8 @@ memGetConversation cache sid = do
         pure $ Map.insert sid conv c'
       pure conv
 
-memAppendMessages :: MVar ConversationCache -> Text -> [ClaudeMessage] -> CacheTtl -> IO ()
-memAppendMessages cache sid msgs ttl = do
+memAppendMessages :: MVar ConversationCache -> Text -> [ClaudeMessage] -> Maybe CacheTtl -> IO ()
+memAppendMessages cache sid msgs mTtl = do
   now <- getCurrentTime
   modifyMVar_ cache $ \c -> do
     let old = Map.findWithDefault (createEmptyConversation sid) sid c
@@ -179,7 +182,9 @@ memAppendMessages cache sid msgs ttl = do
           Conversation
             { sessionId = sid,
               messages = old.messages ++ msgs,
-              cacheExpiresAt = extendCacheExpiry now ttl old.cacheExpiresAt
+              cacheExpiresAt = case mTtl of
+                Nothing -> old.cacheExpiresAt
+                Just ttl -> extendCacheExpiry now ttl old.cacheExpiresAt
             }
     pure $ Map.insert sid conv c
 

@@ -117,8 +117,8 @@ data AppEnv = AppEnv
     sessionLocks :: SessionLocks,
     -- | Send notification messages when the agent uses tools
     toolUseMessages :: Bool,
-    -- | Default delegate sub-agent preset (overrides + optional description)
-    delegateDefaultAgent :: AgentPreset,
+    -- | Delegate sub-agent preset (overrides + optional description)
+    delegateAgent :: AgentPreset,
     -- | Named agent presets for delegate_task
     delegateExtraAgents :: Map Text AgentPreset,
     -- | Allowed models for delegate_task tool parameter
@@ -231,7 +231,7 @@ handleEventCore env event callbacks = do
           env.pruning
           env.workspaceDir
           env.metrics
-          env.delegateDefaultAgent
+          env.delegateAgent
           env.delegateExtraAgents
           env.delegateAllowedModels
       registryWithDelegate = Tools.registerTool delegateTool registryWithPerms
@@ -268,7 +268,7 @@ handleEventCore env event callbacks = do
       -- Append new messages to conversation (skip for isolated sessions)
       case mConversationId of
         Nothing -> pure ()
-        Just cid -> env.conversations.appendMessages cid newMessages prof.cacheTtl
+        Just cid -> env.conversations.appendMessages cid newMessages prof.cache
 
       -- Deliver response
       callbacks.onResponse responseText

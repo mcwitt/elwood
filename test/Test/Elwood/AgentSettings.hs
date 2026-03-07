@@ -8,6 +8,7 @@ import Data.Text qualified as T
 import Elwood.AgentSettings
   ( AgentOverrides (..),
     AgentProfile (..),
+    CacheOverrides (..),
     ToolSearchConfig (..),
     agentDefaults,
     resolveProfile,
@@ -59,6 +60,9 @@ instance Arbitrary ThinkingLevel where
 
 instance Arbitrary CacheTtl where
   arbitrary = elements [CacheTtl5Min, CacheTtl1Hour]
+
+instance Arbitrary CacheOverrides where
+  arbitrary = CacheOverrides <$> arbitrary <*> arbitrary
 
 instance Arbitrary P.Positive where
   arbitrary = P.unsafePositive . getPositive <$> arbitrary
@@ -136,7 +140,7 @@ overrideTests =
                 (Just "model-a")
                 (Just ThinkingOff)
                 (Just (P.unsafePositive 10))
-                (Just CacheTtl5Min)
+                (Just (CacheOverrides (Just True) (Just CacheTtl5Min)))
                 (Just (P.unsafePositive 8192))
                 (Just [WorkspaceFile "SOUL.md"])
                 (Just ToolSearchDisabled)
@@ -149,12 +153,28 @@ overrideTests =
                 "model-x"
                 (ThinkingBudget 4096)
                 (P.unsafePositive 15)
-                CacheTtl1Hour
+                (Just CacheTtl1Hour)
                 (P.unsafePositive 32768)
                 [InlineText "test"]
                 (ToolSearchEnabled ["run_command"])
                 defaultPermissionConfig
-        resolveProfile (toOverrides s) @?= s
+        resolveProfile (toOverrides s) @?= s,
+      testCase "toOverrides roundtrips cache=Nothing (disabled)" $ do
+        let s =
+              AgentProfile
+                "model-x"
+                ThinkingOff
+                (P.unsafePositive 15)
+                Nothing
+                (P.unsafePositive 32768)
+                [InlineText "test"]
+                ToolSearchDisabled
+                defaultPermissionConfig
+        resolveProfile (toOverrides s) @?= s,
+      testCase "cache overrides merge field-level" $ do
+        let a = AgentOverrides Nothing Nothing Nothing (Just (CacheOverrides (Just True) (Just CacheTtl5Min))) Nothing Nothing Nothing Nothing
+            b = AgentOverrides Nothing Nothing Nothing (Just (CacheOverrides Nothing (Just CacheTtl1Hour))) Nothing Nothing Nothing Nothing
+        (a <> b).cache @?= Just (CacheOverrides (Just True) (Just CacheTtl1Hour))
     ]
 
 resolveTests :: TestTree
@@ -172,6 +192,14 @@ resolveTests =
         s.permissions @?= resolvePermissions mempty,
       testCase "agentDefaults resolves to same defaults" $ do
         resolveProfile agentDefaults @?= resolveProfile mempty,
+      testCase "cache disabled resolves to Nothing" $ do
+        let o = AgentOverrides Nothing Nothing Nothing (Just (CacheOverrides (Just False) Nothing)) Nothing Nothing Nothing Nothing
+            s = resolveProfile o
+        s.cache @?= Nothing,
+      testCase "cache enabled with ttl resolves to Just ttl" $ do
+        let o = AgentOverrides Nothing Nothing Nothing (Just (CacheOverrides (Just True) (Just CacheTtl1Hour))) Nothing Nothing Nothing Nothing
+            s = resolveProfile o
+        s.cache @?= Just CacheTtl1Hour,
       testCase "overrides are applied" $ do
         let o = agentDefaults <> AgentOverrides (Just "custom-model") Nothing (Just (P.unsafePositive 50)) Nothing (Just (P.unsafePositive 8192)) Nothing Nothing Nothing
             s = resolveProfile o
@@ -213,7 +241,7 @@ permissionsMergeTests =
                 "model"
                 ThinkingOff
                 (P.unsafePositive 20)
-                CacheTtl5Min
+                (Just CacheTtl5Min)
                 (P.unsafePositive 16384)
                 [WorkspaceFile "SOUL.md"]
                 ToolSearchDisabled

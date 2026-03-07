@@ -12,10 +12,10 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), ToolSearchConfig (..), resolveProfile, toOverrides)
+import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), CacheOverrides (..), ToolSearchConfig (..), resolveProfile, toOverrides)
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
-import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolSchema (..), jsonSchemaFormat)
+import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolSchema (..), jsonSchemaFormat)
 import Elwood.Config (PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
@@ -30,7 +30,7 @@ import Elwood.Tools.Types
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
 -- Other fields (model, thinking, system_prompt, tool_search, permissions) inherit from parent.
 delegateDefaults :: AgentOverrides
-delegateDefaults = AgentOverrides Nothing Nothing (Just (unsafePositive 10)) (Just CacheTtl5Min) Nothing Nothing Nothing Nothing
+delegateDefaults = AgentOverrides Nothing Nothing (Just (unsafePositive 10)) (Just (CacheOverrides (Just False) Nothing)) Nothing Nothing Nothing Nothing
 
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
@@ -56,7 +56,7 @@ mkDelegateTaskTool ::
   Map Text AgentPreset ->
   [Text] ->
   Tool
-mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspaceDir metrics defaultAgentPreset extraAgents allowedModels =
+mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspaceDir metrics delegateAgentPreset extraAgents allowedModels =
   Tool
     { schema =
         ToolSchema
@@ -76,7 +76,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                 <> "settings (model, thinking, max_iterations) via tool parameters. "
                 <> "Note: when overriding model or thinking, ensure they are compatible "
                 <> "(e.g., Haiku does not support adaptive thinking)."
-                <> maybe "" (\d -> " Default agent: " <> d <> ".") defaultAgentPreset.description,
+                <> maybe "" (\d -> " Default agent: " <> d <> ".") delegateAgentPreset.description,
             inputSchema = delegateSchema allowedModels extraAgents
           },
       execute = executeDelegateTask
@@ -88,9 +88,9 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
     executeDelegateTask input = case parseDelegateInput allowedModels extraAgentKeys input of
       Left err -> pure $ toolError err
       Right di -> do
-        -- Layering: parent profile < delegate defaults < config default_agent < extra agent < tool params
+        -- Layering: parent profile < delegate defaults < config agent < extra agent < tool params
         let extraAgentOvr = maybe mempty (\n -> maybe mempty (.overrides) (Map.lookup n extraAgents)) di.agentName
-            baseOverrides = toOverrides parentProfile <> delegateDefaults <> defaultAgentPreset.overrides <> extraAgentOvr
+            baseOverrides = toOverrides parentProfile <> delegateDefaults <> delegateAgentPreset.overrides <> extraAgentOvr
             subProfile = resolveProfile (baseOverrides <> di.overrides)
 
         logInfo
@@ -291,6 +291,6 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
     Just val@(Aeson.Object _) -> Right (Just val)
     Just _ -> Left "Invalid 'output_schema' parameter (must be a JSON object)"
     Nothing -> Right Nothing
-  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cacheTtl = Nothing, maxTokens = Nothing, systemPrompt = systemPromptParam, toolSearch = Nothing, permissions = Nothing}
+  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cache = Nothing, maxTokens = Nothing, systemPrompt = systemPromptParam, toolSearch = Nothing, permissions = Nothing}
   Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam}
 parseDelegateInput _ _ _ = Left "Expected object input"

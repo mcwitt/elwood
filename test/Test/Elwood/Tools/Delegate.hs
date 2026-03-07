@@ -244,7 +244,7 @@ mkStubDelegateToolWithModels =
     undefined -- pruning
     undefined -- workspaceDir
     undefined -- metrics
-    (AgentPreset Nothing mempty) -- defaultAgentPreset
+    (AgentPreset Nothing mempty) -- delegateAgentPreset
     Map.empty -- extraAgents
 
 mkStubDelegateToolWithAgents :: [Text] -> Tool
@@ -258,6 +258,6 @@ mkStubDelegateToolWithAgents agentNames =
     undefined -- pruning
     undefined -- workspaceDir
     undefined -- metrics
-    (AgentPreset Nothing mempty) -- defaultAgentPreset
+    (AgentPreset Nothing mempty) -- delegateAgentPreset
     (Map.fromList [(n, AgentPreset Nothing mempty) | n <- agentNames])
     [] -- allowedModels

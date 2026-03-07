@@ -66,7 +66,9 @@ agent:
   thinking:
     type: off  # off | adaptive (with effort) | fixed (with budget_tokens)
   max_tokens: 16384
-  # cache_ttl: 5m  # prompt cache TTL: "5m" (default) or "1h"
+  # cache:
+  #   enable: true  # set to false to disable prompt caching
+  #   ttl: 5m       # "5m" (default) or "1h"
   system_prompt:
     - type: workspace_file
       path: SOUL.md
@@ -82,7 +84,7 @@ agent:
       - "^rm -i\\b"
 
 # delegate:                      # sub-agent defaults for delegate_task
-#   default_agent:
+#   agent:
 #     description: General-purpose sub-agent
 #     model: claude-haiku-4-20250414
 #     max_iterations: 10

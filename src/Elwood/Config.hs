@@ -96,8 +96,8 @@ data Config = Config
     webhook :: WebhookServerConfig,
     -- | Send notification messages when the agent uses tools
     toolUseMessages :: Bool,
-    -- | Default delegate sub-agent preset (overrides + optional description)
-    delegateDefaultAgent :: AgentPreset,
+    -- | Delegate sub-agent preset (overrides + optional description)
+    delegateAgent :: AgentPreset,
     -- | Named agent presets for delegate_task
     delegateExtraAgents :: Map Text AgentPreset,
     -- | Allowed models for delegate_task tool parameter
@@ -213,7 +213,7 @@ data ConfigFile = ConfigFile
 
 -- | Delegate sub-agent configuration from YAML file
 data DelegateConfigFile = DelegateConfigFile
-  { defaultAgent :: AgentPreset,
+  { agent :: AgentPreset,
     extraAgents :: Map Text AgentPreset,
     allowedModels :: Maybe [Text]
   }
@@ -420,9 +420,9 @@ instance FromJSON ToolDirectionConfigFile where
 
 instance FromJSON DelegateConfigFile where
   parseJSON = withObject "DelegateConfigFile" $ \v -> do
-    rejectUnknownKeys "DelegateConfigFile" ["default_agent", "extra_agents", "allowed_models"] v
+    rejectUnknownKeys "DelegateConfigFile" ["agent", "extra_agents", "allowed_models"] v
     DelegateConfigFile
-      <$> v .:? "default_agent" .!= AgentPreset Nothing mempty
+      <$> v .:? "agent" .!= AgentPreset Nothing mempty
       <*> v .:? "extra_agents" .!= Map.empty
       <*> v .:? "allowed_models"
 
@@ -553,7 +553,7 @@ loadConfig path = do
         mcpServers = servers,
         webhook = webhookCfg,
         toolUseMessages = fromMaybe True configFile.toolUseMessages,
-        delegateDefaultAgent = delCfg.defaultAgent,
+        delegateAgent = delCfg.agent,
         delegateExtraAgents = delCfg.extraAgents,
         delegateAllowedModels = fromMaybe [] delCfg.allowedModels,
         maxImageDimension = maxImgDim

@@ -23,7 +23,8 @@ telegram_chats:
     #     effort: low
     #   max_iterations: 10
     #   max_tokens: 8192
-    #   cache_ttl: 5m
+    #   cache:
+    #     enable: false                  # disable prompt caching for this chat
     #   # NOTE: overriding system_prompt/permissions replaces the parent values, not extends them
     #   system_prompt:                   # per-chat system prompt override
     #     - type: workspace_file
@@ -66,11 +67,10 @@ agent:
   # Default: 20
   max_iterations: 20
 
-  # Prompt cache TTL
-  # Controls the cache lifetime for prompt caching. Longer TTLs cost more for
-  # cache writes but help if requests are spaced more than 5 minutes apart.
-  # Values: "5m" (default, 1.25x write cost) or "1h" (2x write cost)
-  # cache_ttl: 5m
+  # Prompt cache configuration
+  # cache:
+  #   enable: true    # default: true — set to false to disable prompt caching
+  #   ttl: 5m         # "5m" (default, 1.25x write cost) or "1h" (2x write cost)
 
   # System prompt configuration
   # A list of prompt inputs assembled into the system prompt.
@@ -126,16 +126,17 @@ agent:
 # per-call via tool parameters.
 #
 # Layering precedence (highest wins):
-#   tool parameters > extra_agents preset > default_agent > delegate defaults > parent agent
+#   tool parameters > extra_agents preset > agent > delegate defaults > parent agent
 # delegate:
-#   default_agent:                # overrides parent agent settings (omit to inherit)
+#   agent:                        # overrides parent agent settings (omit to inherit)
 #     description: General-purpose sub-agent   # optional, surfaced in tool description
 #     model: claude-haiku-4-20250414
 #     thinking:
 #       type: off
 #     max_iterations: 10          # default: 10
 #     max_tokens: 8192
-#     cache_ttl: 5m
+#     cache:
+#       enable: false             # disable prompt caching for sub-agents
 #     # NOTE: overriding system_prompt/permissions replaces the parent values, not extends them
 #     system_prompt:              # sub-agent system prompt override
 #       - type: text
@@ -245,7 +246,8 @@ webhook:
       #     effort: low
       #   max_iterations: 5
       #   max_tokens: 8192
-      #   cache_ttl: 5m
+      #   cache:
+      #     enable: false                 # disable prompt caching for this endpoint
       #   # NOTE: overriding system_prompt/permissions replaces the parent values, not extends them
       #   permissions:                    # per-endpoint permission overrides (merged with global)
       #     tool_policies:
