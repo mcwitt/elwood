@@ -8,6 +8,46 @@
 let
   cfg = config.services.assistant;
 
+  # Reusable strategy submodule for pruning options.
+  # Has type (keep_turns | keep_fraction), keepTurns, and keepFraction.
+  strategySubmodule =
+    {
+      defaultType ? "keep_turns",
+      defaultKeepTurns ? 3,
+    }:
+    lib.types.submodule {
+      options = {
+        type = lib.mkOption {
+          type = lib.types.enum [
+            "keep_turns"
+            "keep_fraction"
+          ];
+          default = defaultType;
+          description = "Strategy type: keep_turns or keep_fraction.";
+        };
+
+        keepTurns = lib.mkOption {
+          type = lib.types.int;
+          default = defaultKeepTurns;
+          description = "Number of recent turns to protect (keep_turns strategy).";
+        };
+
+        keepFraction = lib.mkOption {
+          type = lib.types.float;
+          default = 0.5;
+          description = "Fraction of total turns to protect (keep_fraction strategy).";
+        };
+      };
+    };
+
+  # Serialize a strategy submodule value to a YAML-ready attrset.
+  mkStrategyYaml =
+    strat:
+    if strat.type == "keep_turns" then
+      { keep_turns = strat.keepTurns; }
+    else
+      { keep_fraction = strat.keepFraction; };
+
   # Generate YAML config for an agent
   mkConfigFile =
     name: agentCfg:
@@ -154,8 +194,8 @@ let
 
       configContent = {
         state_dir = agentCfg.stateDir;
-        workspace_dir = agentCfg.workspaceDir;
-        telegram_chats = map (
+        workspace = agentCfg.workspaceDir;
+        channels.telegram = map (
           tc:
           {
             inherit (tc) id;
@@ -164,7 +204,7 @@ let
             inherit (tc) session;
           }
           // mkAgentOverrides tc.agent
-        ) agentCfg.telegramChats;
+        ) agentCfg.channels.telegram;
         agent = {
           model = agentCfg.agent.model;
           thinking = mkThinkingConfig agentCfg.agent.thinking;
@@ -192,26 +232,22 @@ let
         compaction = {
           token_threshold = agentCfg.compaction.tokenThreshold;
           model = agentCfg.compaction.model;
-          strategy =
-            if agentCfg.compaction.strategy.type == "keep_last_turns" then
-              { keep_last_turns = agentCfg.compaction.strategy.keepLastTurns; }
-            else
-              { keep_last_fraction = agentCfg.compaction.strategy.keepLastFraction; };
+          strategy = mkStrategyYaml agentCfg.compaction.strategy;
         }
         // lib.optionalAttrs (agentCfg.compaction.prompt != null) {
           prompt = agentCfg.compaction.prompt;
         };
 
         pruning = {
-          keep_turns = agentCfg.pruning.keepTurns;
+          strategy = mkStrategyYaml agentCfg.pruning.strategy;
         }
         // (
           if agentCfg.pruning.thinking.enable then
             {
               thinking =
                 { }
-                // lib.optionalAttrs (agentCfg.pruning.thinking.keepTurns != null) {
-                  keep_turns = agentCfg.pruning.thinking.keepTurns;
+                // lib.optionalAttrs (agentCfg.pruning.thinking.strategy != null) {
+                  strategy = mkStrategyYaml agentCfg.pruning.thinking.strategy;
                 };
             }
           else
@@ -222,18 +258,21 @@ let
             head_chars = agentCfg.pruning.tools.headChars;
             tail_chars = agentCfg.pruning.tools.tailChars;
           }
+          // lib.optionalAttrs (agentCfg.pruning.tools.strategy != null) {
+            strategy = mkStrategyYaml agentCfg.pruning.tools.strategy;
+          }
           //
             lib.optionalAttrs
               (
-                agentCfg.pruning.tools.input.keepTurns != null
+                agentCfg.pruning.tools.input.strategy != null
                 || agentCfg.pruning.tools.input.headChars != null
                 || agentCfg.pruning.tools.input.tailChars != null
               )
               {
                 input =
                   { }
-                  // lib.optionalAttrs (agentCfg.pruning.tools.input.keepTurns != null) {
-                    keep_turns = agentCfg.pruning.tools.input.keepTurns;
+                  // lib.optionalAttrs (agentCfg.pruning.tools.input.strategy != null) {
+                    strategy = mkStrategyYaml agentCfg.pruning.tools.input.strategy;
                   }
                   // lib.optionalAttrs (agentCfg.pruning.tools.input.headChars != null) {
                     head_chars = agentCfg.pruning.tools.input.headChars;
@@ -245,15 +284,15 @@ let
           //
             lib.optionalAttrs
               (
-                agentCfg.pruning.tools.output.keepTurns != null
+                agentCfg.pruning.tools.output.strategy != null
                 || agentCfg.pruning.tools.output.headChars != null
                 || agentCfg.pruning.tools.output.tailChars != null
               )
               {
                 output =
                   { }
-                  // lib.optionalAttrs (agentCfg.pruning.tools.output.keepTurns != null) {
-                    keep_turns = agentCfg.pruning.tools.output.keepTurns;
+                  // lib.optionalAttrs (agentCfg.pruning.tools.output.strategy != null) {
+                    strategy = mkStrategyYaml agentCfg.pruning.tools.output.strategy;
                   }
                   // lib.optionalAttrs (agentCfg.pruning.tools.output.headChars != null) {
                     head_chars = agentCfg.pruning.tools.output.headChars;
@@ -689,7 +728,7 @@ let
           example = lib.literalExpression "[ pkgs.python3 pkgs.jq ]";
         };
 
-        telegramChats = lib.mkOption {
+        channels.telegram = lib.mkOption {
           type = lib.types.listOf telegramChatModule;
           default = [ ];
           description = "Telegram chat configurations (ID + optional session name).";
@@ -880,35 +919,20 @@ let
             description = "Custom compaction prompt. Null uses the built-in structured prompt.";
           };
 
-          strategy = {
-            type = lib.mkOption {
-              type = lib.types.enum [
-                "keep_last_turns"
-                "keep_last_fraction"
-              ];
-              default = "keep_last_turns";
-              description = "Compaction strategy type.";
+          strategy = lib.mkOption {
+            type = strategySubmodule {
+              defaultKeepTurns = 10;
             };
-
-            keepLastTurns = lib.mkOption {
-              type = lib.types.int;
-              default = 10;
-              description = "Number of turns to keep verbatim (keep_last_turns strategy).";
-            };
-
-            keepLastFraction = lib.mkOption {
-              type = lib.types.float;
-              default = 0.25;
-              description = "Fraction of token_threshold to keep from the end (keep_last_fraction strategy).";
-            };
+            default = { };
+            description = "Strategy for splitting messages into compact vs keep regions.";
           };
         };
 
         pruning = {
-          keepTurns = lib.mkOption {
-            type = lib.types.int;
-            default = 3;
-            description = "Global default for recent turns protected from pruning.";
+          strategy = lib.mkOption {
+            type = strategySubmodule { };
+            default = { };
+            description = "Global default retention strategy for pruning.";
           };
 
           thinking = {
@@ -918,10 +942,10 @@ let
               description = "Enable thinking block pruning. When false, all thinking blocks are kept.";
             };
 
-            keepTurns = lib.mkOption {
-              type = lib.types.nullOr lib.types.int;
+            strategy = lib.mkOption {
+              type = lib.types.nullOr (strategySubmodule { });
               default = null;
-              description = "Keep thinking blocks for last N turns. Null inherits global keepTurns.";
+              description = "Override strategy for thinking pruning. Null inherits global strategy.";
             };
           };
 
@@ -938,11 +962,17 @@ let
               description = "Characters to keep from end of pruned content.";
             };
 
+            strategy = lib.mkOption {
+              type = lib.types.nullOr (strategySubmodule { });
+              default = null;
+              description = "Override strategy for all tool pruning. Null inherits global strategy.";
+            };
+
             input = {
-              keepTurns = lib.mkOption {
-                type = lib.types.nullOr lib.types.int;
+              strategy = lib.mkOption {
+                type = lib.types.nullOr (strategySubmodule { });
                 default = null;
-                description = "Override keep_turns for tool inputs. Null inherits global.";
+                description = "Override strategy for tool inputs. Null inherits from tools.";
               };
 
               headChars = lib.mkOption {
@@ -959,10 +989,10 @@ let
             };
 
             output = {
-              keepTurns = lib.mkOption {
-                type = lib.types.nullOr lib.types.int;
+              strategy = lib.mkOption {
+                type = lib.types.nullOr (strategySubmodule { });
                 default = null;
-                description = "Override keep_turns for tool outputs. Null inherits global.";
+                description = "Override strategy for tool outputs. Null inherits from tools.";
               };
 
               headChars = lib.mkOption {
@@ -1084,12 +1114,12 @@ in
         {
           elwood = {
             enable = true;
-            telegramChats = [ { id = 123456789; session = "main"; } ];
+            channels.telegram = [ { id = 123456789; session = "main"; } ];
             environmentFile = "/run/secrets/elwood-env";
           };
           career-coach = {
             enable = true;
-            telegramChats = [ { id = 123456789; } ];
+            channels.telegram = [ { id = 123456789; } ];
             environmentFile = "/run/secrets/career-coach-env";
             agent.model = "claude-sonnet-4-20250514";
           };
@@ -1136,12 +1166,12 @@ in
 
         # Each enabled agent must have at least one telegramChat
         chatIdAssertions = lib.mapAttrsToList (name: agent: {
-          assertion = agent.telegramChats != [ ];
+          assertion = agent.channels.telegram != [ ];
           message = ''
-            Assistant agent '${name}' has no telegramChats configured.
+            Assistant agent '${name}' has no channels.telegram configured.
             At least one Telegram chat is required:
 
-            services.assistant.agents.${name}.telegramChats = [ { id = <your-chat-id>; } ];
+            services.assistant.agents.${name}.channels.telegram = [ { id = <your-chat-id>; } ];
           '';
         }) enabledAgents;
 

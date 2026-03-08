@@ -224,14 +224,16 @@ extractText blocks =
 -- Otherwise returns @Just (old, recent)@ where @old@ will be compacted
 -- and @recent@ kept verbatim.
 strategySplit :: CompactionStrategy -> Positive -> [ClaudeMessage] -> Maybe ([ClaudeMessage], [ClaudeMessage])
-strategySplit (KeepLastTurns n) _threshold msgs =
+strategySplit (CKeepTurns n) _threshold msgs =
   let boundaries = turnBoundaryIndices msgs
    in -- We need at least n+1 boundaries: n to keep, 1+ to compact
       case drop (length boundaries - n.getPositive) boundaries of
         (splitIdx : _)
           | splitIdx > 0 -> nonEmptySplit splitIdx msgs
         _ -> Nothing
-strategySplit (KeepLastFraction f) threshold msgs =
+strategySplit (CKeepFraction f) threshold msgs =
+  -- Uses 'floor' so fractional strategies err toward freeing more space
+  -- (contrast with pruning's 'ceiling' which errs toward protecting content).
   let keepTokens = floor (f * fromIntegral threshold.getPositive) :: Int
       boundaries = turnBoundaryIndices msgs
       -- Walk backward through messages, accumulating token estimates

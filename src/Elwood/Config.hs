@@ -3,6 +3,7 @@ module Elwood.Config
     TelegramChatConfig (..),
     CompactionConfig (..),
     CompactionStrategy (..),
+    PruningStrategy (..),
     PruningConfig (..),
     ThinkingPruningConfig (..),
     ToolPruningConfig (..),
@@ -51,26 +52,47 @@ import Elwood.Webhook.Types
     WebhookServerConfigFile (..),
   )
 import GHC.Generics (Generic)
+import Numeric.Natural (Natural)
 import System.Environment (lookupEnv)
 
--- | Strategy for deciding which messages to compact vs keep verbatim
+-- | Strategy for pruning: how many recent turns to protect from modification.
+-- 'KeepTurns 0' is valid (protect nothing).
+data PruningStrategy
+  = -- | Keep last N turns
+    KeepTurns Natural
+  | -- | Keep a fraction of total turns
+    KeepFraction Double
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON PruningStrategy where
+  parseJSON = withObject "PruningStrategy" $ \v ->
+    case KM.keys v of
+      ["keep_turns"] -> KeepTurns <$> v .: "keep_turns"
+      ["keep_fraction"] -> do
+        f <- v .: "keep_fraction"
+        when (f <= 0 || f > 1) $ fail "keep_fraction must be in (0, 1]"
+        pure (KeepFraction f)
+      _ -> fail "PruningStrategy must have exactly one key: keep_turns or keep_fraction"
+
+-- | Strategy for compaction: how many recent turns to keep verbatim.
+-- 'CKeepTurns' uses 'Positive' because compaction must always keep at least
+-- one turn (keeping zero turns would discard the entire conversation).
 data CompactionStrategy
-  = -- | Keep last N turns verbatim, compact the rest
-    KeepLastTurns Positive
-  | -- | Keep ~(fraction * tokenThreshold) tokens from the end
-    KeepLastFraction Double
+  = -- | Keep last N turns (N > 0)
+    CKeepTurns Positive
+  | -- | Keep a fraction of the token threshold as recent tokens
+    CKeepFraction Double
   deriving stock (Show, Eq, Generic)
 
 instance FromJSON CompactionStrategy where
   parseJSON = withObject "CompactionStrategy" $ \v ->
     case KM.keys v of
-      ["keep_last_turns"] ->
-        KeepLastTurns <$> v .: "keep_last_turns"
-      ["keep_last_fraction"] -> do
-        f <- v .: "keep_last_fraction"
-        when (f <= 0 || f > 1) $ fail "keep_last_fraction must be in (0, 1]"
-        pure (KeepLastFraction f)
-      _ -> fail "CompactionStrategy must have exactly one key: keep_last_turns or keep_last_fraction"
+      ["keep_turns"] -> CKeepTurns <$> v .: "keep_turns"
+      ["keep_fraction"] -> do
+        f <- v .: "keep_fraction"
+        when (f <= 0 || f > 1) $ fail "keep_fraction must be in (0, 1]"
+        pure (CKeepFraction f)
+      _ -> fail "CompactionStrategy must have exactly one key: keep_turns or keep_fraction"
 
 -- | Main configuration for Elwood
 data Config = Config
@@ -122,8 +144,8 @@ data CompactionConfig = CompactionConfig
 
 -- | Configuration for tool result pruning
 data PruningConfig = PruningConfig
-  { -- | Global default for recent turns protected from pruning
-    keepTurns :: Int,
+  { -- | Global default retention strategy for pruning
+    strategy :: PruningStrategy,
     -- | Thinking block pruning (Nothing = keep all thinking blocks)
     thinking :: Maybe ThinkingPruningConfig,
     -- | Tool result/input pruning configuration
@@ -133,8 +155,8 @@ data PruningConfig = PruningConfig
 
 -- | Configuration for thinking block pruning
 newtype ThinkingPruningConfig = ThinkingPruningConfig
-  { -- | Number of recent turns to keep thinking blocks for
-    keepTurns :: Int
+  { -- | Retention strategy for thinking block pruning
+    strategy :: PruningStrategy
   }
   deriving stock (Show, Eq, Generic)
 
@@ -144,6 +166,8 @@ data ToolPruningConfig = ToolPruningConfig
     headChars :: Int,
     -- | Characters to keep from the end of pruned content
     tailChars :: Int,
+    -- | Retention strategy for tools (cascaded to directions as default)
+    strategy :: PruningStrategy,
     -- | Resolved configuration for tool inputs
     input :: ToolDirectionConfig,
     -- | Resolved configuration for tool outputs
@@ -153,8 +177,8 @@ data ToolPruningConfig = ToolPruningConfig
 
 -- | Per-direction (input/output) pruning configuration
 data ToolDirectionConfig = ToolDirectionConfig
-  { -- | Number of recent turns protected from pruning
-    keepTurns :: Int,
+  { -- | Retention strategy for this direction
+    strategy :: PruningStrategy,
     -- | Characters to keep from the start
     headChars :: Int,
     -- | Characters to keep from the end
@@ -193,11 +217,17 @@ data TelegramChatConfig = TelegramChatConfig
   }
   deriving stock (Show, Eq, Generic)
 
+-- | Channels configuration from YAML file
+newtype ChannelsConfigFile = ChannelsConfigFile
+  { telegram :: Maybe [TelegramChatConfigFile]
+  }
+  deriving stock (Show, Generic)
+
 -- | YAML file configuration (without secrets)
 data ConfigFile = ConfigFile
   { stateDir :: Maybe FilePath,
     workspaceDir :: Maybe FilePath,
-    telegramChats :: Maybe [TelegramChatConfigFile],
+    channels :: Maybe ChannelsConfigFile,
     agentOverrides :: AgentOverrides,
     compaction :: Maybe CompactionConfigFile,
     pruning :: Maybe PruningConfigFile,
@@ -228,43 +258,19 @@ data CompactionConfigFile = CompactionConfigFile
   }
   deriving stock (Show, Generic)
 
--- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
-instance Semigroup CompactionConfigFile where
-  a <> b =
-    CompactionConfigFile
-      { tokenThreshold = b.tokenThreshold <|> a.tokenThreshold,
-        model = b.model <|> a.model,
-        prompt = b.prompt <|> a.prompt,
-        strategy = b.strategy <|> a.strategy
-      }
-
-instance Monoid CompactionConfigFile where
-  mempty = CompactionConfigFile Nothing Nothing Nothing Nothing
-
--- | Default compaction overrides (all 'Just' with hardcoded defaults).
-compactionDefaults :: CompactionConfigFile
-compactionDefaults =
-  CompactionConfigFile
-    { tokenThreshold = Just (unsafePositive 50000),
-      model = Just "claude-3-5-haiku-20241022",
-      prompt = Nothing,
-      strategy = Just (KeepLastTurns (unsafePositive 10))
-    }
-
--- | Resolve a partial compaction config by layering over 'compactionDefaults'.
+-- | Resolve a partial compaction config using 'fromMaybe' for each field.
 resolveCompaction :: CompactionConfigFile -> CompactionConfig
 resolveCompaction ccf =
-  let d = compactionDefaults <> ccf
-   in CompactionConfig
-        { tokenThreshold = fromMaybe (unsafePositive 50000) d.tokenThreshold,
-          model = fromMaybe "claude-3-5-haiku-20241022" d.model,
-          prompt = d.prompt,
-          strategy = fromMaybe (KeepLastTurns (unsafePositive 10)) d.strategy
-        }
+  CompactionConfig
+    { tokenThreshold = fromMaybe (unsafePositive 50000) ccf.tokenThreshold,
+      model = fromMaybe "claude-3-5-haiku-20241022" ccf.model,
+      prompt = ccf.prompt,
+      strategy = fromMaybe (CKeepTurns (unsafePositive 10)) ccf.strategy
+    }
 
 -- | Pruning configuration from YAML file
 data PruningConfigFile = PruningConfigFile
-  { keepTurns :: Maybe Int,
+  { strategy :: Maybe PruningStrategy,
     -- | Outer 'Maybe' = "not specified in this layer";
     -- inner 'Maybe' = "explicitly set to null (disable thinking pruning)".
     thinking :: Maybe (Maybe ThinkingPruningConfigFile),
@@ -274,7 +280,7 @@ data PruningConfigFile = PruningConfigFile
 
 -- | Thinking pruning configuration from YAML file
 newtype ThinkingPruningConfigFile = ThinkingPruningConfigFile
-  { keepTurns :: Maybe Int
+  { strategy :: Maybe PruningStrategy
   }
   deriving stock (Show, Eq, Generic)
 
@@ -282,6 +288,7 @@ newtype ThinkingPruningConfigFile = ThinkingPruningConfigFile
 data ToolPruningConfigFile = ToolPruningConfigFile
   { headChars :: Maybe Int,
     tailChars :: Maybe Int,
+    strategy :: Maybe PruningStrategy,
     input :: Maybe ToolDirectionConfigFile,
     output :: Maybe ToolDirectionConfigFile
   }
@@ -289,7 +296,7 @@ data ToolPruningConfigFile = ToolPruningConfigFile
 
 -- | Per-direction tool pruning configuration from YAML file
 data ToolDirectionConfigFile = ToolDirectionConfigFile
-  { keepTurns :: Maybe Int,
+  { strategy :: Maybe PruningStrategy,
     headChars :: Maybe Int,
     tailChars :: Maybe Int
   }
@@ -299,7 +306,7 @@ data ToolDirectionConfigFile = ToolDirectionConfigFile
 instance Semigroup PruningConfigFile where
   a <> b =
     PruningConfigFile
-      { keepTurns = b.keepTurns <|> a.keepTurns,
+      { strategy = b.strategy <|> a.strategy,
         thinking = b.thinking <|> a.thinking,
         tools = b.tools <|> a.tools
       }
@@ -311,7 +318,7 @@ instance Monoid PruningConfigFile where
 pruningDefaults :: PruningConfigFile
 pruningDefaults =
   PruningConfigFile
-    { keepTurns = Just 3,
+    { strategy = Just (KeepTurns 3),
       thinking = Just (Just (ThinkingPruningConfigFile Nothing)),
       tools = Nothing
     }
@@ -320,27 +327,29 @@ pruningDefaults =
 resolvePruning :: PruningConfigFile -> PruningConfig
 resolvePruning pcf =
   let d = pruningDefaults <> pcf
-      globalKeepTurns = fromMaybe 3 d.keepTurns
+      globalStrategy = fromMaybe (KeepTurns 3) d.strategy
       thinkingCfg = case fromMaybe (Just (ThinkingPruningConfigFile Nothing)) d.thinking of
         Nothing -> Nothing
-        Just tcf -> Just ThinkingPruningConfig {keepTurns = fromMaybe globalKeepTurns tcf.keepTurns}
-      toolsCf = fromMaybe (ToolPruningConfigFile Nothing Nothing Nothing Nothing) d.tools
+        Just tcf -> Just ThinkingPruningConfig {strategy = fromMaybe globalStrategy tcf.strategy}
+      toolsCf = fromMaybe (ToolPruningConfigFile Nothing Nothing Nothing Nothing Nothing) d.tools
       toolsHeadChars = fromMaybe 500 toolsCf.headChars
       toolsTailChars = fromMaybe 500 toolsCf.tailChars
+      toolsStrategy = fromMaybe globalStrategy toolsCf.strategy
       mkDirection dcf =
         let dc = fromMaybe (ToolDirectionConfigFile Nothing Nothing Nothing) dcf
          in ToolDirectionConfig
-              { keepTurns = fromMaybe globalKeepTurns dc.keepTurns,
+              { strategy = fromMaybe toolsStrategy dc.strategy,
                 headChars = fromMaybe toolsHeadChars dc.headChars,
                 tailChars = fromMaybe toolsTailChars dc.tailChars
               }
    in PruningConfig
-        { keepTurns = globalKeepTurns,
+        { strategy = globalStrategy,
           thinking = thinkingCfg,
           tools =
             ToolPruningConfig
               { headChars = toolsHeadChars,
                 tailChars = toolsTailChars,
+                strategy = toolsStrategy,
                 input = mkDirection toolsCf.input,
                 output = mkDirection toolsCf.output
               }
@@ -363,13 +372,18 @@ instance FromJSON TelegramChatConfigFile where
       <*> v .:? "session"
       <*> v .:? "agent" .!= mempty
 
+instance FromJSON ChannelsConfigFile where
+  parseJSON = withObject "ChannelsConfigFile" $ \v -> do
+    rejectUnknownKeys "ChannelsConfigFile" ["telegram"] v
+    ChannelsConfigFile <$> v .:? "telegram"
+
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace_dir", "telegram_chats", "agent", "compaction", "pruning", "mcp_servers", "webhook", "tool_use_messages", "delegate", "max_image_dimension"] v
+    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace", "channels", "agent", "compaction", "pruning", "mcp_servers", "webhook", "tool_use_messages", "delegate", "max_image_dimension"] v
     ConfigFile
       <$> v .:? "state_dir"
-      <*> v .:? "workspace_dir"
-      <*> v .:? "telegram_chats"
+      <*> v .:? "workspace"
+      <*> v .:? "channels"
       <*> v .:? "agent" .!= mempty
       <*> v .:? "compaction"
       <*> v .:? "pruning"
@@ -390,31 +404,32 @@ instance FromJSON CompactionConfigFile where
 
 instance FromJSON PruningConfigFile where
   parseJSON = withObject "PruningConfigFile" $ \v -> do
-    rejectUnknownKeys "PruningConfigFile" ["keep_turns", "thinking", "tools"] v
+    rejectUnknownKeys "PruningConfigFile" ["strategy", "thinking", "tools"] v
     PruningConfigFile
-      <$> v .:? "keep_turns"
+      <$> v .:? "strategy"
       <*> v .:! "thinking"
       <*> v .:? "tools"
 
 instance FromJSON ThinkingPruningConfigFile where
   parseJSON = withObject "ThinkingPruningConfigFile" $ \v -> do
-    rejectUnknownKeys "ThinkingPruningConfigFile" ["keep_turns"] v
-    ThinkingPruningConfigFile <$> v .:? "keep_turns"
+    rejectUnknownKeys "ThinkingPruningConfigFile" ["strategy"] v
+    ThinkingPruningConfigFile <$> v .:? "strategy"
 
 instance FromJSON ToolPruningConfigFile where
   parseJSON = withObject "ToolPruningConfigFile" $ \v -> do
-    rejectUnknownKeys "ToolPruningConfigFile" ["head_chars", "tail_chars", "input", "output"] v
+    rejectUnknownKeys "ToolPruningConfigFile" ["head_chars", "tail_chars", "strategy", "input", "output"] v
     ToolPruningConfigFile
       <$> v .:? "head_chars"
       <*> v .:? "tail_chars"
+      <*> v .:? "strategy"
       <*> v .:? "input"
       <*> v .:? "output"
 
 instance FromJSON ToolDirectionConfigFile where
   parseJSON = withObject "ToolDirectionConfigFile" $ \v -> do
-    rejectUnknownKeys "ToolDirectionConfigFile" ["keep_turns", "head_chars", "tail_chars"] v
+    rejectUnknownKeys "ToolDirectionConfigFile" ["strategy", "head_chars", "tail_chars"] v
     ToolDirectionConfigFile
-      <$> v .:? "keep_turns"
+      <$> v .:? "strategy"
       <*> v .:? "head_chars"
       <*> v .:? "tail_chars"
 
@@ -457,7 +472,7 @@ loadConfig path = do
   webhookSecretEnv <- fmap T.pack <$> lookupEnv "WEBHOOK_SECRET"
 
   -- Resolve sub-configs via monoid layering
-  let compact = resolveCompaction (fromMaybe mempty configFile.compaction)
+  let compact = resolveCompaction (fromMaybe (CompactionConfigFile Nothing Nothing Nothing Nothing) configFile.compaction)
   let prune = resolvePruning (fromMaybe mempty configFile.pruning)
   let profile = resolveProfile configFile.agentOverrides
 
@@ -481,6 +496,7 @@ loadConfig path = do
       resolveDeliveryTarget DeliveryTargetFileLog = LogOnly
 
   let workspaceDir_ = fromMaybe "/var/lib/assistant/workspace" configFile.workspaceDir
+      telegramChatFiles = fromMaybe [] $ configFile.channels >>= (.telegram)
 
   -- Webhook secret: env var takes precedence over config file
   let webhookSecret = webhookSecretEnv <|> (configFile.webhook >>= (.secret))
@@ -519,13 +535,13 @@ loadConfig path = do
               session = maybe Isolated Named tc.session,
               overrides = tc.overrides
             }
-        | tc <- fromMaybe [] configFile.telegramChats
+        | tc <- telegramChatFiles
         ]
 
   -- Validate no duplicate chat IDs
   let chatIds = map (.id_) telegramChats_
   when (nub chatIds /= chatIds) $
-    fail "telegram_chats contains duplicate chat IDs"
+    fail "channels.telegram contains duplicate chat IDs"
 
   -- Resolve max_image_dimension: absent -> Just 1568, null -> Nothing, value -> Just value
   let maxImgDim = case configFile.maxImageDimension of

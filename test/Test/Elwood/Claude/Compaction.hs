@@ -112,7 +112,7 @@ strategySplitTests =
   testGroup
     "strategySplit"
     [ testGroup
-        "KeepLastTurns"
+        "CKeepTurns"
         [ testCase "keeps last N turns, compacts the rest" $ do
             -- 3 turns: user/assistant pairs with text boundaries
             let msgs =
@@ -123,7 +123,7 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 3"],
                     ClaudeMessage Assistant [TextBlock "Response 3"]
                   ]
-            case strategySplit (KeepLastTurns (unsafePositive 2)) (unsafePositive 50000) msgs of
+            case strategySplit (CKeepTurns (unsafePositive 2)) (unsafePositive 50000) msgs of
               Nothing -> assertFailure "Expected Just, got Nothing"
               Just (old, recent) -> do
                 length old @?= 2 -- Turn 1 + Response 1
@@ -135,10 +135,10 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 2"],
                     ClaudeMessage Assistant [TextBlock "Response 2"]
                   ]
-            strategySplit (KeepLastTurns (unsafePositive 2)) (unsafePositive 50000) msgs @?= Nothing
-            strategySplit (KeepLastTurns (unsafePositive 3)) (unsafePositive 50000) msgs @?= Nothing,
+            strategySplit (CKeepTurns (unsafePositive 2)) (unsafePositive 50000) msgs @?= Nothing
+            strategySplit (CKeepTurns (unsafePositive 3)) (unsafePositive 50000) msgs @?= Nothing,
           testCase "splits at turn boundary with tool pairs before it" $ do
-            -- Turn boundaries at 0, 3, 5. KeepLastTurns 2 splits at index 3.
+            -- Turn boundaries at 0, 3, 5. CKeepTurns 2 splits at index 3.
             -- Tool pairs before the boundary stay in old.
             let msgs =
                   [ ClaudeMessage User [TextBlock "Turn 1"],
@@ -149,16 +149,16 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 3"],
                     ClaudeMessage Assistant [TextBlock "Response 3"]
                   ]
-            case strategySplit (KeepLastTurns (unsafePositive 2)) (unsafePositive 50000) msgs of
+            case strategySplit (CKeepTurns (unsafePositive 2)) (unsafePositive 50000) msgs of
               Nothing -> assertFailure "Expected Just, got Nothing"
               Just (old, recent) -> do
                 length old @?= 3 -- Turn 1 + tool_use + tool_result
                 length recent @?= 4,
           testCase "empty message list returns Nothing" $
-            strategySplit (KeepLastTurns (unsafePositive 5)) (unsafePositive 50000) [] @?= Nothing
+            strategySplit (CKeepTurns (unsafePositive 5)) (unsafePositive 50000) [] @?= Nothing
         ],
       testGroup
-        "KeepLastFraction"
+        "CKeepFraction"
         [ testCase "small fraction compacts most messages" $ do
             -- Make turn 1 very large so it dominates the token count.
             -- Use a very large threshold so the fraction math gives a
@@ -175,7 +175,7 @@ strategySplitTests =
                 -- Use a threshold large enough that 0.01 * threshold
                 -- still exceeds the small messages but not the big one
                 threshold = unsafePositive (estimateTokens msgs * 10)
-            case strategySplit (KeepLastFraction 0.01) threshold msgs of
+            case strategySplit (CKeepFraction 0.01) threshold msgs of
               Nothing -> assertFailure "Expected Just, got Nothing"
               Just (old, recent) -> do
                 -- Turn boundaries: 0, 2, 4. The big message is in turn 1.
@@ -195,16 +195,16 @@ strategySplitTests =
                   ]
                 totalTokens = unsafePositive (estimateTokens msgs)
             -- fraction=1.0 means keep all tokens → no-op
-            strategySplit (KeepLastFraction 1.0) totalTokens msgs @?= Nothing,
+            strategySplit (CKeepFraction 1.0) totalTokens msgs @?= Nothing,
           testCase "returns Nothing when all messages fit in keep region" $ do
             let msgs =
                   [ ClaudeMessage User [TextBlock "Hello"],
                     ClaudeMessage Assistant [TextBlock "Hi"]
                   ]
             -- threshold much larger than actual tokens
-            strategySplit (KeepLastFraction 1.0) (unsafePositive 100000) msgs @?= Nothing,
+            strategySplit (CKeepFraction 1.0) (unsafePositive 100000) msgs @?= Nothing,
           testCase "empty message list returns Nothing" $
-            strategySplit (KeepLastFraction 0.25) (unsafePositive 50000) [] @?= Nothing
+            strategySplit (CKeepFraction 0.25) (unsafePositive 50000) [] @?= Nothing
         ],
       testGroup
         "turnBoundaryIndices"

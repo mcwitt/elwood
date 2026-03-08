@@ -4,7 +4,8 @@ import Data.Aeson qualified as Aeson
 import Data.Text qualified as T
 import Elwood.Claude.Pruning (getAndUpdateHorizon, newPruneHorizons, protectedBoundary, pruneThinkingBlocks, pruneToolInputs, pruneToolResults, softPrune)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolUseId (..))
-import Elwood.Config (PruningConfig (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
+import Elwood.Config (PruningConfig (..), PruningStrategy (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
+import Numeric.Natural (Natural)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -12,31 +13,34 @@ import Test.Tasty.HUnit
 testConfig :: PruningConfig
 testConfig =
   PruningConfig
-    { keepTurns = 3,
-      thinking = Just ThinkingPruningConfig {keepTurns = 1},
+    { strategy = KeepTurns 3,
+      thinking = Just ThinkingPruningConfig {strategy = KeepTurns 1},
       tools =
         ToolPruningConfig
           { headChars = 10,
             tailChars = 10,
-            input = ToolDirectionConfig {keepTurns = 3, headChars = 10, tailChars = 10},
-            output = ToolDirectionConfig {keepTurns = 3, headChars = 10, tailChars = 10}
+            strategy = KeepTurns 3,
+            input = ToolDirectionConfig {strategy = KeepTurns 3, headChars = 10, tailChars = 10},
+            output = ToolDirectionConfig {strategy = KeepTurns 3, headChars = 10, tailChars = 10}
           }
     }
 
--- | Set all keepTurns (global + both tool directions) at once
-withKeepTurns :: Int -> PruningConfig -> PruningConfig
+-- | Set all strategy (global + tools + both tool directions) at once
+withKeepTurns :: Natural -> PruningConfig -> PruningConfig
 withKeepTurns n cfg =
-  PruningConfig
-    { keepTurns = n,
-      thinking = cfg.thinking,
-      tools =
-        ToolPruningConfig
-          { headChars = cfg.tools.headChars,
-            tailChars = cfg.tools.tailChars,
-            input = ToolDirectionConfig {keepTurns = n, headChars = cfg.tools.input.headChars, tailChars = cfg.tools.input.tailChars},
-            output = ToolDirectionConfig {keepTurns = n, headChars = cfg.tools.output.headChars, tailChars = cfg.tools.output.tailChars}
-          }
-    }
+  let strat = KeepTurns n
+   in PruningConfig
+        { strategy = strat,
+          thinking = cfg.thinking,
+          tools =
+            ToolPruningConfig
+              { headChars = cfg.tools.headChars,
+                tailChars = cfg.tools.tailChars,
+                strategy = strat,
+                input = ToolDirectionConfig {strategy = strat, headChars = cfg.tools.input.headChars, tailChars = cfg.tools.input.tailChars},
+                output = ToolDirectionConfig {strategy = strat, headChars = cfg.tools.output.headChars, tailChars = cfg.tools.output.tailChars}
+              }
+        }
 
 tests :: TestTree
 tests =
@@ -143,11 +147,11 @@ protectedBoundaryBasic =
             ClaudeMessage Assistant [TextBlock "reply 4"] -- index 7
           ]
     -- keepTurns = 2: protect last 2 turns → boundary at index 4
-    protectedBoundary 2 msgs @?= 4
+    protectedBoundary (KeepTurns 2) msgs @?= 4
     -- keepTurns = 3: protect last 3 turns → boundary at index 0
-    protectedBoundary 3 msgs @?= 0
+    protectedBoundary (KeepTurns 3) msgs @?= 0
     -- keepTurns = 1: protect last 1 turn → boundary at index 6
-    protectedBoundary 1 msgs @?= 6
+    protectedBoundary (KeepTurns 1) msgs @?= 6
 
 -- | Fewer turns than keepTurns → protect everything
 protectedBoundaryFewerTurns :: TestTree
@@ -158,13 +162,13 @@ protectedBoundaryFewerTurns =
             ClaudeMessage Assistant [TextBlock "reply"]
           ]
     -- keepTurns = 5 but only 1 turn exists → boundary at 0 (protect everything)
-    protectedBoundary 5 msgs @?= 0
+    protectedBoundary (KeepTurns 5) msgs @?= 0
 
 -- | Empty messages
 protectedBoundaryEmpty :: TestTree
 protectedBoundaryEmpty =
   testCase "protectedBoundary: empty messages" $
-    protectedBoundary 3 [] @?= 0
+    protectedBoundary (KeepTurns 3) [] @?= 0
 
 -- ---------------------------------------------------------------------------
 -- pruneToolResults tests (updated for PruningConfig)
@@ -449,7 +453,7 @@ thinkingPruneStripsOldTurns =
             ClaudeMessage User [TextBlock "turn 2"],
             ClaudeMessage Assistant [ThinkingBlock "thought 2" "sig2", TextBlock "reply 2"]
           ]
-        result = pruneThinkingBlocks (Just ThinkingPruningConfig {keepTurns = 1}) (length msgs) msgs
+        result = pruneThinkingBlocks (Just ThinkingPruningConfig {strategy = KeepTurns 1}) (length msgs) msgs
     -- Turn 1 thinking should be stripped (before boundary at index 2)
     (result !! 1).content @?= [TextBlock "reply 1"]
     -- Turn 2 thinking should be kept (protected)
@@ -468,7 +472,7 @@ thinkingPruneProtectsRecentTurn =
             ClaudeMessage Assistant [ThinkingBlock "t3" "s3", TextBlock "r3"]
           ]
         -- keepN = 2 protects turns 2 and 3
-        result = pruneThinkingBlocks (Just ThinkingPruningConfig {keepTurns = 2}) (length msgs) msgs
+        result = pruneThinkingBlocks (Just ThinkingPruningConfig {strategy = KeepTurns 2}) (length msgs) msgs
     -- Turn 1 thinking stripped
     (result !! 1).content @?= [TextBlock "r1"]
     -- Turns 2 and 3 thinking kept
@@ -485,7 +489,7 @@ thinkingPruneKeepsNonThinkingBlocks =
             ClaudeMessage User [TextBlock "turn 2"],
             ClaudeMessage Assistant [TextBlock "reply 2"]
           ]
-        result = pruneThinkingBlocks (Just ThinkingPruningConfig {keepTurns = 1}) (length msgs) msgs
+        result = pruneThinkingBlocks (Just ThinkingPruningConfig {strategy = KeepTurns 1}) (length msgs) msgs
     -- ThinkingBlock and RedactedThinkingBlock stripped, others kept
     (result !! 1).content @?= [TextBlock "reply", ToolUseBlock (ToolUseId "t1") (ToolName "tool") (Aeson.object [])]
 
@@ -499,7 +503,7 @@ thinkingPruneKeepZeroStripsAll =
             ClaudeMessage User [TextBlock "turn 2"],
             ClaudeMessage Assistant [ThinkingBlock "t2" "s2", TextBlock "r2"]
           ]
-        result = pruneThinkingBlocks (Just ThinkingPruningConfig {keepTurns = 0}) (length msgs) msgs
+        result = pruneThinkingBlocks (Just ThinkingPruningConfig {strategy = KeepTurns 0}) (length msgs) msgs
     (result !! 1).content @?= [TextBlock "r1"]
     (result !! 3).content @?= [TextBlock "r2"]
 
@@ -513,7 +517,7 @@ thinkingPruneRespectsHorizon =
             ClaudeMessage User [TextBlock "turn 2"],
             ClaudeMessage Assistant [ThinkingBlock "t2" "s2", TextBlock "r2"]
           ]
-        result = pruneThinkingBlocks (Just ThinkingPruningConfig {keepTurns = 1}) 0 msgs
+        result = pruneThinkingBlocks (Just ThinkingPruningConfig {strategy = KeepTurns 1}) 0 msgs
     -- Horizon 0 means nothing is eligible for stripping
     (result !! 1).content @?= [ThinkingBlock "t1" "s1", TextBlock "r1"]
     (result !! 3).content @?= [ThinkingBlock "t2" "s2", TextBlock "r2"]
@@ -531,7 +535,7 @@ thinkingPrunePartialHorizon =
             ClaudeMessage Assistant [ThinkingBlock "t3" "s3", TextBlock "r3"]
           ]
         -- keepN = 0 (protect nothing), horizon = 2 (only first 2 messages eligible)
-        result = pruneThinkingBlocks (Just ThinkingPruningConfig {keepTurns = 0}) 2 msgs
+        result = pruneThinkingBlocks (Just ThinkingPruningConfig {strategy = KeepTurns 0}) 2 msgs
     -- Index 1 (within horizon): thinking stripped
     (result !! 1).content @?= [TextBlock "r1"]
     -- Index 3 (beyond horizon): thinking kept
@@ -661,14 +665,15 @@ divergentKeepTurnsThinkingVsTools =
         -- output keepTurns=2: protects turns 2+3 (boundary at index 3)
         cfg =
           PruningConfig
-            { keepTurns = 2,
-              thinking = Just ThinkingPruningConfig {keepTurns = 1},
+            { strategy = KeepTurns 2,
+              thinking = Just ThinkingPruningConfig {strategy = KeepTurns 1},
               tools =
                 ToolPruningConfig
                   { headChars = 10,
                     tailChars = 10,
-                    input = ToolDirectionConfig {keepTurns = 2, headChars = 10, tailChars = 10},
-                    output = ToolDirectionConfig {keepTurns = 2, headChars = 10, tailChars = 10}
+                    strategy = KeepTurns 2,
+                    input = ToolDirectionConfig {strategy = KeepTurns 2, headChars = 10, tailChars = 10},
+                    output = ToolDirectionConfig {strategy = KeepTurns 2, headChars = 10, tailChars = 10}
                   }
             }
         horizon = length msgs

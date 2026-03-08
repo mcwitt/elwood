@@ -29,7 +29,7 @@ in
 
         services.assistant.agents.test-agent = {
           enable = true;
-          telegramChats = [ { id = 123456789; } ];
+          channels.telegram = [ { id = 123456789; } ];
           stateDir = "/var/lib/assistant/test-agent";
           workspaceDir = "/var/lib/assistant/test-agent/workspace";
 
@@ -76,7 +76,7 @@ in
         services.assistant.agents = {
           agent-one = {
             enable = true;
-            telegramChats = [ { id = 111111111; } ];
+            channels.telegram = [ { id = 111111111; } ];
             webhook = {
               enable = true;
               port = 8081;
@@ -85,7 +85,7 @@ in
 
           agent-two = {
             enable = true;
-            telegramChats = [ { id = 222222222; } ];
+            channels.telegram = [ { id = 222222222; } ];
             webhook = {
               enable = true;
               port = 8082;
@@ -134,7 +134,7 @@ in
 
         services.assistant.agents.cron-test = {
           enable = true;
-          telegramChats = [ { id = 123456789; } ];
+          channels.telegram = [ { id = 123456789; } ];
 
           webhook = {
             enable = true;
@@ -190,7 +190,7 @@ in
 
         services.assistant.agents.suppress-test = {
           enable = true;
-          telegramChats = [ { id = 123456789; } ];
+          channels.telegram = [ { id = 123456789; } ];
 
           webhook = {
             enable = true;
@@ -241,7 +241,7 @@ in
 
         services.assistant.agents.config-test = {
           enable = true;
-          telegramChats = [
+          channels.telegram = [
             { id = 111; }
             { id = 222; }
           ];
@@ -316,7 +316,7 @@ in
           # This one should open the firewall
           open-firewall = {
             enable = true;
-            telegramChats = [ { id = 123; } ];
+            channels.telegram = [ { id = 123; } ];
             webhook = {
               enable = true;
               port = 8080;
@@ -327,7 +327,7 @@ in
           # This one should NOT open the firewall
           closed-firewall = {
             enable = true;
-            telegramChats = [ { id = 456; } ];
+            channels.telegram = [ { id = 456; } ];
             webhook = {
               enable = true;
               port = 8081;
@@ -366,7 +366,7 @@ in
 
         services.assistant.agents.prompt-test = {
           enable = true;
-          telegramChats = [ { id = 123456789; } ];
+          channels.telegram = [ { id = 123456789; } ];
           stateDir = "/var/lib/assistant/prompt-test";
           workspaceDir = "/var/lib/assistant/prompt-test/workspace";
 

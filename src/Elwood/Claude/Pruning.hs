@@ -22,7 +22,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), turnBoundaryIndices)
-import Elwood.Config (PruningConfig (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
+import Elwood.Config (PruningConfig (..), PruningStrategy (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
 
 -- | Conservative overhead estimate for the pruning indicator text.
 indicatorOverhead :: Int
@@ -56,15 +56,26 @@ softPrune headC tailC content
 -- Messages at or after this index are protected from pruning.
 --
 -- If fewer than N turn boundaries exist, returns 0 (protect everything).
-protectedBoundary :: Int -> [ClaudeMessage] -> Int
-protectedBoundary keepN msgs
-  | keepN <= 0 = length msgs -- protect nothing
-  | otherwise =
-      case drop (length bs - keepN) bs of
-        (i : _) -> i
-        [] -> 0 -- fewer turns than keepN → protect everything
+protectedBoundary :: PruningStrategy -> [ClaudeMessage] -> Int
+protectedBoundary strat msgs =
+  let keepN = strategyToKeepN strat msgs
+   in if keepN <= 0
+        then length msgs -- protect nothing
+        else case drop (length bs - keepN) bs of
+          (i : _) -> i
+          [] -> 0 -- fewer turns than keepN → protect everything
   where
     bs = turnBoundaryIndices msgs
+
+-- | Convert a 'PruningStrategy' to a concrete number of turns to keep.
+-- Uses 'ceiling' so fractional strategies err on the side of protecting
+-- more content (contrast with compaction's 'floor' which errs toward
+-- freeing more space).
+strategyToKeepN :: PruningStrategy -> [ClaudeMessage] -> Int
+strategyToKeepN (KeepTurns n) _ = fromIntegral n
+strategyToKeepN (KeepFraction f) msgs =
+  let totalTurns = length (turnBoundaryIndices msgs)
+   in ceiling (f * fromIntegral totalTurns)
 
 -- | Apply a transformation to messages before the effective horizon.
 -- The effective horizon is the minimum of the given horizon and the
@@ -72,16 +83,16 @@ protectedBoundary keepN msgs
 --
 -- The horizon is clamped to the list length so callers need not bounds-check.
 pruneBeforeHorizon ::
-  -- | Number of recent turns to protect
-  Int ->
+  -- | Retention strategy for recent turns to protect
+  PruningStrategy ->
   -- | Cache-aware prune horizon
   Int ->
   -- | Transformation to apply to each message in the prefix
   (ClaudeMessage -> ClaudeMessage) ->
   [ClaudeMessage] ->
   [ClaudeMessage]
-pruneBeforeHorizon keepN n f msgs =
-  let boundary = protectedBoundary keepN msgs
+pruneBeforeHorizon strat n f msgs =
+  let boundary = protectedBoundary strat msgs
       effectiveHorizon = max 0 (min n boundary)
       (prefix, suffix) = splitAt effectiveHorizon msgs
    in map f prefix ++ suffix
@@ -90,7 +101,7 @@ pruneBeforeHorizon keepN n f msgs =
 -- the effective horizon.
 -- Error results ('isError' = True) are never pruned.
 pruneToolResults :: PruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
-pruneToolResults cfg n = pruneBeforeHorizon cfg.tools.output.keepTurns n (pruneMessage cfg.tools.output)
+pruneToolResults cfg n = pruneBeforeHorizon cfg.tools.output.strategy n (pruneMessage cfg.tools.output)
 
 -- | Prune tool results inside a single message.
 -- Only user messages can contain 'ToolResultBlock's, but we pattern-match
@@ -125,7 +136,7 @@ pruneBlock _ block = block
 -- thing.  We prune client-side to avoid the beta dependency for now.
 pruneThinkingBlocks :: Maybe ThinkingPruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
 pruneThinkingBlocks Nothing _ = id
-pruneThinkingBlocks (Just tcfg) n = pruneBeforeHorizon tcfg.keepTurns n stripThinking
+pruneThinkingBlocks (Just tcfg) n = pruneBeforeHorizon tcfg.strategy n stripThinking
 
 -- | Remove thinking blocks from a single assistant message.
 stripThinking :: ClaudeMessage -> ClaudeMessage
@@ -147,7 +158,7 @@ isThinking _ = False
 -- only replaced when 'softPrune' returns 'Just' (i.e. the content is large
 -- enough to warrant truncation).
 pruneToolInputs :: PruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
-pruneToolInputs cfg n = pruneBeforeHorizon cfg.tools.input.keepTurns n (pruneAssistantInputs cfg.tools.input)
+pruneToolInputs cfg n = pruneBeforeHorizon cfg.tools.input.strategy n (pruneAssistantInputs cfg.tools.input)
 
 pruneAssistantInputs :: ToolDirectionConfig -> ClaudeMessage -> ClaudeMessage
 pruneAssistantInputs dir (ClaudeMessage Assistant blocks) =

@@ -7,15 +7,17 @@ state_dir: /var/lib/assistant
 
 # Directory containing SOUL.md, AGENTS.md, etc.
 # Default: /var/lib/assistant/workspace
-workspace_dir: /var/lib/assistant/workspace
+workspace: /var/lib/assistant/workspace
 
-# Telegram chat configurations
-# Find your chat ID by messaging @userinfobot on Telegram
-# Each chat has an ID and an optional session name for persistent conversation.
-# Omit session for isolated/ephemeral mode (no conversation history).
-telegram_chats:
-  - id: 123456789
-    session: main       # persistent conversation (omit for isolated/ephemeral)
+# Channel configurations
+channels:
+  # Telegram chat configurations
+  # Find your chat ID by messaging @userinfobot on Telegram
+  # Each chat has an ID and an optional session name for persistent conversation.
+  # Omit session for isolated/ephemeral mode (no conversation history).
+  telegram:
+    - id: 123456789
+      session: main       # persistent conversation (omit for isolated/ephemeral)
     # agent:                             # per-chat agent overrides (default: use global settings)
     #   model: claude-haiku-4-20250414
     #   thinking:
@@ -77,7 +79,7 @@ agent:
   # Default (when omitted): [{ type: workspace_file, path: SOUL.md }]
   #
   # Supported input types:
-  #   - type: workspace_file    # read file from workspace_dir
+  #   - type: workspace_file    # read file from workspace directory
   #     path: SOUL.md
   #   - type: text             # inline text
   #     content: "Additional context"
@@ -180,9 +182,9 @@ compaction:
   token_threshold: 50000             # default: 50000
   model: claude-3-5-haiku-20241022  # default: claude-3-5-haiku-20241022
   # Strategy for splitting messages into compact vs keep regions.
-  # { keep_last_turns: N } — keep last N turns verbatim, compact the rest (default: 10)
-  # { keep_last_fraction: F } — keep ~(F * token_threshold) tokens from the end
-  # strategy: { keep_last_turns: 10 }
+  # { keep_turns: N } — keep last N turns verbatim, compact the rest (default: 10)
+  # { keep_fraction: F } — keep ~(F * token_threshold) tokens from the end
+  # strategy: { keep_turns: 10 }
   # Custom compaction prompt (conversation text is appended automatically).
   # Default: built-in structured prompt with User Profile/Projects & Goals/
   # Key Facts & Decisions/Progress/Open Threads sections.
@@ -193,17 +195,24 @@ compaction:
 # soft-pruned: head and tail are kept with an indicator in between. Recent
 # turns are protected from pruning entirely.
 pruning:
-  keep_turns: 3           # global default for protected recent turns (default: 3)
-  thinking:               # thinking block pruning (null = keep all, omit = keep last keep_turns)
-    keep_turns: 1         # keep thinking for last N turns (default: inherits global keep_turns)
+  strategy:                 # global default retention strategy (default: { keep_turns: 3 })
+    keep_turns: 3           # or keep_fraction: 0.5
+  thinking:                 # thinking block pruning (null = keep all, omit = use global strategy)
+    strategy:               # override strategy for thinking (default: inherits global)
+      keep_turns: 1
   tools:
-    head_chars: 500       # characters to keep from start of pruned content (default: 500)
-    tail_chars: 500       # characters to keep from end of pruned content (default: 500)
-    # input:              # per-direction overrides for tool inputs (optional)
-    #   keep_turns: 5     # override protected turns for inputs (default: inherits global)
-    #   head_chars: 250   # override head_chars for inputs (default: inherits tools)
-    # output:             # per-direction overrides for tool outputs (optional)
-    #   tail_chars: 250   # override tail_chars for outputs (default: inherits tools)
+    head_chars: 500         # characters to keep from start of pruned content (default: 500)
+    tail_chars: 500         # characters to keep from end of pruned content (default: 500)
+    # strategy:             # override strategy for all tool pruning (default: inherits global)
+    #   keep_turns: 5
+    # input:                # per-direction overrides for tool inputs (optional)
+    #   strategy:           # override strategy for inputs (default: inherits tools)
+    #     keep_turns: 5
+    #   head_chars: 250     # override head_chars for inputs (default: inherits tools)
+    # output:               # per-direction overrides for tool outputs (optional)
+    #   strategy:           # override strategy for outputs (default: inherits tools)
+    #     keep_turns: 3
+    #   tail_chars: 250     # override tail_chars for outputs (default: inherits tools)
 
 # Built-in meta-tool: delegate_task
 # Always available. Spawns a sub-agent with an isolated conversation to handle

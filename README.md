@@ -55,11 +55,12 @@ Create a `config.yaml` file (see [`config.yaml.example`](config.yaml.example) fo
 
 ```yaml
 state_dir: /var/lib/assistant
-workspace_dir: /var/lib/assistant/workspace
+workspace: /var/lib/assistant/workspace
 
-telegram_chats:
-  - id: 123456789
-    session: main
+channels:
+  telegram:
+    - id: 123456789
+      session: main
 
 agent:
   model: claude-sonnet-4-20250514
@@ -97,7 +98,7 @@ agent:
 compaction:
   token_threshold: 50000
   model: claude-3-5-haiku-20241022
-  # strategy: { keep_last_turns: 10 }  # or { keep_last_fraction: 0.25 }
+  # strategy: { keep_turns: 10 }  # or { keep_fraction: 0.25 }
 
 webhook:
   enabled: true
@@ -134,9 +135,9 @@ export WEBHOOK_SECRET="your-webhook-secret"   # optional, overrides config file
 
 ## Workspace Files
 
-The system prompt is assembled from a configurable list of inputs under `agent.system_prompt`. Each input is either a `workspace_file` (read from `workspace_dir`) or inline `text`. When omitted, it defaults to `[{type: workspace_file, path: SOUL.md}]`.
+The system prompt is assembled from a configurable list of inputs under `agent.system_prompt`. Each input is either a `workspace_file` (read from the workspace directory) or inline `text`. When omitted, it defaults to `[{type: workspace_file, path: SOUL.md}]`.
 
-Place workspace files in your `workspace_dir` (e.g. `SOUL.md` for personality and behavioral guidelines).
+Place workspace files in your workspace directory (e.g. `SOUL.md` for personality and behavioral guidelines).
 
 Webhook and cron job prompts use the same input format. Webhook text inputs support `{{.field}}` template placeholders for dynamic content from the JSON payload. Cron jobs automatically include `{{.time}}` (ISO 8601), `{{.trigger}}`, and `{{.cron}}` in the payload.
 
@@ -156,7 +157,7 @@ Add the flake to your NixOS configuration:
         ({ pkgs, system, ... }: {
           services.assistant.agents.elwood = {
             enable = true;
-            telegramChats = [ { id = 123456789; session = "main"; } ];
+            channels.telegram = [ { id = 123456789; session = "main"; } ];
             environmentFile = "/run/secrets/elwood-env";
             workspaceDir = "/var/lib/assistant/elwood/workspace";
 
@@ -219,7 +220,7 @@ Add the flake to your NixOS configuration:
           # Run a second agent with different config
           services.assistant.agents.career-coach = {
             enable = true;
-            telegramChats = [ { id = 123456789; } ];
+            channels.telegram = [ { id = 123456789; } ];
             environmentFile = "/run/secrets/career-coach-env";
             agent.model = "claude-sonnet-4-20250514";
           };
