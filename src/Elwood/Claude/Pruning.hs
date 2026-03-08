@@ -69,8 +69,7 @@ protectedBoundary strat msgs =
 
 -- | Convert a 'PruningStrategy' to a concrete number of turns to keep.
 -- Uses 'ceiling' so fractional strategies err on the side of protecting
--- more content (contrast with compaction's 'floor' which errs toward
--- freeing more space).
+-- more content (compaction uses the same convention).
 strategyToKeepN :: PruningStrategy -> [ClaudeMessage] -> Int
 strategyToKeepN (KeepTurns n) _ = fromIntegral n
 strategyToKeepN (KeepFraction f) msgs =

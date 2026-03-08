@@ -183,7 +183,7 @@ compaction:
   model: claude-3-5-haiku-20241022  # default: claude-3-5-haiku-20241022
   # Strategy for splitting messages into compact vs keep regions.
   # { keep_turns: N } — keep last N turns verbatim, compact the rest (default: 10)
-  # { keep_fraction: F } — keep ~(F * token_threshold) tokens from the end
+  # { keep_fraction: F } — keep ceiling(F * total_turns) recent turns verbatim, compact the rest
   # strategy: { keep_turns: 10 }
   # Custom compaction prompt (conversation text is appended automatically).
   # Default: built-in structured prompt with User Profile/Projects & Goals/

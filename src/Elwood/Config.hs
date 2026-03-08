@@ -80,7 +80,7 @@ instance FromJSON PruningStrategy where
 data CompactionStrategy
   = -- | Keep last N turns (N > 0)
     CKeepTurns Positive
-  | -- | Keep a fraction of the token threshold as recent tokens
+  | -- | Keep a fraction of total turns (converted via ceiling, like pruning)
     CKeepFraction Double
   deriving stock (Show, Eq, Generic)
 

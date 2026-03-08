@@ -123,7 +123,7 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 3"],
                     ClaudeMessage Assistant [TextBlock "Response 3"]
                   ]
-            case strategySplit (CKeepTurns (unsafePositive 2)) (unsafePositive 50000) msgs of
+            case strategySplit (CKeepTurns (unsafePositive 2)) msgs of
               Nothing -> assertFailure "Expected Just, got Nothing"
               Just (old, recent) -> do
                 length old @?= 2 -- Turn 1 + Response 1
@@ -135,8 +135,8 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 2"],
                     ClaudeMessage Assistant [TextBlock "Response 2"]
                   ]
-            strategySplit (CKeepTurns (unsafePositive 2)) (unsafePositive 50000) msgs @?= Nothing
-            strategySplit (CKeepTurns (unsafePositive 3)) (unsafePositive 50000) msgs @?= Nothing,
+            strategySplit (CKeepTurns (unsafePositive 2)) msgs @?= Nothing
+            strategySplit (CKeepTurns (unsafePositive 3)) msgs @?= Nothing,
           testCase "splits at turn boundary with tool pairs before it" $ do
             -- Turn boundaries at 0, 3, 5. CKeepTurns 2 splits at index 3.
             -- Tool pairs before the boundary stay in old.
@@ -149,42 +149,18 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 3"],
                     ClaudeMessage Assistant [TextBlock "Response 3"]
                   ]
-            case strategySplit (CKeepTurns (unsafePositive 2)) (unsafePositive 50000) msgs of
+            case strategySplit (CKeepTurns (unsafePositive 2)) msgs of
               Nothing -> assertFailure "Expected Just, got Nothing"
               Just (old, recent) -> do
                 length old @?= 3 -- Turn 1 + tool_use + tool_result
                 length recent @?= 4,
           testCase "empty message list returns Nothing" $
-            strategySplit (CKeepTurns (unsafePositive 5)) (unsafePositive 50000) [] @?= Nothing
+            strategySplit (CKeepTurns (unsafePositive 5)) [] @?= Nothing
         ],
       testGroup
         "CKeepFraction"
         [ testCase "small fraction compacts most messages" $ do
-            -- Make turn 1 very large so it dominates the token count.
-            -- Use a very large threshold so the fraction math gives a
-            -- keep budget smaller than the big message.
-            let bigText = T.replicate 2000 "word "
-                msgs =
-                  [ ClaudeMessage User [TextBlock "Turn 1"],
-                    ClaudeMessage Assistant [TextBlock bigText],
-                    ClaudeMessage User [TextBlock "Turn 2"],
-                    ClaudeMessage Assistant [TextBlock "Short"],
-                    ClaudeMessage User [TextBlock "Turn 3"],
-                    ClaudeMessage Assistant [TextBlock "Short"]
-                  ]
-                -- Use a threshold large enough that 0.01 * threshold
-                -- still exceeds the small messages but not the big one
-                threshold = unsafePositive (estimateTokens msgs * 10)
-            case strategySplit (CKeepFraction 0.01) threshold msgs of
-              Nothing -> assertFailure "Expected Just, got Nothing"
-              Just (old, recent) -> do
-                -- Turn boundaries: 0, 2, 4. The big message is in turn 1.
-                assertBool "old should be non-empty" (not (null old))
-                assertBool "recent should be non-empty" (not (null recent))
-                -- The split should land on a turn boundary
-                let recentBoundaries = turnBoundaryIndices recent
-                assertBool "recent starts at a turn boundary" (not (null recentBoundaries)),
-          testCase "large fraction keeps most messages" $ do
+            -- 3 turns; ceiling(0.01 * 3) = 1 turn kept → 2 turns compacted
             let msgs =
                   [ ClaudeMessage User [TextBlock "Turn 1"],
                     ClaudeMessage Assistant [TextBlock "Response 1"],
@@ -193,18 +169,34 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 3"],
                     ClaudeMessage Assistant [TextBlock "Response 3"]
                   ]
-                totalTokens = unsafePositive (estimateTokens msgs)
-            -- fraction=1.0 means keep all tokens → no-op
-            strategySplit (CKeepFraction 1.0) totalTokens msgs @?= Nothing,
+            case strategySplit (CKeepFraction 0.01) msgs of
+              Nothing -> assertFailure "Expected Just, got Nothing"
+              Just (old, recent) -> do
+                length old @?= 4 -- Turns 1+2
+                length recent @?= 2 -- Turn 3
+                -- The split should land on a turn boundary
+                let recentBoundaries = turnBoundaryIndices recent
+                assertBool "recent starts at a turn boundary" (not (null recentBoundaries)),
+          testCase "large fraction keeps most messages" $ do
+            -- 3 turns; ceiling(1.0 * 3) = 3 turns kept → no-op
+            let msgs =
+                  [ ClaudeMessage User [TextBlock "Turn 1"],
+                    ClaudeMessage Assistant [TextBlock "Response 1"],
+                    ClaudeMessage User [TextBlock "Turn 2"],
+                    ClaudeMessage Assistant [TextBlock "Response 2"],
+                    ClaudeMessage User [TextBlock "Turn 3"],
+                    ClaudeMessage Assistant [TextBlock "Response 3"]
+                  ]
+            strategySplit (CKeepFraction 1.0) msgs @?= Nothing,
           testCase "returns Nothing when all messages fit in keep region" $ do
+            -- 1 turn; ceiling(1.0 * 1) = 1 → no-op
             let msgs =
                   [ ClaudeMessage User [TextBlock "Hello"],
                     ClaudeMessage Assistant [TextBlock "Hi"]
                   ]
-            -- threshold much larger than actual tokens
-            strategySplit (CKeepFraction 1.0) (unsafePositive 100000) msgs @?= Nothing,
+            strategySplit (CKeepFraction 1.0) msgs @?= Nothing,
           testCase "empty message list returns Nothing" $
-            strategySplit (CKeepFraction 0.25) (unsafePositive 50000) [] @?= Nothing
+            strategySplit (CKeepFraction 0.25) [] @?= Nothing
         ],
       testGroup
         "turnBoundaryIndices"

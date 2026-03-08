@@ -76,7 +76,7 @@ compactMessages ::
   [ClaudeMessage] ->
   IO [ClaudeMessage]
 compactMessages logger client config onCompaction onApiResponse persist msgs =
-  case strategySplit config.strategy config.tokenThreshold msgs of
+  case strategySplit config.strategy msgs of
     Nothing -> do
       logWarn
         logger
@@ -223,55 +223,23 @@ extractText blocks =
 -- Returns @Nothing@ when all messages fall in the keep region (no-op).
 -- Otherwise returns @Just (old, recent)@ where @old@ will be compacted
 -- and @recent@ kept verbatim.
-strategySplit :: CompactionStrategy -> Positive -> [ClaudeMessage] -> Maybe ([ClaudeMessage], [ClaudeMessage])
-strategySplit (CKeepTurns n) _threshold msgs =
+--
+-- Both 'CKeepTurns' and 'CKeepFraction' operate in terms of turns
+-- (matching the pruning convention). 'CKeepFraction' first converts
+-- the fraction to a turn count via @ceiling(f * totalTurns)@, then
+-- follows the same logic as 'CKeepTurns'.
+strategySplit :: CompactionStrategy -> [ClaudeMessage] -> Maybe ([ClaudeMessage], [ClaudeMessage])
+strategySplit strat msgs =
   let boundaries = turnBoundaryIndices msgs
-   in -- We need at least n+1 boundaries: n to keep, 1+ to compact
-      case drop (length boundaries - n.getPositive) boundaries of
+      keepN :: Int
+      keepN = case strat of
+        CKeepTurns n -> n.getPositive
+        CKeepFraction f -> ceiling (f * fromIntegral (length boundaries))
+   in -- We need at least keepN+1 boundaries: keepN to keep, 1+ to compact.
+      -- Since the split always lands on a turn boundary (a user message with
+      -- a TextBlock), it can never land in the middle of a tool_use/tool_result
+      -- pair.
+      case drop (length boundaries - keepN) boundaries of
         (splitIdx : _)
-          | splitIdx > 0 -> nonEmptySplit splitIdx msgs
+          | splitIdx > 0 -> Just (splitAt splitIdx msgs)
         _ -> Nothing
-strategySplit (CKeepFraction f) threshold msgs =
-  -- Uses 'floor' so fractional strategies err toward freeing more space
-  -- (contrast with pruning's 'ceiling' which errs toward protecting content).
-  let keepTokens = floor (f * fromIntegral threshold.getPositive) :: Int
-      boundaries = turnBoundaryIndices msgs
-      -- Walk backward through messages, accumulating token estimates
-      -- until we've accounted for keepTokens. The split point is the
-      -- index of the first message in the keep region.
-      splitIdx = findKeepBoundary keepTokens (reverse (zip [0 ..] msgs))
-      -- Snap to the first turn boundary at or after the raw split point,
-      -- so the keep region starts at a clean turn boundary.
-      snapped = firstBoundaryAtOrAfter splitIdx boundaries
-   in case snapped of
-        Nothing -> Nothing
-        Just idx
-          | idx <= 0 -> Nothing
-          | otherwise -> nonEmptySplit idx msgs
-
--- | Walk backward through indexed messages, accumulating token estimates.
--- Returns the index where the accumulated tokens first reach the budget.
--- If all messages fit within the budget, returns 0.
-findKeepBoundary :: Int -> [(Int, ClaudeMessage)] -> Int
-findKeepBoundary _ [] = 0
-findKeepBoundary budget ((i, m) : rest)
-  | budget <= 0 = i + 1 -- previous message exhausted the budget
-  | otherwise = findKeepBoundary (budget - estimateTokens [m]) rest
-
--- | Find the first turn boundary index that is >= the given position.
--- Returns Nothing if no such boundary exists (all messages are in keep region).
-firstBoundaryAtOrAfter :: Int -> [Int] -> Maybe Int
-firstBoundaryAtOrAfter pos boundaries =
-  case filter (>= pos) boundaries of
-    (b : _) -> Just b
-    [] -> Nothing
-
--- | Split at the given index; return Nothing if @old@ would be empty.
--- Since 'strategySplit' always splits at turn boundaries (user messages
--- with a TextBlock), the split can never land in the middle of a
--- tool_use/tool_result pair.
-nonEmptySplit :: Int -> [ClaudeMessage] -> Maybe ([ClaudeMessage], [ClaudeMessage])
-nonEmptySplit splitIdx msgs =
-  case splitAt splitIdx msgs of
-    ([], _) -> Nothing
-    result -> Just result
