@@ -203,7 +203,7 @@ pruning:
     # enable: true                    # default: true — set to false to keep all thinking blocks
     strategy:               # override strategy for thinking (default: inherits global)
       keep_turns: 1
-  tools:
+  tools:                  # tool result pruning (null = keep all, omit = use defaults)
     # enable: true                    # default: true — set to false to disable tool pruning
     head_chars: 500         # characters to keep from start of pruned content (default: 500)
     tail_chars: 500         # characters to keep from end of pruned content (default: 500)

@@ -137,24 +137,23 @@ agentDefaults =
       permissions = Just mempty
     }
 
--- | Resolve overrides to concrete profile by layering over 'agentDefaults'.
+-- | Resolve overrides to a concrete profile against hardcoded defaults.
 resolveProfile :: AgentOverrides -> AgentProfile
 resolveProfile o =
-  let d = agentDefaults <> o
-      resolvedCache = case d.cache of
+  let resolvedCache = case o.cache of
         Just co
           | co.enable == Just False -> Nothing
           | otherwise -> Just (fromMaybe CacheTtl5Min co.ttl)
         Nothing -> Just CacheTtl5Min
    in AgentProfile
-        { model = fromMaybe "claude-sonnet-4-20250514" d.model,
-          thinking = fromMaybe ThinkingOff d.thinking,
-          maxIterations = fromMaybe 20 d.maxIterations,
+        { model = fromMaybe "claude-sonnet-4-20250514" o.model,
+          thinking = fromMaybe ThinkingOff o.thinking,
+          maxIterations = fromMaybe 20 o.maxIterations,
           cache = resolvedCache,
-          maxTokens = fromMaybe 16384 d.maxTokens,
-          systemPrompt = fromMaybe [WorkspaceFile "SOUL.md"] d.systemPrompt,
-          toolSearch = fromMaybe ToolSearchDisabled d.toolSearch,
-          permissions = resolvePermissions (fromMaybe mempty d.permissions)
+          maxTokens = fromMaybe 16384 o.maxTokens,
+          systemPrompt = fromMaybe [WorkspaceFile "SOUL.md"] o.systemPrompt,
+          toolSearch = fromMaybe ToolSearchDisabled o.toolSearch,
+          permissions = resolvePermissions (fromMaybe mempty o.permissions)
         }
 
 -- | Wrap resolved profile back into overrides (all 'Just').

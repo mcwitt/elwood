@@ -279,41 +279,30 @@ instance Monoid CompactionConfigFile where
 isEnabled :: Maybe Bool -> Bool
 isEnabled = fromMaybe True
 
--- | Default compaction overrides (all 'Just' with hardcoded defaults).
-compactionDefaults :: CompactionConfigFile
-compactionDefaults =
-  CompactionConfigFile
-    { enable = Just True,
-      tokenThreshold = Just 50000,
-      model = Just "claude-3-5-haiku-20241022",
-      prompt = Nothing,
-      strategy = Just (CKeepTurns 10)
-    }
-
--- | Resolve a partial compaction config by layering over 'compactionDefaults'.
+-- | Resolve a partial compaction config against hardcoded defaults.
 -- Returns 'Nothing' when @enable = False@.
 resolveCompaction :: CompactionConfigFile -> Maybe CompactionConfig
 resolveCompaction ccf
-  | isEnabled d.enable =
+  | isEnabled ccf.enable =
       Just
         CompactionConfig
-          { tokenThreshold = fromMaybe 50000 d.tokenThreshold,
-            model = fromMaybe "claude-3-5-haiku-20241022" d.model,
-            prompt = d.prompt,
-            strategy = fromMaybe (CKeepTurns 10) d.strategy
+          { tokenThreshold = fromMaybe 50000 ccf.tokenThreshold,
+            model = fromMaybe "claude-3-5-haiku-20241022" ccf.model,
+            prompt = ccf.prompt,
+            strategy = fromMaybe (CKeepTurns 10) ccf.strategy
           }
   | otherwise = Nothing
-  where
-    d = compactionDefaults <> ccf
 
--- | Pruning configuration from YAML file
+-- | Pruning configuration from YAML file.
+--
+-- Double-'Maybe' fields use @.:!@ parsing: @Nothing@ = absent (inherit
+-- defaults), @Just Nothing@ = explicit null (disable), @Just (Just cfg)@
+-- = explicit configuration.
 data PruningConfigFile = PruningConfigFile
   { enable :: Maybe Bool,
     strategy :: Maybe PruningStrategy,
-    -- | Outer 'Maybe' = "not specified in this layer";
-    -- inner 'Maybe' = "explicitly set to null (disable thinking pruning)".
     thinking :: Maybe (Maybe ThinkingPruningConfigFile),
-    tools :: Maybe ToolPruningConfigFile
+    tools :: Maybe (Maybe ToolPruningConfigFile)
   }
   deriving stock (Show, Generic)
 
@@ -323,6 +312,17 @@ data ThinkingPruningConfigFile = ThinkingPruningConfigFile
     strategy :: Maybe PruningStrategy
   }
   deriving stock (Show, Eq, Generic)
+
+-- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
+instance Semigroup ThinkingPruningConfigFile where
+  a <> b =
+    ThinkingPruningConfigFile
+      { enable = b.enable <|> a.enable,
+        strategy = b.strategy <|> a.strategy
+      }
+
+instance Monoid ThinkingPruningConfigFile where
+  mempty = ThinkingPruningConfigFile Nothing Nothing
 
 -- | Tool pruning configuration from YAML file
 data ToolPruningConfigFile = ToolPruningConfigFile
@@ -335,6 +335,21 @@ data ToolPruningConfigFile = ToolPruningConfigFile
   }
   deriving stock (Show, Eq, Generic)
 
+-- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
+instance Semigroup ToolPruningConfigFile where
+  a <> b =
+    ToolPruningConfigFile
+      { enable = b.enable <|> a.enable,
+        headChars = b.headChars <|> a.headChars,
+        tailChars = b.tailChars <|> a.tailChars,
+        strategy = b.strategy <|> a.strategy,
+        input = b.input <|> a.input,
+        output = b.output <|> a.output
+      }
+
+instance Monoid ToolPruningConfigFile where
+  mempty = ToolPruningConfigFile Nothing Nothing Nothing Nothing Nothing Nothing
+
 -- | Per-direction tool pruning configuration from YAML file
 data ToolDirectionConfigFile = ToolDirectionConfigFile
   { strategy :: Maybe PruningStrategy,
@@ -344,6 +359,21 @@ data ToolDirectionConfigFile = ToolDirectionConfigFile
   deriving stock (Show, Eq, Generic)
 
 -- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
+instance Semigroup ToolDirectionConfigFile where
+  a <> b =
+    ToolDirectionConfigFile
+      { strategy = b.strategy <|> a.strategy,
+        headChars = b.headChars <|> a.headChars,
+        tailChars = b.tailChars <|> a.tailChars
+      }
+
+instance Monoid ToolDirectionConfigFile where
+  mempty = ToolDirectionConfigFile Nothing Nothing Nothing
+
+-- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
+-- For double-Maybe fields ('thinking', 'tools'), outer 'Maybe' controls
+-- layer presence: @Nothing@ = "not specified" (fall through to @a@),
+-- @Just _@ = "specified" (overrides @a@, including @Just Nothing@ = disable).
 instance Semigroup PruningConfigFile where
   a <> b =
     PruningConfigFile
@@ -356,22 +386,12 @@ instance Semigroup PruningConfigFile where
 instance Monoid PruningConfigFile where
   mempty = PruningConfigFile Nothing Nothing Nothing Nothing
 
--- | Default pruning overrides (all 'Just' with hardcoded defaults).
-pruningDefaults :: PruningConfigFile
-pruningDefaults =
-  PruningConfigFile
-    { enable = Just True,
-      strategy = Just (KeepTurns 3),
-      thinking = Just (Just (ThinkingPruningConfigFile Nothing Nothing)),
-      tools = Nothing
-    }
-
--- | Resolve a partial pruning config by layering over 'pruningDefaults'.
+-- | Resolve a partial pruning config against hardcoded defaults.
 -- Returns 'Nothing' when @enable = False@.  Sub-component enable flags
 -- cascade from the top-level enable and collapse into 'Maybe' wrappers.
 resolvePruning :: PruningConfigFile -> Maybe PruningConfig
 resolvePruning pcf
-  | not pruningEnabled = Nothing
+  | not (isEnabled pcf.enable) = Nothing
   | otherwise =
       Just
         PruningConfig
@@ -380,41 +400,50 @@ resolvePruning pcf
             tools = toolsCfg
           }
   where
-    d = pruningDefaults <> pcf
-    pruningEnabled = isEnabled d.enable
-    globalStrategy = fromMaybe (KeepTurns 3) d.strategy
+    globalStrategy = fromMaybe (KeepTurns 3) pcf.strategy
 
-    -- Thinking: disabled by thinking=null, thinking.enable=false, or pruning.enable=false
-    thinkingCfg = case fromMaybe (Just (ThinkingPruningConfigFile Nothing Nothing)) d.thinking of
-      Nothing -> Nothing
-      Just tcf
+    -- Thinking: Nothing = absent (enable with defaults), Just Nothing = null (disable),
+    -- Just (Just tcf) = explicit config
+    thinkingCfg = case pcf.thinking of
+      Nothing ->
+        Just ThinkingPruningConfig {strategy = globalStrategy}
+      Just Nothing -> Nothing
+      Just (Just tcf)
         | isEnabled tcf.enable ->
             Just ThinkingPruningConfig {strategy = fromMaybe globalStrategy tcf.strategy}
         | otherwise -> Nothing
 
-    -- Tools: disabled by tools.enable=false (inherits pruning.enable by default)
-    toolsCf = fromMaybe (ToolPruningConfigFile Nothing Nothing Nothing Nothing Nothing Nothing) d.tools
-    toolsCfg
-      | isEnabled toolsCf.enable =
-          let toolsHeadChars = fromMaybe 500 toolsCf.headChars
-              toolsTailChars = fromMaybe 500 toolsCf.tailChars
-              toolsStrategy = fromMaybe globalStrategy toolsCf.strategy
-              mkDirection dcf =
-                let dc = fromMaybe (ToolDirectionConfigFile Nothing Nothing Nothing) dcf
-                 in ToolDirectionConfig
-                      { strategy = fromMaybe toolsStrategy dc.strategy,
-                        headChars = fromMaybe toolsHeadChars dc.headChars,
-                        tailChars = fromMaybe toolsTailChars dc.tailChars
-                      }
-           in Just
-                ToolPruningConfig
-                  { headChars = toolsHeadChars,
-                    tailChars = toolsTailChars,
-                    strategy = toolsStrategy,
-                    input = mkDirection toolsCf.input,
-                    output = mkDirection toolsCf.output
-                  }
-      | otherwise = Nothing
+    -- Tools: same three-state semantics as thinking
+    toolsCfg = case pcf.tools of
+      Nothing -> Just (defaultTools globalStrategy)
+      Just Nothing -> Nothing
+      Just (Just toolsCf)
+        | isEnabled toolsCf.enable ->
+            let toolsHeadChars = fromMaybe 500 toolsCf.headChars
+                toolsTailChars = fromMaybe 500 toolsCf.tailChars
+                toolsStrategy = fromMaybe globalStrategy toolsCf.strategy
+                mkDirection dcf =
+                  let dc = fromMaybe mempty dcf
+                   in ToolDirectionConfig
+                        { strategy = fromMaybe toolsStrategy dc.strategy,
+                          headChars = fromMaybe toolsHeadChars dc.headChars,
+                          tailChars = fromMaybe toolsTailChars dc.tailChars
+                        }
+             in Just
+                  ToolPruningConfig
+                    { headChars = toolsHeadChars,
+                      tailChars = toolsTailChars,
+                      strategy = toolsStrategy,
+                      input = mkDirection toolsCf.input,
+                      output = mkDirection toolsCf.output
+                    }
+        | otherwise -> Nothing
+
+-- | Default tool pruning config for the absent-tools case.
+defaultTools :: PruningStrategy -> ToolPruningConfig
+defaultTools strat =
+  let dir = ToolDirectionConfig {strategy = strat, headChars = 500, tailChars = 500}
+   in ToolPruningConfig {headChars = 500, tailChars = 500, strategy = strat, input = dir, output = dir}
 
 -- | MCP server configuration from YAML file
 data MCPServerConfigFile = MCPServerConfigFile
@@ -471,7 +500,7 @@ instance FromJSON PruningConfigFile where
       <$> v .:? "enable"
       <*> v .:? "strategy"
       <*> v .:! "thinking"
-      <*> v .:? "tools"
+      <*> v .:! "tools"
 
 instance FromJSON ThinkingPruningConfigFile where
   parseJSON = withObject "ThinkingPruningConfigFile" $ \v -> do

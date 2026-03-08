@@ -66,7 +66,7 @@ data PermissionConfig = PermissionConfig
   }
   deriving stock (Show, Eq)
 
--- | Default permission configuration (derived from 'permissionDefaults').
+-- | Default permission configuration.
 defaultPermissionConfig :: PermissionConfig
 defaultPermissionConfig = resolvePermissions mempty
 
@@ -139,28 +139,16 @@ instance FromJSON PermissionConfigFile where
       <*> v .:? "default_policy"
       <*> v .:? "approval_timeout_seconds"
 
--- | Default permission overrides (all 'Just' with hardcoded defaults).
-permissionDefaults :: PermissionConfigFile
-permissionDefaults =
-  PermissionConfigFile
-    { safePatterns = Just [],
-      dangerousPatterns = Just [],
-      toolPolicies = Just Map.empty,
-      defaultPolicy = Just PolicyAllow,
-      approvalTimeoutSeconds = Just 300
-    }
-
--- | Resolve a partial permission config by layering over 'permissionDefaults'.
+-- | Resolve a partial permission config against hardcoded defaults.
 resolvePermissions :: PermissionConfigFile -> PermissionConfig
 resolvePermissions pcf =
-  let d = permissionDefaults <> pcf
-   in PermissionConfig
-        { safePatterns = fromMaybe [] d.safePatterns,
-          dangerousPatterns = fromMaybe [] d.dangerousPatterns,
-          toolPolicies = fromMaybe Map.empty d.toolPolicies,
-          defaultPolicy = fromMaybe PolicyAllow d.defaultPolicy,
-          approvalTimeoutSeconds = fromMaybe 300 d.approvalTimeoutSeconds
-        }
+  PermissionConfig
+    { safePatterns = fromMaybe [] pcf.safePatterns,
+      dangerousPatterns = fromMaybe [] pcf.dangerousPatterns,
+      toolPolicies = fromMaybe Map.empty pcf.toolPolicies,
+      defaultPolicy = fromMaybe PolicyAllow pcf.defaultPolicy,
+      approvalTimeoutSeconds = fromMaybe 300 pcf.approvalTimeoutSeconds
+    }
 
 -- | Convert a resolved 'PermissionConfig' back to a 'PermissionConfigFile' (all 'Just').
 toPermissionConfigFile :: PermissionConfig -> PermissionConfigFile

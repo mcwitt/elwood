@@ -150,13 +150,13 @@ pruningResolutionTests =
       testCase "per-direction strategy overrides tools level" $ do
         let inputCf = ToolDirectionConfigFile {strategy = Just (KeepTurns 10), headChars = Nothing, tailChars = Nothing}
             toolsCf = ToolPruningConfigFile {enable = Nothing, headChars = Nothing, tailChars = Nothing, strategy = Nothing, input = Just inputCf, output = Nothing}
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Just (KeepTurns 5), thinking = Nothing, tools = Just toolsCf})
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Just (KeepTurns 5), thinking = Nothing, tools = Just (Just toolsCf)})
         Just tc <- pure cfg.tools
         tc.input.strategy @?= KeepTurns 10
         tc.output.strategy @?= KeepTurns 5, -- output inherits global
       testCase "tools-level strategy overrides global" $ do
         let toolsCf = ToolPruningConfigFile {enable = Nothing, headChars = Nothing, tailChars = Nothing, strategy = Just (KeepTurns 8), input = Nothing, output = Nothing}
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Just (KeepTurns 3), thinking = Nothing, tools = Just toolsCf})
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Just (KeepTurns 3), thinking = Nothing, tools = Just (Just toolsCf)})
         Just tc <- pure cfg.tools
         cfg.strategy @?= KeepTurns 3 -- global unchanged
         tc.strategy @?= KeepTurns 8
@@ -173,7 +173,7 @@ pruningResolutionTests =
         cfg.thinking @?= Just ThinkingPruningConfig {strategy = KeepTurns 2},
       testCase "tools headChars/tailChars cascade to directions" $ do
         let toolsCf = ToolPruningConfigFile {enable = Nothing, headChars = Just 100, tailChars = Just 200, strategy = Nothing, input = Nothing, output = Nothing}
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Nothing, tools = Just toolsCf})
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Nothing, tools = Just (Just toolsCf)})
         Just tc <- pure cfg.tools
         tc.headChars @?= 100
         tc.tailChars @?= 200
@@ -184,12 +184,15 @@ pruningResolutionTests =
       testCase "direction headChars/tailChars override tools level" $ do
         let outputCf = ToolDirectionConfigFile {strategy = Nothing, headChars = Just 50, tailChars = Just 75}
             toolsCf = ToolPruningConfigFile {enable = Nothing, headChars = Just 100, tailChars = Just 200, strategy = Nothing, input = Nothing, output = Just outputCf}
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Nothing, tools = Just toolsCf})
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Nothing, tools = Just (Just toolsCf)})
         Just tc <- pure cfg.tools
         tc.input.headChars @?= 100 -- inherits tools
         tc.input.tailChars @?= 200 -- inherits tools
         tc.output.headChars @?= 50 -- overridden
         tc.output.tailChars @?= 75, -- overridden
+      testCase "tools: null disables tool pruning" $ do
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Nothing, tools = Just Nothing})
+        cfg.tools @?= Nothing,
       testCase "enable = false disables all pruning" $ do
         resolvePruning (PruningConfigFile {enable = Just False, strategy = Nothing, thinking = Nothing, tools = Nothing}) @?= Nothing,
       testCase "thinking.enable = false disables thinking" $ do
@@ -197,11 +200,11 @@ pruningResolutionTests =
         cfg.thinking @?= Nothing,
       testCase "tools.enable = false disables tools" $ do
         let toolsCf = ToolPruningConfigFile {enable = Just False, headChars = Nothing, tailChars = Nothing, strategy = Nothing, input = Nothing, output = Nothing}
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Nothing, tools = Just toolsCf})
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Nothing, tools = Just (Just toolsCf)})
         cfg.tools @?= (Nothing :: Maybe ToolPruningConfig),
       testCase "pruning.enable = false overrides child enable = true" $ do
         let toolsCf = ToolPruningConfigFile {enable = Just True, headChars = Nothing, tailChars = Nothing, strategy = Nothing, input = Nothing, output = Nothing}
-        resolvePruning (PruningConfigFile {enable = Just False, strategy = Nothing, thinking = Just (Just (ThinkingPruningConfigFile (Just True) Nothing)), tools = Just toolsCf}) @?= Nothing
+        resolvePruning (PruningConfigFile {enable = Just False, strategy = Nothing, thinking = Just (Just (ThinkingPruningConfigFile (Just True) Nothing)), tools = Just (Just toolsCf)}) @?= Nothing
     ]
 
 -- ---------------------------------------------------------------------------
@@ -233,7 +236,7 @@ pruningFromJsonTests =
               Just (Just tcf) -> tcf.strategy @?= Just (KeepTurns 2)
               other -> assertFailure $ "Expected Just (Just ...), got: " <> show other
             case pcf.tools of
-              Just tc -> do
+              Just (Just tc) -> do
                 tc.headChars @?= Just 100
                 tc.tailChars @?= Just 200
                 case tc.input of
@@ -248,7 +251,7 @@ pruningFromJsonTests =
                     oc.headChars @?= Nothing
                     oc.tailChars @?= Just 75
                   Nothing -> assertFailure "Expected Just for output"
-              Nothing -> assertFailure "Expected Just for tools",
+              other -> assertFailure $ "Expected Just (Just ...) for tools, got: " <> show other,
       testCase "parses thinking: null as disabled" $ do
         let json = object ["thinking" .= Null]
         case fromJSON json of
@@ -261,6 +264,18 @@ pruningFromJsonTests =
           Error err -> assertFailure $ "Parse failed: " <> err
           Success (pcf :: PruningConfigFile) ->
             pcf.thinking @?= Nothing,
+      testCase "parses tools: null as disabled" $ do
+        let json = object ["tools" .= Null]
+        case fromJSON json of
+          Error err -> assertFailure $ "Parse failed: " <> err
+          Success (pcf :: PruningConfigFile) ->
+            pcf.tools @?= Just Nothing,
+      testCase "absent tools parses as Nothing (inherit defaults)" $ do
+        let json = object ["strategy" .= object ["keep_turns" .= (3 :: Int)]]
+        case fromJSON json of
+          Error err -> assertFailure $ "Parse failed: " <> err
+          Success (pcf :: PruningConfigFile) ->
+            pcf.tools @?= Nothing,
       testCase "empty object parses with all Nothing" $ do
         let json = object []
         case fromJSON json of
