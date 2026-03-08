@@ -19,7 +19,7 @@ import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), To
 import Elwood.Config (PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
-import Elwood.Positive (Positive (getPositive), unsafePositive)
+import Elwood.Positive (Positive (getPositive))
 import Elwood.Prompt (PromptInput (InlineText), assemblePrompt)
 import Elwood.Thinking (parseThinkingLevel)
 import Elwood.Tools.Command (mkRunCommandTool)
@@ -30,7 +30,7 @@ import Elwood.Tools.Types
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
 -- Other fields (model, thinking, system_prompt, tool_search, permissions) inherit from parent.
 delegateDefaults :: AgentOverrides
-delegateDefaults = AgentOverrides Nothing Nothing (Just (unsafePositive 10)) (Just (CacheOverrides (Just False) Nothing)) Nothing Nothing Nothing Nothing
+delegateDefaults = AgentOverrides Nothing Nothing (Just 10) (Just (CacheOverrides (Just False) Nothing)) Nothing Nothing Nothing Nothing
 
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
@@ -275,10 +275,10 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
     Nothing -> Right Nothing
   maxIterParam <- case KM.lookup "max_iterations" obj of
     Just (Aeson.Number n) ->
-      let i = round n
+      let i = round n :: Int
        in if i < 1 || i > 50
             then Left "max_iterations must be between 1 and 50"
-            else Right (Just (unsafePositive i))
+            else Right (Just (fromIntegral i))
     Just _ -> Left "Invalid 'max_iterations' parameter (must be an integer)"
     Nothing -> Right Nothing
   systemPromptParam <- case KM.lookup "system_prompt" obj of

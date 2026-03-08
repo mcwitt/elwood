@@ -30,7 +30,7 @@ import Data.Vector qualified as V
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Claude.Types (CacheTtl (..))
 import Elwood.Permissions (PermissionConfig, PermissionConfigFile, resolvePermissions, toPermissionConfigFile)
-import Elwood.Positive (Positive, unsafePositive)
+import Elwood.Positive (Positive)
 import Elwood.Prompt (PromptInput (..))
 import Elwood.Thinking (ThinkingLevel (..))
 import GHC.Generics (Generic)
@@ -129,9 +129,9 @@ agentDefaults =
   AgentOverrides
     { model = Just "claude-sonnet-4-20250514",
       thinking = Just ThinkingOff,
-      maxIterations = Just (unsafePositive 20),
+      maxIterations = Just 20,
       cache = Just (CacheOverrides (Just True) (Just CacheTtl5Min)),
-      maxTokens = Just (unsafePositive 16384),
+      maxTokens = Just 16384,
       systemPrompt = Just [WorkspaceFile "SOUL.md"],
       toolSearch = Just ToolSearchDisabled,
       permissions = Just mempty
@@ -149,9 +149,9 @@ resolveProfile o =
    in AgentProfile
         { model = fromMaybe "claude-sonnet-4-20250514" d.model,
           thinking = fromMaybe ThinkingOff d.thinking,
-          maxIterations = fromMaybe (unsafePositive 20) d.maxIterations,
+          maxIterations = fromMaybe 20 d.maxIterations,
           cache = resolvedCache,
-          maxTokens = fromMaybe (unsafePositive 16384) d.maxTokens,
+          maxTokens = fromMaybe 16384 d.maxTokens,
           systemPrompt = fromMaybe [WorkspaceFile "SOUL.md"] d.systemPrompt,
           toolSearch = fromMaybe ToolSearchDisabled d.toolSearch,
           permissions = resolvePermissions (fromMaybe mempty d.permissions)

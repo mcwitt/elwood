@@ -65,7 +65,7 @@ instance Arbitrary CacheOverrides where
   arbitrary = CacheOverrides <$> arbitrary <*> arbitrary
 
 instance Arbitrary P.Positive where
-  arbitrary = P.unsafePositive . getPositive <$> arbitrary
+  arbitrary = fromIntegral . getPositive @Int <$> arbitrary
 
 instance Arbitrary PromptInput where
   arbitrary =
@@ -139,9 +139,9 @@ overrideTests =
               AgentOverrides
                 (Just "model-a")
                 (Just ThinkingOff)
-                (Just (P.unsafePositive 10))
+                (Just 10)
                 (Just (CacheOverrides (Just True) (Just CacheTtl5Min)))
-                (Just (P.unsafePositive 8192))
+                (Just 8192)
                 (Just [WorkspaceFile "SOUL.md"])
                 (Just ToolSearchDisabled)
                 (Just mempty)
@@ -152,9 +152,9 @@ overrideTests =
               AgentProfile
                 "model-x"
                 (ThinkingBudget 4096)
-                (P.unsafePositive 15)
+                15
                 (Just CacheTtl1Hour)
-                (P.unsafePositive 32768)
+                32768
                 [InlineText "test"]
                 (ToolSearchEnabled ["run_command"])
                 defaultPermissionConfig
@@ -164,9 +164,9 @@ overrideTests =
               AgentProfile
                 "model-x"
                 ThinkingOff
-                (P.unsafePositive 15)
+                15
                 Nothing
-                (P.unsafePositive 32768)
+                32768
                 [InlineText "test"]
                 ToolSearchDisabled
                 defaultPermissionConfig
@@ -185,8 +185,8 @@ resolveTests =
         let s = resolveProfile mempty
         s.model @?= "claude-sonnet-4-20250514"
         s.thinking @?= ThinkingOff
-        s.maxIterations @?= P.unsafePositive 20
-        s.maxTokens @?= P.unsafePositive 16384
+        s.maxIterations @?= 20
+        s.maxTokens @?= 16384
         s.systemPrompt @?= [WorkspaceFile "SOUL.md"]
         s.toolSearch @?= ToolSearchDisabled
         s.permissions @?= resolvePermissions mempty,
@@ -201,12 +201,12 @@ resolveTests =
             s = resolveProfile o
         s.cache @?= Just CacheTtl1Hour,
       testCase "overrides are applied" $ do
-        let o = agentDefaults <> AgentOverrides (Just "custom-model") Nothing (Just (P.unsafePositive 50)) Nothing (Just (P.unsafePositive 8192)) Nothing Nothing Nothing
+        let o = agentDefaults <> AgentOverrides (Just "custom-model") Nothing (Just 50) Nothing (Just 8192) Nothing Nothing Nothing
             s = resolveProfile o
         s.model @?= "custom-model"
         s.thinking @?= ThinkingOff
-        s.maxIterations @?= P.unsafePositive 50
-        s.maxTokens @?= P.unsafePositive 8192
+        s.maxIterations @?= 50
+        s.maxTokens @?= 8192
     ]
 
 permissionsMergeTests :: TestTree
@@ -234,15 +234,15 @@ permissionsMergeTests =
                   dangerousPatterns = ["\\brm\\b"],
                   toolPolicies = Map.singleton "run_command" PolicyAsk,
                   defaultPolicy = PolicyAllow,
-                  approvalTimeoutSeconds = P.unsafePositive 120
+                  approvalTimeoutSeconds = 120
                 }
             profile =
               AgentProfile
                 "model"
                 ThinkingOff
-                (P.unsafePositive 20)
+                20
                 (Just CacheTtl5Min)
-                (P.unsafePositive 16384)
+                16384
                 [WorkspaceFile "SOUL.md"]
                 ToolSearchDisabled
                 pc

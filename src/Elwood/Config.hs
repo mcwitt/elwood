@@ -43,7 +43,7 @@ import Elwood.AgentSettings
   )
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), PermissionConfigFile (..))
-import Elwood.Positive (Positive, unsafePositive)
+import Elwood.Positive (Positive)
 import Elwood.Webhook.Types
   ( DeliveryTargetFile (..),
     WebhookConfig (..),
@@ -262,10 +262,10 @@ data CompactionConfigFile = CompactionConfigFile
 resolveCompaction :: CompactionConfigFile -> CompactionConfig
 resolveCompaction ccf =
   CompactionConfig
-    { tokenThreshold = fromMaybe (unsafePositive 50000) ccf.tokenThreshold,
+    { tokenThreshold = fromMaybe 50000 ccf.tokenThreshold,
       model = fromMaybe "claude-3-5-haiku-20241022" ccf.model,
       prompt = ccf.prompt,
-      strategy = fromMaybe (CKeepTurns (unsafePositive 10)) ccf.strategy
+      strategy = fromMaybe (CKeepTurns 10) ccf.strategy
     }
 
 -- | Pruning configuration from YAML file

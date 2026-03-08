@@ -29,7 +29,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Claude.Types (ToolName)
-import Elwood.Positive (Positive, unsafePositive)
+import Elwood.Positive (Positive)
 import GHC.Generics (Generic)
 import Text.Regex.TDFA ((=~))
 
@@ -147,7 +147,7 @@ permissionDefaults =
       dangerousPatterns = Just [],
       toolPolicies = Just Map.empty,
       defaultPolicy = Just PolicyAllow,
-      approvalTimeoutSeconds = Just (unsafePositive 300)
+      approvalTimeoutSeconds = Just 300
     }
 
 -- | Resolve a partial permission config by layering over 'permissionDefaults'.
@@ -159,7 +159,7 @@ resolvePermissions pcf =
           dangerousPatterns = fromMaybe [] d.dangerousPatterns,
           toolPolicies = fromMaybe Map.empty d.toolPolicies,
           defaultPolicy = fromMaybe PolicyAllow d.defaultPolicy,
-          approvalTimeoutSeconds = fromMaybe (unsafePositive 300) d.approvalTimeoutSeconds
+          approvalTimeoutSeconds = fromMaybe 300 d.approvalTimeoutSeconds
         }
 
 -- | Convert a resolved 'PermissionConfig' back to a 'PermissionConfigFile' (all 'Just').

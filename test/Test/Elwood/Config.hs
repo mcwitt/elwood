@@ -20,7 +20,6 @@ import Elwood.Config
     resolvePruning,
   )
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
-import Elwood.Positive (unsafePositive)
 import Elwood.Thinking (ThinkingEffort (..), ThinkingLevel (..), parseThinkingLevel)
 import Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..))
 import Paths_elwood (getDataFileName)
@@ -46,14 +45,14 @@ compactionConfigTests =
     [ testCase "has sensible defaults" $ do
         let cc =
               CompactionConfig
-                { tokenThreshold = unsafePositive 50000,
+                { tokenThreshold = 50000,
                   model = "claude-3-5-haiku-20241022",
                   prompt = Nothing,
-                  strategy = CKeepTurns (unsafePositive 10)
+                  strategy = CKeepTurns 10
                 }
-        cc.tokenThreshold @?= unsafePositive 50000
+        cc.tokenThreshold @?= 50000
         cc.model @?= "claude-3-5-haiku-20241022"
-        cc.strategy @?= CKeepTurns (unsafePositive 10)
+        cc.strategy @?= CKeepTurns 10
     ]
 
 thinkingLevelTests :: TestTree
@@ -295,8 +294,8 @@ exampleConfigTests =
         let tc = head config.telegramChats
         tc.id_ @?= 123456789
         tc.session @?= Named "main"
-        config.compaction.tokenThreshold @?= unsafePositive 50000
-        config.compaction.strategy @?= CKeepTurns (unsafePositive 10)
+        config.compaction.tokenThreshold @?= 50000
+        config.compaction.strategy @?= CKeepTurns 10
         -- Verify delivery target from example config
         let webhooks = config.webhook.webhooks
         length webhooks @?= 1

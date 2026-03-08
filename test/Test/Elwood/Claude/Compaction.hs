@@ -5,7 +5,6 @@ import Data.Text qualified as T
 import Elwood.Claude.Compaction (estimateTokens, extractText, formatMessagesForSummary, strategySplit)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolUseId (..), turnBoundaryIndices)
 import Elwood.Config (CompactionStrategy (..))
-import Elwood.Positive (unsafePositive)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
@@ -123,7 +122,7 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 3"],
                     ClaudeMessage Assistant [TextBlock "Response 3"]
                   ]
-            case strategySplit (CKeepTurns (unsafePositive 2)) msgs of
+            case strategySplit (CKeepTurns 2) msgs of
               Nothing -> assertFailure "Expected Just, got Nothing"
               Just (old, recent) -> do
                 length old @?= 2 -- Turn 1 + Response 1
@@ -135,8 +134,8 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 2"],
                     ClaudeMessage Assistant [TextBlock "Response 2"]
                   ]
-            strategySplit (CKeepTurns (unsafePositive 2)) msgs @?= Nothing
-            strategySplit (CKeepTurns (unsafePositive 3)) msgs @?= Nothing,
+            strategySplit (CKeepTurns 2) msgs @?= Nothing
+            strategySplit (CKeepTurns 3) msgs @?= Nothing,
           testCase "splits at turn boundary with tool pairs before it" $ do
             -- Turn boundaries at 0, 3, 5. CKeepTurns 2 splits at index 3.
             -- Tool pairs before the boundary stay in old.
@@ -149,13 +148,13 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 3"],
                     ClaudeMessage Assistant [TextBlock "Response 3"]
                   ]
-            case strategySplit (CKeepTurns (unsafePositive 2)) msgs of
+            case strategySplit (CKeepTurns 2) msgs of
               Nothing -> assertFailure "Expected Just, got Nothing"
               Just (old, recent) -> do
                 length old @?= 3 -- Turn 1 + tool_use + tool_result
                 length recent @?= 4,
           testCase "empty message list returns Nothing" $
-            strategySplit (CKeepTurns (unsafePositive 5)) [] @?= Nothing
+            strategySplit (CKeepTurns 5) [] @?= Nothing
         ],
       testGroup
         "CKeepFraction"

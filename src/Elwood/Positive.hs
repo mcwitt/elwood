@@ -1,20 +1,23 @@
 module Elwood.Positive
   ( Positive (getPositive),
-    unsafePositive,
   )
 where
 
 import Data.Aeson (FromJSON (..), withScientific)
 
--- | A positive integer (>= 1). Constructor not exported; use 'unsafePositive'.
+-- | A positive integer (>= 1). Use numeric literals (via the 'Num' instance).
 newtype Positive = UnsafePositive {getPositive :: Int}
   deriving stock (Show, Eq, Ord)
 
--- | Construct from a known-good literal. Errors on <= 0.
-unsafePositive :: Int -> Positive
-unsafePositive n
-  | n >= 1 = UnsafePositive n
-  | otherwise = error $ "unsafePositive: expected >= 1, got " <> show n
+instance Num Positive where
+  fromInteger n
+    | n >= 1 = UnsafePositive (fromInteger n)
+    | otherwise = error $ "Positive.fromInteger: expected >= 1, got " <> show n
+  (+) = error "Positive: (+) not supported"
+  (*) = error "Positive: (*) not supported"
+  abs = error "Positive: abs not supported"
+  signum = error "Positive: signum not supported"
+  negate = error "Positive: negate not supported"
 
 instance FromJSON Positive where
   parseJSON = withScientific "Positive" $ \s ->
