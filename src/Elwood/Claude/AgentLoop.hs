@@ -73,8 +73,8 @@ data AgentConfig = AgentConfig
     onBeforeApiCall :: Maybe (IO ()),
     -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
     toolSearch :: Maybe (Set ToolName),
-    -- | Pruning configuration for tool results
-    pruningConfig :: PruningConfig,
+    -- | Pruning configuration (Nothing = disabled)
+    pruningConfig :: Maybe PruningConfig,
     -- | Prune horizon: tool results before this index are replaced with placeholders
     pruneHorizon :: Int,
     -- | Structured output format (e.g., JSON schema constraint).
@@ -125,10 +125,13 @@ agentLoop cfg msgs iteration
 
       -- Always send all tool schemas (tool search handles filtering server-side)
       let schemas = toolSchemas reg
-          prunedMsgs =
-            pruneThinkingBlocks cfg.pruningConfig.thinking cfg.pruneHorizon
-              . pruneToolInputs cfg.pruningConfig cfg.pruneHorizon
-              $ pruneToolResults cfg.pruningConfig cfg.pruneHorizon msgs
+          prunedMsgs = case cfg.pruningConfig of
+            Nothing -> msgs
+            Just pcfg ->
+              let pruneTools = case pcfg.tools of
+                    Nothing -> id
+                    Just tc -> pruneToolInputs tc cfg.pruneHorizon . pruneToolResults tc cfg.pruneHorizon
+               in pruneThinkingBlocks pcfg.thinking cfg.pruneHorizon . pruneTools $ msgs
 
       -- Record estimated input token breakdown
       cfg.observer.onInputEstimate cfg.systemPrompt cfg.toolSearch prunedMsgs schemas

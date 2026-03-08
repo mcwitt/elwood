@@ -12,7 +12,9 @@ module Elwood.Config
     ThinkingPruningConfigFile (..),
     ToolPruningConfigFile (..),
     ToolDirectionConfigFile (..),
+    resolveCompaction,
     resolvePruning,
+    isEnabled,
     MCPServerConfig (..),
     PermissionConfig (..),
     PermissionConfigFile (..),
@@ -108,10 +110,10 @@ data Config = Config
     telegramChats :: [TelegramChatConfig],
     -- | Resolved agent profile (model, thinking, permissions, etc.)
     agentProfile :: AgentProfile,
-    -- | Context compaction configuration
-    compaction :: CompactionConfig,
-    -- | Tool result pruning configuration
-    pruning :: PruningConfig,
+    -- | Context compaction configuration (Nothing = disabled)
+    compaction :: Maybe CompactionConfig,
+    -- | Tool result pruning configuration (Nothing = disabled)
+    pruning :: Maybe PruningConfig,
     -- | MCP server configurations
     mcpServers :: [MCPServerConfig],
     -- | Webhook server configuration
@@ -148,10 +150,10 @@ data PruningConfig = PruningConfig
     strategy :: PruningStrategy,
     -- | Thinking block pruning (Nothing = keep all thinking blocks)
     thinking :: Maybe ThinkingPruningConfig,
-    -- | Tool result/input pruning configuration
-    tools :: ToolPruningConfig
+    -- | Tool result/input pruning configuration (Nothing = disabled)
+    tools :: Maybe ToolPruningConfig
   }
-  deriving stock (Show, Generic)
+  deriving stock (Show, Eq, Generic)
 
 -- | Configuration for thinking block pruning
 newtype ThinkingPruningConfig = ThinkingPruningConfig
@@ -173,7 +175,7 @@ data ToolPruningConfig = ToolPruningConfig
     -- | Resolved configuration for tool outputs
     output :: ToolDirectionConfig
   }
-  deriving stock (Show, Generic)
+  deriving stock (Show, Eq, Generic)
 
 -- | Per-direction (input/output) pruning configuration
 data ToolDirectionConfig = ToolDirectionConfig
@@ -184,7 +186,7 @@ data ToolDirectionConfig = ToolDirectionConfig
     -- | Characters to keep from the end
     tailChars :: Int
   }
-  deriving stock (Show, Generic)
+  deriving stock (Show, Eq, Generic)
 
 -- | Configuration for an MCP server
 data MCPServerConfig = MCPServerConfig
@@ -251,26 +253,63 @@ data DelegateConfigFile = DelegateConfigFile
 
 -- | Compaction configuration from YAML file
 data CompactionConfigFile = CompactionConfigFile
-  { tokenThreshold :: Maybe Positive,
+  { enable :: Maybe Bool,
+    tokenThreshold :: Maybe Positive,
     model :: Maybe Text,
     prompt :: Maybe Text,
     strategy :: Maybe CompactionStrategy
   }
   deriving stock (Show, Generic)
 
--- | Resolve a partial compaction config using 'fromMaybe' for each field.
-resolveCompaction :: CompactionConfigFile -> CompactionConfig
-resolveCompaction ccf =
-  CompactionConfig
-    { tokenThreshold = fromMaybe 50000 ccf.tokenThreshold,
-      model = fromMaybe "claude-3-5-haiku-20241022" ccf.model,
-      prompt = ccf.prompt,
-      strategy = fromMaybe (CKeepTurns 10) ccf.strategy
+-- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
+instance Semigroup CompactionConfigFile where
+  a <> b =
+    CompactionConfigFile
+      { enable = b.enable <|> a.enable,
+        tokenThreshold = b.tokenThreshold <|> a.tokenThreshold,
+        model = b.model <|> a.model,
+        prompt = b.prompt <|> a.prompt,
+        strategy = b.strategy <|> a.strategy
+      }
+
+instance Monoid CompactionConfigFile where
+  mempty = CompactionConfigFile Nothing Nothing Nothing Nothing Nothing
+
+-- | @isEnabled Nothing == True@; only an explicit @Just False@ disables.
+isEnabled :: Maybe Bool -> Bool
+isEnabled = fromMaybe True
+
+-- | Default compaction overrides (all 'Just' with hardcoded defaults).
+compactionDefaults :: CompactionConfigFile
+compactionDefaults =
+  CompactionConfigFile
+    { enable = Just True,
+      tokenThreshold = Just 50000,
+      model = Just "claude-3-5-haiku-20241022",
+      prompt = Nothing,
+      strategy = Just (CKeepTurns 10)
     }
+
+-- | Resolve a partial compaction config by layering over 'compactionDefaults'.
+-- Returns 'Nothing' when @enable = False@.
+resolveCompaction :: CompactionConfigFile -> Maybe CompactionConfig
+resolveCompaction ccf
+  | isEnabled d.enable =
+      Just
+        CompactionConfig
+          { tokenThreshold = fromMaybe 50000 d.tokenThreshold,
+            model = fromMaybe "claude-3-5-haiku-20241022" d.model,
+            prompt = d.prompt,
+            strategy = fromMaybe (CKeepTurns 10) d.strategy
+          }
+  | otherwise = Nothing
+  where
+    d = compactionDefaults <> ccf
 
 -- | Pruning configuration from YAML file
 data PruningConfigFile = PruningConfigFile
-  { strategy :: Maybe PruningStrategy,
+  { enable :: Maybe Bool,
+    strategy :: Maybe PruningStrategy,
     -- | Outer 'Maybe' = "not specified in this layer";
     -- inner 'Maybe' = "explicitly set to null (disable thinking pruning)".
     thinking :: Maybe (Maybe ThinkingPruningConfigFile),
@@ -279,14 +318,16 @@ data PruningConfigFile = PruningConfigFile
   deriving stock (Show, Generic)
 
 -- | Thinking pruning configuration from YAML file
-newtype ThinkingPruningConfigFile = ThinkingPruningConfigFile
-  { strategy :: Maybe PruningStrategy
+data ThinkingPruningConfigFile = ThinkingPruningConfigFile
+  { enable :: Maybe Bool,
+    strategy :: Maybe PruningStrategy
   }
   deriving stock (Show, Eq, Generic)
 
 -- | Tool pruning configuration from YAML file
 data ToolPruningConfigFile = ToolPruningConfigFile
-  { headChars :: Maybe Int,
+  { enable :: Maybe Bool,
+    headChars :: Maybe Int,
     tailChars :: Maybe Int,
     strategy :: Maybe PruningStrategy,
     input :: Maybe ToolDirectionConfigFile,
@@ -306,54 +347,74 @@ data ToolDirectionConfigFile = ToolDirectionConfigFile
 instance Semigroup PruningConfigFile where
   a <> b =
     PruningConfigFile
-      { strategy = b.strategy <|> a.strategy,
+      { enable = b.enable <|> a.enable,
+        strategy = b.strategy <|> a.strategy,
         thinking = b.thinking <|> a.thinking,
         tools = b.tools <|> a.tools
       }
 
 instance Monoid PruningConfigFile where
-  mempty = PruningConfigFile Nothing Nothing Nothing
+  mempty = PruningConfigFile Nothing Nothing Nothing Nothing
 
 -- | Default pruning overrides (all 'Just' with hardcoded defaults).
 pruningDefaults :: PruningConfigFile
 pruningDefaults =
   PruningConfigFile
-    { strategy = Just (KeepTurns 3),
-      thinking = Just (Just (ThinkingPruningConfigFile Nothing)),
+    { enable = Just True,
+      strategy = Just (KeepTurns 3),
+      thinking = Just (Just (ThinkingPruningConfigFile Nothing Nothing)),
       tools = Nothing
     }
 
 -- | Resolve a partial pruning config by layering over 'pruningDefaults'.
-resolvePruning :: PruningConfigFile -> PruningConfig
-resolvePruning pcf =
-  let d = pruningDefaults <> pcf
-      globalStrategy = fromMaybe (KeepTurns 3) d.strategy
-      thinkingCfg = case fromMaybe (Just (ThinkingPruningConfigFile Nothing)) d.thinking of
-        Nothing -> Nothing
-        Just tcf -> Just ThinkingPruningConfig {strategy = fromMaybe globalStrategy tcf.strategy}
-      toolsCf = fromMaybe (ToolPruningConfigFile Nothing Nothing Nothing Nothing Nothing) d.tools
-      toolsHeadChars = fromMaybe 500 toolsCf.headChars
-      toolsTailChars = fromMaybe 500 toolsCf.tailChars
-      toolsStrategy = fromMaybe globalStrategy toolsCf.strategy
-      mkDirection dcf =
-        let dc = fromMaybe (ToolDirectionConfigFile Nothing Nothing Nothing) dcf
-         in ToolDirectionConfig
-              { strategy = fromMaybe toolsStrategy dc.strategy,
-                headChars = fromMaybe toolsHeadChars dc.headChars,
-                tailChars = fromMaybe toolsTailChars dc.tailChars
-              }
-   in PruningConfig
-        { strategy = globalStrategy,
-          thinking = thinkingCfg,
-          tools =
-            ToolPruningConfig
-              { headChars = toolsHeadChars,
-                tailChars = toolsTailChars,
-                strategy = toolsStrategy,
-                input = mkDirection toolsCf.input,
-                output = mkDirection toolsCf.output
-              }
-        }
+-- Returns 'Nothing' when @enable = False@.  Sub-component enable flags
+-- cascade from the top-level enable and collapse into 'Maybe' wrappers.
+resolvePruning :: PruningConfigFile -> Maybe PruningConfig
+resolvePruning pcf
+  | not pruningEnabled = Nothing
+  | otherwise =
+      Just
+        PruningConfig
+          { strategy = globalStrategy,
+            thinking = thinkingCfg,
+            tools = toolsCfg
+          }
+  where
+    d = pruningDefaults <> pcf
+    pruningEnabled = isEnabled d.enable
+    globalStrategy = fromMaybe (KeepTurns 3) d.strategy
+
+    -- Thinking: disabled by thinking=null, thinking.enable=false, or pruning.enable=false
+    thinkingCfg = case fromMaybe (Just (ThinkingPruningConfigFile Nothing Nothing)) d.thinking of
+      Nothing -> Nothing
+      Just tcf
+        | isEnabled tcf.enable ->
+            Just ThinkingPruningConfig {strategy = fromMaybe globalStrategy tcf.strategy}
+        | otherwise -> Nothing
+
+    -- Tools: disabled by tools.enable=false (inherits pruning.enable by default)
+    toolsCf = fromMaybe (ToolPruningConfigFile Nothing Nothing Nothing Nothing Nothing Nothing) d.tools
+    toolsCfg
+      | isEnabled toolsCf.enable =
+          let toolsHeadChars = fromMaybe 500 toolsCf.headChars
+              toolsTailChars = fromMaybe 500 toolsCf.tailChars
+              toolsStrategy = fromMaybe globalStrategy toolsCf.strategy
+              mkDirection dcf =
+                let dc = fromMaybe (ToolDirectionConfigFile Nothing Nothing Nothing) dcf
+                 in ToolDirectionConfig
+                      { strategy = fromMaybe toolsStrategy dc.strategy,
+                        headChars = fromMaybe toolsHeadChars dc.headChars,
+                        tailChars = fromMaybe toolsTailChars dc.tailChars
+                      }
+           in Just
+                ToolPruningConfig
+                  { headChars = toolsHeadChars,
+                    tailChars = toolsTailChars,
+                    strategy = toolsStrategy,
+                    input = mkDirection toolsCf.input,
+                    output = mkDirection toolsCf.output
+                  }
+      | otherwise = Nothing
 
 -- | MCP server configuration from YAML file
 data MCPServerConfigFile = MCPServerConfigFile
@@ -395,31 +456,36 @@ instance FromJSON ConfigFile where
 
 instance FromJSON CompactionConfigFile where
   parseJSON = withObject "CompactionConfigFile" $ \v -> do
-    rejectUnknownKeys "CompactionConfigFile" ["token_threshold", "model", "prompt", "strategy"] v
+    rejectUnknownKeys "CompactionConfigFile" ["enable", "token_threshold", "model", "prompt", "strategy"] v
     CompactionConfigFile
-      <$> v .:? "token_threshold"
+      <$> v .:? "enable"
+      <*> v .:? "token_threshold"
       <*> v .:? "model"
       <*> v .:? "prompt"
       <*> v .:? "strategy"
 
 instance FromJSON PruningConfigFile where
   parseJSON = withObject "PruningConfigFile" $ \v -> do
-    rejectUnknownKeys "PruningConfigFile" ["strategy", "thinking", "tools"] v
+    rejectUnknownKeys "PruningConfigFile" ["enable", "strategy", "thinking", "tools"] v
     PruningConfigFile
-      <$> v .:? "strategy"
+      <$> v .:? "enable"
+      <*> v .:? "strategy"
       <*> v .:! "thinking"
       <*> v .:? "tools"
 
 instance FromJSON ThinkingPruningConfigFile where
   parseJSON = withObject "ThinkingPruningConfigFile" $ \v -> do
-    rejectUnknownKeys "ThinkingPruningConfigFile" ["strategy"] v
-    ThinkingPruningConfigFile <$> v .:? "strategy"
+    rejectUnknownKeys "ThinkingPruningConfigFile" ["enable", "strategy"] v
+    ThinkingPruningConfigFile
+      <$> v .:? "enable"
+      <*> v .:? "strategy"
 
 instance FromJSON ToolPruningConfigFile where
   parseJSON = withObject "ToolPruningConfigFile" $ \v -> do
-    rejectUnknownKeys "ToolPruningConfigFile" ["head_chars", "tail_chars", "strategy", "input", "output"] v
+    rejectUnknownKeys "ToolPruningConfigFile" ["enable", "head_chars", "tail_chars", "strategy", "input", "output"] v
     ToolPruningConfigFile
-      <$> v .:? "head_chars"
+      <$> v .:? "enable"
+      <*> v .:? "head_chars"
       <*> v .:? "tail_chars"
       <*> v .:? "strategy"
       <*> v .:? "input"
@@ -472,7 +538,7 @@ loadConfig path = do
   webhookSecretEnv <- fmap T.pack <$> lookupEnv "WEBHOOK_SECRET"
 
   -- Resolve sub-configs via monoid layering
-  let compact = resolveCompaction (fromMaybe (CompactionConfigFile Nothing Nothing Nothing Nothing) configFile.compaction)
+  let compact = resolveCompaction (fromMaybe mempty configFile.compaction)
   let prune = resolvePruning (fromMaybe mempty configFile.pruning)
   let profile = resolveProfile configFile.agentOverrides
 

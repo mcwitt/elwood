@@ -49,7 +49,7 @@ mkDelegateTaskTool ::
   ToolRegistry ->
   ApprovalFunction ->
   AgentProfile ->
-  PruningConfig ->
+  Maybe PruningConfig ->
   FilePath ->
   MetricsStore ->
   AgentPreset ->

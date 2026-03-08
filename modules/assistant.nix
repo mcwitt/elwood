@@ -230,6 +230,7 @@ let
         tool_use_messages = agentCfg.toolUseMessages;
 
         compaction = {
+          enable = agentCfg.compaction.enable;
           token_threshold = agentCfg.compaction.tokenThreshold;
           model = agentCfg.compaction.model;
           strategy = mkStrategyYaml agentCfg.compaction.strategy;
@@ -239,6 +240,7 @@ let
         };
 
         pruning = {
+          enable = agentCfg.pruning.enable;
           strategy = mkStrategyYaml agentCfg.pruning.strategy;
         }
         // (
@@ -255,6 +257,7 @@ let
         )
         // {
           tools = {
+            enable = agentCfg.pruning.tools.enable;
             head_chars = agentCfg.pruning.tools.headChars;
             tail_chars = agentCfg.pruning.tools.tailChars;
           }
@@ -901,6 +904,12 @@ let
         };
 
         compaction = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Enable context compaction. When false, compaction is disabled entirely.";
+          };
+
           tokenThreshold = lib.mkOption {
             type = lib.types.int;
             default = 50000;
@@ -929,6 +938,12 @@ let
         };
 
         pruning = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Enable pruning. When false, all pruning is disabled.";
+          };
+
           strategy = lib.mkOption {
             type = strategySubmodule { };
             default = { };
@@ -950,6 +965,12 @@ let
           };
 
           tools = {
+            enable = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Enable tool pruning. When false, tool inputs/outputs are not pruned.";
+            };
+
             headChars = lib.mkOption {
               type = lib.types.int;
               default = 500;

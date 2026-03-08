@@ -160,58 +160,63 @@ handleTelegramMessage env msg =
 
     handleCompact :: IO (Maybe Text)
     handleCompact = do
-      case sessionToConversationId chatSession of
+      case env.compaction of
         Nothing -> do
-          logInfo lgr "Compact requested for isolated chat" [("chat_id", T.pack (show chatIdVal))]
-          pure (Just $ formatNotify Info "This chat has no persistent session to compact")
-        Just cid -> withSessionLock env.sessionLocks cid $ do
-          conv <- env.conversations.getConversation cid
-          let msgs = conv.messages
-              msgCount = length msgs
-          if null msgs
-            then do
-              logInfo lgr "Compact requested on empty conversation" [("chat_id", T.pack (show chatIdVal))]
-              pure (Just $ formatNotify Info "Conversation is empty, nothing to compact")
-            else
-              if msgCount < 4
+          logInfo lgr "Compact requested but compaction is disabled" [("chat_id", T.pack (show chatIdVal))]
+          pure (Just $ formatNotify Info "Compaction is disabled")
+        Just compactCfg ->
+          case sessionToConversationId chatSession of
+            Nothing -> do
+              logInfo lgr "Compact requested for isolated chat" [("chat_id", T.pack (show chatIdVal))]
+              pure (Just $ formatNotify Info "This chat has no persistent session to compact")
+            Just cid -> withSessionLock env.sessionLocks cid $ do
+              conv <- env.conversations.getConversation cid
+              let msgs = conv.messages
+                  msgCount = length msgs
+              if null msgs
                 then do
-                  logInfo lgr "Compact requested on short conversation" [("chat_id", T.pack (show chatIdVal)), ("message_count", T.pack (show msgCount))]
-                  pure (Just $ formatNotify Info $ "Conversation is too short to compact (" <> T.pack (show msgCount) <> " messages)")
-                else do
-                  let beforeTokens = Compaction.estimateTokens msgs
-                  result <-
-                    (Right <$> Compaction.compactMessages lgr env.claude env.compaction (recordCompaction env.metrics) (recordApiResponse env.metrics env.agentProfile.model "telegram") (env.conversations.replaceMessages cid) msgs)
-                      `catch` \(e :: SomeException) -> do
-                        logError lgr "Manual compaction failed" [("chat_id", T.pack (show chatIdVal)), ("error", T.pack (show e))]
-                        pure (Left e)
-                  case result of
-                    Left _ ->
-                      pure (Just $ formatNotify Error "Compaction failed")
-                    Right compacted -> do
-                      let afterTokens = Compaction.estimateTokens compacted
-                          afterCount = length compacted
-                      logInfo
-                        lgr
-                        "Manual compaction complete"
-                        [ ("chat_id", T.pack (show chatIdVal)),
-                          ("before_tokens", T.pack (show beforeTokens)),
-                          ("after_tokens", T.pack (show afterTokens)),
-                          ("before_messages", T.pack (show msgCount)),
-                          ("after_messages", T.pack (show afterCount))
-                        ]
-                      pure
-                        ( Just $
-                            formatNotify Info $
-                              "Compaction complete: ~"
-                                <> T.pack (show beforeTokens)
-                                <> " → ~"
-                                <> T.pack (show afterTokens)
-                                <> " tokens ("
-                                <> T.pack (show msgCount)
-                                <> " → "
-                                <> T.pack (show afterCount)
-                                <> " messages)"
-                        )
+                  logInfo lgr "Compact requested on empty conversation" [("chat_id", T.pack (show chatIdVal))]
+                  pure (Just $ formatNotify Info "Conversation is empty, nothing to compact")
+                else
+                  if msgCount < 4
+                    then do
+                      logInfo lgr "Compact requested on short conversation" [("chat_id", T.pack (show chatIdVal)), ("message_count", T.pack (show msgCount))]
+                      pure (Just $ formatNotify Info $ "Conversation is too short to compact (" <> T.pack (show msgCount) <> " messages)")
+                    else do
+                      let beforeTokens = Compaction.estimateTokens msgs
+                      result <-
+                        (Right <$> Compaction.compactMessages lgr env.claude compactCfg (recordCompaction env.metrics) (recordApiResponse env.metrics env.agentProfile.model "telegram") (env.conversations.replaceMessages cid) msgs)
+                          `catch` \(e :: SomeException) -> do
+                            logError lgr "Manual compaction failed" [("chat_id", T.pack (show chatIdVal)), ("error", T.pack (show e))]
+                            pure (Left e)
+                      case result of
+                        Left _ ->
+                          pure (Just $ formatNotify Error "Compaction failed")
+                        Right compacted -> do
+                          let afterTokens = Compaction.estimateTokens compacted
+                              afterCount = length compacted
+                          logInfo
+                            lgr
+                            "Manual compaction complete"
+                            [ ("chat_id", T.pack (show chatIdVal)),
+                              ("before_tokens", T.pack (show beforeTokens)),
+                              ("after_tokens", T.pack (show afterTokens)),
+                              ("before_messages", T.pack (show msgCount)),
+                              ("after_messages", T.pack (show afterCount))
+                            ]
+                          pure
+                            ( Just $
+                                formatNotify Info $
+                                  "Compaction complete: ~"
+                                    <> T.pack (show beforeTokens)
+                                    <> " → ~"
+                                    <> T.pack (show afterTokens)
+                                    <> " tokens ("
+                                    <> T.pack (show msgCount)
+                                    <> " → "
+                                    <> T.pack (show afterCount)
+                                    <> " messages)"
+                            )
 
     handleContext :: IO (Maybe Text)
     handleContext = do
@@ -244,12 +249,16 @@ handleTelegramMessage env msg =
                         ("Tool calls", tb.toolCallTokens),
                         ("Tool results", tb.toolResultTokens)
                       ]
-                  tokenThreshold = env.compaction.tokenThreshold.getPositive
-                  thresholdPct = (totalTokens * 100) `div` tokenThreshold
                   header = "Context usage:"
+                  thresholdInfo = case env.compaction of
+                    Just cc ->
+                      let tokenThreshold = cc.tokenThreshold.getPositive
+                          thresholdPct = (totalTokens * 100) `div` tokenThreshold
+                       in " (" <> T.pack (show thresholdPct) <> "% of compaction threshold)"
+                    Nothing -> ""
                   summary =
                     [ "• " <> T.pack (show msgCount) <> " messages",
-                      "• ~" <> formatKTok totalTokens <> " tokens (" <> T.pack (show thresholdPct) <> "% of compaction threshold)"
+                      "• ~" <> formatKTok totalTokens <> " tokens" <> thresholdInfo
                     ]
                   catLines = map (\(label, tok) -> "• " <> label <> ": " <> pct tok) categories
                   cacheTtl

@@ -98,9 +98,9 @@ data AppEnv = AppEnv
     conversations :: Claude.ConversationStore,
     registry :: Tools.ToolRegistry,
     requestApproval :: Tools.ApprovalFunction,
-    compaction :: CompactionConfig,
-    -- | Tool result pruning configuration
-    pruning :: PruningConfig,
+    compaction :: Maybe CompactionConfig,
+    -- | Tool result pruning configuration (Nothing = disabled)
+    pruning :: Maybe PruningConfig,
     -- | Directory containing workspace files
     workspaceDir :: FilePath,
     -- | Resolved agent profile (model, thinking, permissions, system prompt, tool search, etc.)
@@ -183,15 +183,17 @@ handleEventCore env event callbacks = do
       conv <- env.conversations.getConversation cid
       -- Run compaction before the agent turn; if compaction occurs,
       -- replaceMessages is called internally (resetting cache expiry to epoch)
-      history <-
-        compactIfNeeded
-          lgr
-          env.claude
-          env.compaction
-          observer.onCompaction
-          observer.onApiResponse
-          (env.conversations.replaceMessages cid)
-          conv.messages
+      history <- case env.compaction of
+        Nothing -> pure conv.messages
+        Just compactCfg ->
+          compactIfNeeded
+            lgr
+            env.claude
+            compactCfg
+            observer.onCompaction
+            observer.onApiResponse
+            (env.conversations.replaceMessages cid)
+            conv.messages
       -- Re-read conversation for possibly updated cache expiry
       conv' <- env.conversations.getConversation cid
       let cacheExpired = now > conv'.cacheExpiresAt

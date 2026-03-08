@@ -22,7 +22,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), turnBoundaryIndices)
-import Elwood.Config (PruningConfig (..), PruningStrategy (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
+import Elwood.Config (PruningStrategy (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
 
 -- | Conservative overhead estimate for the pruning indicator text.
 indicatorOverhead :: Int
@@ -99,8 +99,8 @@ pruneBeforeHorizon strat n f msgs =
 -- | Replace tool-result content with soft-pruned versions in messages before
 -- the effective horizon.
 -- Error results ('isError' = True) are never pruned.
-pruneToolResults :: PruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
-pruneToolResults cfg n = pruneBeforeHorizon cfg.tools.output.strategy n (pruneMessage cfg.tools.output)
+pruneToolResults :: ToolPruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
+pruneToolResults cfg n = pruneBeforeHorizon cfg.output.strategy n (pruneMessage cfg.output)
 
 -- | Prune tool results inside a single message.
 -- Only user messages can contain 'ToolResultBlock's, but we pattern-match
@@ -156,8 +156,8 @@ isThinking _ = False
 -- protected boundary.  Inputs are serialized to JSON text and soft-pruned;
 -- only replaced when 'softPrune' returns 'Just' (i.e. the content is large
 -- enough to warrant truncation).
-pruneToolInputs :: PruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
-pruneToolInputs cfg n = pruneBeforeHorizon cfg.tools.input.strategy n (pruneAssistantInputs cfg.tools.input)
+pruneToolInputs :: ToolPruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
+pruneToolInputs cfg n = pruneBeforeHorizon cfg.input.strategy n (pruneAssistantInputs cfg.input)
 
 pruneAssistantInputs :: ToolDirectionConfig -> ClaudeMessage -> ClaudeMessage
 pruneAssistantInputs dir (ClaudeMessage Assistant blocks) =

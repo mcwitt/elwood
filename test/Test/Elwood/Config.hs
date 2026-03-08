@@ -126,64 +126,82 @@ pruningResolutionTests =
   testGroup
     "PruningConfig resolution"
     [ testCase "empty config resolves to defaults" $ do
-        let cfg = resolvePruning mempty
+        Just cfg <- pure $ resolvePruning mempty
+        Just tc <- pure cfg.tools
         cfg.strategy @?= KeepTurns 3
         cfg.thinking @?= Just ThinkingPruningConfig {strategy = KeepTurns 3}
-        cfg.tools.headChars @?= 500
-        cfg.tools.tailChars @?= 500
-        cfg.tools.strategy @?= KeepTurns 3
-        cfg.tools.input.strategy @?= KeepTurns 3
-        cfg.tools.input.headChars @?= 500
-        cfg.tools.input.tailChars @?= 500
-        cfg.tools.output.strategy @?= KeepTurns 3
-        cfg.tools.output.headChars @?= 500
-        cfg.tools.output.tailChars @?= 500,
+        tc.headChars @?= 500
+        tc.tailChars @?= 500
+        tc.strategy @?= KeepTurns 3
+        tc.input.strategy @?= KeepTurns 3
+        tc.input.headChars @?= 500
+        tc.input.tailChars @?= 500
+        tc.output.strategy @?= KeepTurns 3
+        tc.output.headChars @?= 500
+        tc.output.tailChars @?= 500,
       testCase "global strategy cascades to thinking and directions" $ do
-        let cfg = resolvePruning (PruningConfigFile {strategy = Just (KeepTurns 7), thinking = Nothing, tools = Nothing})
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Just (KeepTurns 7), thinking = Nothing, tools = Nothing})
+        Just tc <- pure cfg.tools
         cfg.strategy @?= KeepTurns 7
         cfg.thinking @?= Just ThinkingPruningConfig {strategy = KeepTurns 7}
-        cfg.tools.strategy @?= KeepTurns 7
-        cfg.tools.input.strategy @?= KeepTurns 7
-        cfg.tools.output.strategy @?= KeepTurns 7,
+        tc.strategy @?= KeepTurns 7
+        tc.input.strategy @?= KeepTurns 7
+        tc.output.strategy @?= KeepTurns 7,
       testCase "per-direction strategy overrides tools level" $ do
         let inputCf = ToolDirectionConfigFile {strategy = Just (KeepTurns 10), headChars = Nothing, tailChars = Nothing}
-            toolsCf = ToolPruningConfigFile {headChars = Nothing, tailChars = Nothing, strategy = Nothing, input = Just inputCf, output = Nothing}
-            cfg = resolvePruning (PruningConfigFile {strategy = Just (KeepTurns 5), thinking = Nothing, tools = Just toolsCf})
-        cfg.tools.input.strategy @?= KeepTurns 10
-        cfg.tools.output.strategy @?= KeepTurns 5, -- output inherits global
+            toolsCf = ToolPruningConfigFile {enable = Nothing, headChars = Nothing, tailChars = Nothing, strategy = Nothing, input = Just inputCf, output = Nothing}
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Just (KeepTurns 5), thinking = Nothing, tools = Just toolsCf})
+        Just tc <- pure cfg.tools
+        tc.input.strategy @?= KeepTurns 10
+        tc.output.strategy @?= KeepTurns 5, -- output inherits global
       testCase "tools-level strategy overrides global" $ do
-        let toolsCf = ToolPruningConfigFile {headChars = Nothing, tailChars = Nothing, strategy = Just (KeepTurns 8), input = Nothing, output = Nothing}
-            cfg = resolvePruning (PruningConfigFile {strategy = Just (KeepTurns 3), thinking = Nothing, tools = Just toolsCf})
+        let toolsCf = ToolPruningConfigFile {enable = Nothing, headChars = Nothing, tailChars = Nothing, strategy = Just (KeepTurns 8), input = Nothing, output = Nothing}
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Just (KeepTurns 3), thinking = Nothing, tools = Just toolsCf})
+        Just tc <- pure cfg.tools
         cfg.strategy @?= KeepTurns 3 -- global unchanged
-        cfg.tools.strategy @?= KeepTurns 8
-        cfg.tools.input.strategy @?= KeepTurns 8 -- inherits tools
-        cfg.tools.output.strategy @?= KeepTurns 8, -- inherits tools
+        tc.strategy @?= KeepTurns 8
+        tc.input.strategy @?= KeepTurns 8 -- inherits tools
+        tc.output.strategy @?= KeepTurns 8, -- inherits tools
       testCase "thinking: null disables thinking pruning" $ do
-        let cfg = resolvePruning (PruningConfigFile {strategy = Nothing, thinking = Just Nothing, tools = Nothing})
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Just Nothing, tools = Nothing})
         cfg.thinking @?= Nothing,
       testCase "thinking: {} inherits global strategy" $ do
-        let cfg = resolvePruning (PruningConfigFile {strategy = Just (KeepTurns 5), thinking = Just (Just (ThinkingPruningConfigFile Nothing)), tools = Nothing})
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Just (KeepTurns 5), thinking = Just (Just (ThinkingPruningConfigFile Nothing Nothing)), tools = Nothing})
         cfg.thinking @?= Just ThinkingPruningConfig {strategy = KeepTurns 5},
       testCase "thinking strategy overrides global" $ do
-        let cfg = resolvePruning (PruningConfigFile {strategy = Just (KeepTurns 5), thinking = Just (Just (ThinkingPruningConfigFile (Just (KeepTurns 2)))), tools = Nothing})
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Just (KeepTurns 5), thinking = Just (Just (ThinkingPruningConfigFile Nothing (Just (KeepTurns 2)))), tools = Nothing})
         cfg.thinking @?= Just ThinkingPruningConfig {strategy = KeepTurns 2},
       testCase "tools headChars/tailChars cascade to directions" $ do
-        let toolsCf = ToolPruningConfigFile {headChars = Just 100, tailChars = Just 200, strategy = Nothing, input = Nothing, output = Nothing}
-            cfg = resolvePruning (PruningConfigFile {strategy = Nothing, thinking = Nothing, tools = Just toolsCf})
-        cfg.tools.headChars @?= 100
-        cfg.tools.tailChars @?= 200
-        cfg.tools.input.headChars @?= 100
-        cfg.tools.input.tailChars @?= 200
-        cfg.tools.output.headChars @?= 100
-        cfg.tools.output.tailChars @?= 200,
+        let toolsCf = ToolPruningConfigFile {enable = Nothing, headChars = Just 100, tailChars = Just 200, strategy = Nothing, input = Nothing, output = Nothing}
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Nothing, tools = Just toolsCf})
+        Just tc <- pure cfg.tools
+        tc.headChars @?= 100
+        tc.tailChars @?= 200
+        tc.input.headChars @?= 100
+        tc.input.tailChars @?= 200
+        tc.output.headChars @?= 100
+        tc.output.tailChars @?= 200,
       testCase "direction headChars/tailChars override tools level" $ do
         let outputCf = ToolDirectionConfigFile {strategy = Nothing, headChars = Just 50, tailChars = Just 75}
-            toolsCf = ToolPruningConfigFile {headChars = Just 100, tailChars = Just 200, strategy = Nothing, input = Nothing, output = Just outputCf}
-            cfg = resolvePruning (PruningConfigFile {strategy = Nothing, thinking = Nothing, tools = Just toolsCf})
-        cfg.tools.input.headChars @?= 100 -- inherits tools
-        cfg.tools.input.tailChars @?= 200 -- inherits tools
-        cfg.tools.output.headChars @?= 50 -- overridden
-        cfg.tools.output.tailChars @?= 75 -- overridden
+            toolsCf = ToolPruningConfigFile {enable = Nothing, headChars = Just 100, tailChars = Just 200, strategy = Nothing, input = Nothing, output = Just outputCf}
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Nothing, tools = Just toolsCf})
+        Just tc <- pure cfg.tools
+        tc.input.headChars @?= 100 -- inherits tools
+        tc.input.tailChars @?= 200 -- inherits tools
+        tc.output.headChars @?= 50 -- overridden
+        tc.output.tailChars @?= 75, -- overridden
+      testCase "enable = false disables all pruning" $ do
+        resolvePruning (PruningConfigFile {enable = Just False, strategy = Nothing, thinking = Nothing, tools = Nothing}) @?= Nothing,
+      testCase "thinking.enable = false disables thinking" $ do
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Just (Just (ThinkingPruningConfigFile (Just False) Nothing)), tools = Nothing})
+        cfg.thinking @?= Nothing,
+      testCase "tools.enable = false disables tools" $ do
+        let toolsCf = ToolPruningConfigFile {enable = Just False, headChars = Nothing, tailChars = Nothing, strategy = Nothing, input = Nothing, output = Nothing}
+        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Nothing, strategy = Nothing, thinking = Nothing, tools = Just toolsCf})
+        cfg.tools @?= (Nothing :: Maybe ToolPruningConfig),
+      testCase "pruning.enable = false overrides child enable = true" $ do
+        let toolsCf = ToolPruningConfigFile {enable = Just True, headChars = Nothing, tailChars = Nothing, strategy = Nothing, input = Nothing, output = Nothing}
+        resolvePruning (PruningConfigFile {enable = Just False, strategy = Nothing, thinking = Just (Just (ThinkingPruningConfigFile (Just True) Nothing)), tools = Just toolsCf}) @?= Nothing
     ]
 
 -- ---------------------------------------------------------------------------
@@ -294,8 +312,9 @@ exampleConfigTests =
         let tc = head config.telegramChats
         tc.id_ @?= 123456789
         tc.session @?= Named "main"
-        config.compaction.tokenThreshold @?= 50000
-        config.compaction.strategy @?= CKeepTurns 10
+        Just cc <- pure config.compaction
+        cc.tokenThreshold @?= 50000
+        cc.strategy @?= CKeepTurns 10
         -- Verify delivery target from example config
         let webhooks = config.webhook.webhooks
         length webhooks @?= 1

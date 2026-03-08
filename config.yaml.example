@@ -179,6 +179,7 @@ tool_use_messages: true
 # When conversation history exceeds the token threshold, older messages
 # are summarized using a fast model to stay within context limits.
 compaction:
+  # enable: true                      # default: true — set to false to disable compaction entirely
   token_threshold: 50000             # default: 50000
   model: claude-3-5-haiku-20241022  # default: claude-3-5-haiku-20241022
   # Strategy for splitting messages into compact vs keep regions.
@@ -195,12 +196,15 @@ compaction:
 # soft-pruned: head and tail are kept with an indicator in between. Recent
 # turns are protected from pruning entirely.
 pruning:
+  # enable: true                      # default: true — set to false to disable all pruning
   strategy:                 # global default retention strategy (default: { keep_turns: 3 })
     keep_turns: 3           # or keep_fraction: 0.5
   thinking:                 # thinking block pruning (null = keep all, omit = use global strategy)
+    # enable: true                    # default: true — set to false to keep all thinking blocks
     strategy:               # override strategy for thinking (default: inherits global)
       keep_turns: 1
   tools:
+    # enable: true                    # default: true — set to false to disable tool pruning
     head_chars: 500         # characters to keep from start of pruned content (default: 500)
     tail_chars: 500         # characters to keep from end of pruned content (default: 500)
     # strategy:             # override strategy for all tool pruning (default: inherits global)
