@@ -8,19 +8,33 @@
 let
   cfg = config.services.assistant;
 
-  # Pruning/compaction strategy: {keep_turns = N;} or {keep_fraction = F;}.
+  # Pruning/compaction strategy: {keepTurns = N;} or {keepFraction = F;}.
+  # Tags are camelCase per NixOS convention; strategyToYaml converts to
+  # snake_case keys (keep_turns/keep_fraction) for the Haskell YAML parser.
   strategyType = lib.types.attrTag {
-    keep_turns = lib.mkOption {
+    keepTurns = lib.mkOption {
       type = lib.types.int;
       description = "Number of recent turns to protect.";
     };
-    keep_fraction = lib.mkOption {
+    keepFraction = lib.mkOption {
       type = lib.types.float;
       description = "Fraction of total turns to protect.";
     };
   };
 
-  # Thinking mode: {adaptive = {effort = "medium";};} or {fixed = {budget_tokens = N;};}.
+  # Convert camelCase strategy tag to snake_case YAML key.
+  strategyToYaml =
+    s:
+    if s ? keepTurns then
+      { keep_turns = s.keepTurns; }
+    else if s ? keepFraction then
+      { keep_fraction = s.keepFraction; }
+    else
+      throw "strategyToYaml: unexpected strategy tag: ${builtins.toJSON s}";
+
+  # Thinking mode: {adaptive = {effort = "medium";};} or {fixed = {budgetTokens = N;};}.
+  # Tags are camelCase per NixOS convention; mkThinkingModeYaml converts to
+  # snake_case keys (budget_tokens) for the Haskell YAML parser.
   thinkingModeType = lib.types.attrTag {
     adaptive = lib.mkOption {
       type = lib.types.submodule {
@@ -41,9 +55,9 @@ let
     };
     fixed = lib.mkOption {
       type = lib.types.submodule {
-        options.budget_tokens = lib.mkOption {
+        options.budgetTokens = lib.mkOption {
           type = lib.types.int;
-          description = "Fixed budget_tokens value.";
+          description = "Fixed token budget for thinking.";
         };
       };
       description = "Fixed thinking budget.";
@@ -238,7 +252,7 @@ let
           enable = agentCfg.compaction.enable;
           token_threshold = agentCfg.compaction.tokenThreshold;
           model = agentCfg.compaction.model;
-          strategy = agentCfg.compaction.strategy;
+          strategy = strategyToYaml agentCfg.compaction.strategy;
         }
         // lib.optionalAttrs (agentCfg.compaction.prompt != null) {
           prompt = agentCfg.compaction.prompt;
@@ -246,7 +260,7 @@ let
 
         pruning = {
           enable = agentCfg.pruning.enable;
-          strategy = agentCfg.pruning.strategy;
+          strategy = strategyToYaml agentCfg.pruning.strategy;
         }
         // (
           if agentCfg.pruning.thinking.enable then
@@ -254,7 +268,7 @@ let
               thinking =
                 { }
                 // lib.optionalAttrs (agentCfg.pruning.thinking.strategy != null) {
-                  strategy = agentCfg.pruning.thinking.strategy;
+                  strategy = strategyToYaml agentCfg.pruning.thinking.strategy;
                 };
             }
           else
@@ -267,7 +281,7 @@ let
             tail_chars = agentCfg.pruning.tools.tailChars;
           }
           // lib.optionalAttrs (agentCfg.pruning.tools.strategy != null) {
-            strategy = agentCfg.pruning.tools.strategy;
+            strategy = strategyToYaml agentCfg.pruning.tools.strategy;
           }
           //
             lib.optionalAttrs
@@ -280,7 +294,7 @@ let
                 input =
                   { }
                   // lib.optionalAttrs (agentCfg.pruning.tools.input.strategy != null) {
-                    strategy = agentCfg.pruning.tools.input.strategy;
+                    strategy = strategyToYaml agentCfg.pruning.tools.input.strategy;
                   }
                   // lib.optionalAttrs (agentCfg.pruning.tools.input.headChars != null) {
                     head_chars = agentCfg.pruning.tools.input.headChars;
@@ -300,7 +314,7 @@ let
                 output =
                   { }
                   // lib.optionalAttrs (agentCfg.pruning.tools.output.strategy != null) {
-                    strategy = agentCfg.pruning.tools.output.strategy;
+                    strategy = strategyToYaml agentCfg.pruning.tools.output.strategy;
                   }
                   // lib.optionalAttrs (agentCfg.pruning.tools.output.headChars != null) {
                     head_chars = agentCfg.pruning.tools.output.headChars;
@@ -387,7 +401,7 @@ let
         + lib.concatMapStrings mkFileCheck (lib.unique files)
       );
 
-  # Serialize a thinking mode to YAML, omitting null effort from adaptive.
+  # Serialize a thinking mode to YAML, converting camelCase to snake_case keys.
   mkThinkingModeYaml =
     mode:
     if mode ? adaptive then
@@ -398,8 +412,14 @@ let
             effort = mode.adaptive.effort;
           };
       }
+    else if mode ? fixed then
+      {
+        fixed = {
+          budget_tokens = mode.fixed.budgetTokens;
+        };
+      }
     else
-      mode;
+      throw "mkThinkingModeYaml: unexpected thinking mode tag: ${builtins.toJSON mode}";
 
   # Serialize thinking config (enable + mode) to a YAML-ready attrset.
   mkThinkingConfig = tc: {
@@ -748,7 +768,7 @@ let
               default = {
                 adaptive = { };
               };
-              description = "Thinking mode: {adaptive = {};} or {fixed = {budget_tokens = N;};}. Used when enable is true.";
+              description = "Thinking mode: {adaptive = {};} or {fixed = {budgetTokens = N;};}. Used when enable is true.";
             };
           };
 
@@ -924,7 +944,7 @@ let
           strategy = lib.mkOption {
             type = strategyType;
             default = {
-              keep_turns = 10;
+              keepTurns = 10;
             };
             description = "Strategy for splitting messages into compact vs keep regions.";
           };
@@ -940,7 +960,7 @@ let
           strategy = lib.mkOption {
             type = strategyType;
             default = {
-              keep_turns = 3;
+              keepTurns = 3;
             };
             description = "Global default retention strategy for pruning.";
           };
@@ -953,7 +973,7 @@ let
             };
 
             strategy = lib.mkOption {
-              type = lib.types.nullOr (strategyType);
+              type = lib.types.nullOr strategyType;
               default = null;
               description = "Override strategy for thinking pruning. Null inherits global strategy.";
             };
@@ -979,14 +999,14 @@ let
             };
 
             strategy = lib.mkOption {
-              type = lib.types.nullOr (strategyType);
+              type = lib.types.nullOr strategyType;
               default = null;
               description = "Override strategy for all tool pruning. Null inherits global strategy.";
             };
 
             input = {
               strategy = lib.mkOption {
-                type = lib.types.nullOr (strategyType);
+                type = lib.types.nullOr strategyType;
                 default = null;
                 description = "Override strategy for tool inputs. Null inherits from tools.";
               };
@@ -1006,7 +1026,7 @@ let
 
             output = {
               strategy = lib.mkOption {
-                type = lib.types.nullOr (strategyType);
+                type = lib.types.nullOr strategyType;
                 default = null;
                 description = "Override strategy for tool outputs. Null inherits from tools.";
               };
