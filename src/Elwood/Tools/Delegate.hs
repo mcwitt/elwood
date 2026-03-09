@@ -16,6 +16,7 @@ import Data.Text qualified as T
 import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), CacheOverrides (..), ToolSearchConfig (..), resolveProfile, toOverrides)
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
+import Elwood.Claude.Observer (ToolUseCallback)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolSchema (..), jsonSchemaFormat)
 import Elwood.Config (PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
@@ -56,8 +57,10 @@ mkDelegateTaskTool ::
   AgentPreset ->
   Map Text AgentPreset ->
   [Text] ->
+  -- | Factory for delegate tool-use callbacks (Nothing = no notifications)
+  Maybe (Text -> ToolUseCallback) ->
   Tool
-mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspace metrics delegateAgentPreset extraAgents allowedModels =
+mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspace metrics delegateAgentPreset extraAgents allowedModels delegateOnToolUse =
   Tool
     { schema =
         ToolSchema
@@ -127,7 +130,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                   observer = metricsObserver metrics subProfile.model "delegate",
                   onRateLimit = Nothing,
                   onText = Nothing,
-                  onToolUse = Nothing,
+                  onToolUse = fmap (\f -> f di.task) delegateOnToolUse,
                   onBeforeApiCall = Nothing,
                   toolSearch = subToolSearch,
                   pruningConfig = pruning,

@@ -170,6 +170,7 @@ descriptionTests =
                 (AgentPreset Nothing mempty)
                 presets
                 []
+                Nothing
             agentDesc = extractAgentDescription tool.schema.inputSchema
         assertBool "should contain 'fast'" (T.isInfixOf "fast" agentDesc)
         assertBool "should contain fast description" (T.isInfixOf "Quick Haiku responses" agentDesc)
@@ -189,6 +190,7 @@ descriptionTests =
                 (AgentPreset (Just "General-purpose sub-agent") mempty)
                 Map.empty
                 []
+                Nothing
         assertBool "tool description should contain default agent description" $
           T.isInfixOf "General-purpose sub-agent" tool.schema.description,
       testCase "preset without description shows just the name" $ do
@@ -206,6 +208,7 @@ descriptionTests =
                 (AgentPreset Nothing mempty)
                 presets
                 []
+                Nothing
             agentDesc = extractAgentDescription tool.schema.inputSchema
         assertBool "should contain 'fast'" (T.isInfixOf "fast" agentDesc)
         -- Should not have parentheses for a description-less preset
@@ -234,7 +237,7 @@ mkStubDelegateTool :: Tool
 mkStubDelegateTool = mkStubDelegateToolWithModels []
 
 mkStubDelegateToolWithModels :: [Text] -> Tool
-mkStubDelegateToolWithModels =
+mkStubDelegateToolWithModels models =
   mkDelegateTaskTool
     undefined -- logger
     undefined -- client
@@ -246,6 +249,8 @@ mkStubDelegateToolWithModels =
     undefined -- metrics
     (AgentPreset Nothing mempty) -- delegateAgentPreset
     Map.empty -- extraAgents
+    models
+    Nothing -- delegateOnToolUse
 
 mkStubDelegateToolWithAgents :: [Text] -> Tool
 mkStubDelegateToolWithAgents agentNames =
@@ -261,3 +266,4 @@ mkStubDelegateToolWithAgents agentNames =
     (AgentPreset Nothing mempty) -- delegateAgentPreset
     (Map.fromList [(n, AgentPreset Nothing mempty) | n <- agentNames])
     [] -- allowedModels
+    Nothing -- delegateOnToolUse

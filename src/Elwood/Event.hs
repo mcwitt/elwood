@@ -133,7 +133,11 @@ data DeliveryCallbacks = DeliveryCallbacks
     onToolUse :: Maybe Claude.ToolUseCallback,
     onRateLimit :: Maybe Claude.RateLimitCallback,
     onBeforeApiCall :: Maybe (IO ()),
-    onResponse :: Text -> IO ()
+    onResponse :: Text -> IO (),
+    -- | Factory for delegate sub-agent tool-use callbacks.
+    -- Takes the task description (from parsed tool input) and returns a
+    -- 'ToolUseCallback' for that delegate invocation.
+    onDelegateToolUse :: Maybe (Text -> Claude.ToolUseCallback)
   }
 
 -- | Handle any event through the agent pipeline
@@ -152,7 +156,11 @@ eagerCallbacks env event =
       onToolUse = if env.toolUseMessages then Just (mkToolUseCallback env event) else Nothing,
       onRateLimit = Just (mkRateLimitCallback env event),
       onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
-      onResponse = deliverResponse env event
+      onResponse = deliverResponse env event,
+      onDelegateToolUse =
+        if env.toolUseMessages
+          then Just (mkDelegateToolUseCallback env event)
+          else Nothing
     }
 
 -- | Core event handler parameterised by delivery callbacks
@@ -236,6 +244,7 @@ handleEventCore env event callbacks = do
           env.delegateAgent
           env.delegateExtraAgents
           env.delegateAllowedModels
+          callbacks.onDelegateToolUse
       registryWithDelegate = Tools.registerTool delegateTool registryWithPerms
 
   -- Build agent config from environment
@@ -349,7 +358,12 @@ handleEventBuffered env event targets = do
                     modifyIORef' bufRef (BufferedRateLimit m :)
                 ),
             onBeforeApiCall = Nothing,
-            onResponse = \_ -> pure ()
+            onResponse = \_ -> pure (),
+            onDelegateToolUse =
+              if env.toolUseMessages
+                then Just $ \task names ->
+                  modifyIORef' bufRef (BufferedText (formatDelegateToolUseMessage task names) [] :)
+                else Nothing
           }
   result <- withSessionLockIfNamed env event $ handleEventCore env event callbacks
   case result of
@@ -392,13 +406,19 @@ deliverResponse env event = deliverToTargets env event.deliveryTarget
 
 -- | Deliver text to the specified target without draining the attachment queue
 deliverTextOnly :: AppEnv -> DeliveryTarget -> Text -> IO ()
-deliverTextOnly env target msg = case target of
+deliverTextOnly env target msg =
+  deliverOrLog env target msg $
+    logInfo env.logger "Event response (log only)" [("response", T.take 100 msg)]
+
+-- | Deliver a formatted message to Telegram targets, or run a fallback IO
+-- action for LogOnly targets. Shared by all notification callbacks.
+deliverOrLog :: AppEnv -> DeliveryTarget -> Text -> IO () -> IO ()
+deliverOrLog env target msg logAction = case target of
   TelegramDelivery chatIds ->
     mapM_ (\cid -> notifySafe env cid msg) chatIds
   TelegramBroadcast ->
     mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramChatMap)
-  LogOnly ->
-    logInfo env.logger "Event response (log only)" [("response", T.take 100 msg)]
+  LogOnly -> logAction
 
 -- | Deliver a message to the specified target, then send queued attachments
 deliverToTargets :: AppEnv -> DeliveryTarget -> Text -> IO ()
@@ -461,16 +481,11 @@ mkTextCallback env event = deliverToTargets env event.deliveryTarget
 
 -- | Create rate limit notification callback based on event delivery targets
 mkRateLimitCallback :: AppEnv -> Event -> Claude.RateLimitCallback
-mkRateLimitCallback env event attemptNum waitSecs = do
-  let msg = formatNotify Warn $ "Rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s"
-  -- Notify based on delivery target
-  case event.deliveryTarget of
-    TelegramDelivery chatIds ->
-      mapM_ (\cid -> notifySafe env cid msg) chatIds
-    TelegramBroadcast ->
-      mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramChatMap)
-    LogOnly ->
-      logInfo env.logger "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
+mkRateLimitCallback env event attemptNum waitSecs =
+  deliverOrLog env event.deliveryTarget msg $
+    logInfo env.logger "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
+  where
+    msg = formatNotify Warn $ "Rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s"
 
 -- | Format a tool use notification message
 formatToolUseMessage :: [Text] -> Text
@@ -481,15 +496,34 @@ formatToolUseMessage (first : rest)
 
 -- | Create tool use notification callback based on event delivery targets
 mkToolUseCallback :: AppEnv -> Event -> Claude.ToolUseCallback
-mkToolUseCallback env event names = do
-  let msg = formatToolUseMessage names
-  case event.deliveryTarget of
-    TelegramDelivery chatIds ->
-      mapM_ (\cid -> notifySafe env cid msg) chatIds
-    TelegramBroadcast ->
-      mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramChatMap)
-    LogOnly ->
-      logInfo env.logger "Tool use" [("tools", T.intercalate ", " names)]
+mkToolUseCallback env event names =
+  deliverOrLog env event.deliveryTarget (formatToolUseMessage names) $
+    logInfo env.logger "Tool use" [("tools", T.intercalate ", " names)]
+
+-- | Format a delegate sub-agent tool use notification message.
+-- The task description is truncated to 30 characters to identify the delegate.
+formatDelegateToolUseMessage :: Text -> [Text] -> Text
+formatDelegateToolUseMessage _ [] = ""
+formatDelegateToolUseMessage task (first : rest) =
+  let label = truncateTask 30 task
+      tools
+        | length rest < 5 = escapeUnderscores (T.intercalate ", " (first : rest))
+        | otherwise = escapeUnderscores first <> " + " <> T.pack (show (length rest)) <> " others"
+   in "  \8627 _\\[" <> escapeUnderscores label <> "] Using " <> tools <> "_"
+
+-- | Truncate a task description for display, adding ellipsis if needed
+truncateTask :: Int -> Text -> Text
+truncateTask maxLen t =
+  let stripped = T.strip t
+   in if T.length stripped <= maxLen
+        then stripped
+        else T.take maxLen stripped <> "\8230"
+
+-- | Create delegate tool use notification callback factory based on event delivery targets
+mkDelegateToolUseCallback :: AppEnv -> Event -> Text -> Claude.ToolUseCallback
+mkDelegateToolUseCallback env event task names =
+  deliverOrLog env event.deliveryTarget (formatDelegateToolUseMessage task names) $
+    logInfo env.logger "Delegate tool use" [("tools", T.intercalate ", " names)]
 
 -- | Send typing indicator to a delivery target
 sendTypingToTargets :: AppEnv -> DeliveryTarget -> IO ()
