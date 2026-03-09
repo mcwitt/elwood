@@ -21,7 +21,7 @@ import Elwood.Config
     resolvePruning,
   )
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
-import Elwood.Thinking (ThinkingEffort (..), ThinkingLevel (..), parseThinkingLevel)
+import Elwood.Thinking (ThinkingEffort (..), ThinkingMode (..), ThinkingOverrides (..))
 import Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..))
 import Paths_elwood (getDataFileName)
 import System.Environment (setEnv, unsetEnv)
@@ -33,7 +33,8 @@ tests =
   testGroup
     "Config"
     [ compactionConfigTests,
-      thinkingLevelTests,
+      thinkingModeTests,
+      thinkingOverridesTests,
       pruningResolutionTests,
       pruningFromJsonTests,
       exampleConfigTests
@@ -56,66 +57,70 @@ compactionConfigTests =
         cc.strategy @?= CKeepTurns 10
     ]
 
-thinkingLevelTests :: TestTree
-thinkingLevelTests =
+thinkingModeTests :: TestTree
+thinkingModeTests =
   testGroup
-    "ThinkingLevel"
-    [ testCase "all constructors exist" $ do
-        let levels =
-              [ ThinkingOff,
-                ThinkingAdaptive (Just EffortLow),
-                ThinkingAdaptive (Just EffortMedium),
-                ThinkingAdaptive (Just EffortHigh),
-                ThinkingBudget 4096
-              ]
-        length levels @?= 5,
+    "ThinkingMode"
+    [ testCase "parses adaptive with effort" $ do
+        let json = object ["adaptive" .= object ["effort" .= ("low" :: String)]]
+        fromJSON json @?= Success (Adaptive (Just EffortLow)),
+      testCase "parses adaptive without effort" $ do
+        let json = object ["adaptive" .= object []]
+        fromJSON json @?= Success (Adaptive Nothing),
+      testCase "parses adaptive with null" $ do
+        let json = object ["adaptive" .= Null]
+        fromJSON json @?= Success (Adaptive Nothing),
+      testCase "parses fixed with budget_tokens" $ do
+        let json = object ["fixed" .= object ["budget_tokens" .= (4096 :: Int)]]
+        fromJSON json @?= Success (Budget 4096),
+      testCase "rejects zero budget_tokens" $ do
+        let json = object ["fixed" .= object ["budget_tokens" .= (0 :: Int)]]
+        case fromJSON json :: Result ThinkingMode of
+          Error _ -> pure ()
+          Success _ -> assertFailure "Expected failure for zero budget_tokens",
+      testCase "rejects unknown mode key" $ do
+        let json = object ["turbo" .= object []]
+        case fromJSON json :: Result ThinkingMode of
+          Error _ -> pure ()
+          Success _ -> assertFailure "Expected failure for unknown mode",
+      testCase "rejects multi-key object" $ do
+        let json = object ["adaptive" .= object [], "fixed" .= object ["budget_tokens" .= (1 :: Int)]]
+        case fromJSON json :: Result ThinkingMode of
+          Error _ -> pure ()
+          Success _ -> assertFailure "Expected failure for multi-key object",
       testCase "equality works" $ do
-        ThinkingOff == ThinkingOff @?= True
-        ThinkingOff == ThinkingAdaptive (Just EffortHigh) @?= False
-        ThinkingAdaptive (Just EffortLow) == ThinkingAdaptive (Just EffortLow) @?= True
-        ThinkingBudget 1024 == ThinkingBudget 1024 @?= True
-        ThinkingBudget 1024 == ThinkingBudget 2048 @?= False,
-      testCase "parseThinkingLevel parses Bool False as off" $ do
-        parseThinkingLevel (Bool False) @?= Right ThinkingOff,
-      testCase "parseThinkingLevel rejects string values" $ do
-        case parseThinkingLevel (String "off") of
-          Left _ -> pure ()
-          Right _ -> assertFailure "Expected Left for string input",
-      testCase "parseThinkingLevel parses adaptive object" $ do
-        parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("low" :: String)])
-          @?= Right (ThinkingAdaptive (Just EffortLow))
-        parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("medium" :: String)])
-          @?= Right (ThinkingAdaptive (Just EffortMedium))
-        parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("high" :: String)])
-          @?= Right (ThinkingAdaptive (Just EffortHigh)),
-      testCase "parseThinkingLevel omits effort when not specified" $ do
-        parseThinkingLevel (object ["type" .= ("adaptive" :: String)])
-          @?= Right (ThinkingAdaptive Nothing),
-      testCase "parseThinkingLevel parses fixed object" $ do
-        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budget_tokens" .= (4096 :: Int)])
-          @?= Right (ThinkingBudget 4096)
-        parseThinkingLevel (object ["type" .= ("fixed" :: String), "budget_tokens" .= (1024 :: Int)])
-          @?= Right (ThinkingBudget 1024),
-      testCase "parseThinkingLevel parses off object" $ do
-        parseThinkingLevel (object ["type" .= ("off" :: String)])
-          @?= Right ThinkingOff,
-      testCase "parseThinkingLevel rejects invalid fixed config" $ do
-        -- Missing budgetTokens
-        case parseThinkingLevel (object ["type" .= ("fixed" :: String)]) of
-          Left _ -> pure ()
-          Right _ -> assertFailure "Expected Left for missing budget_tokens"
-        -- Zero budgetTokens
-        case parseThinkingLevel (object ["type" .= ("fixed" :: String), "budget_tokens" .= (0 :: Int)]) of
-          Left _ -> pure ()
-          Right _ -> assertFailure "Expected Left for zero budget_tokens",
-      testCase "parseThinkingLevel rejects invalid effort" $ do
-        case parseThinkingLevel (object ["type" .= ("adaptive" :: String), "effort" .= ("ultra" :: String)]) of
-          Left _ -> pure ()
-          Right _ -> assertFailure "Expected Left for invalid effort",
-      testCase "parseThinkingLevel rejects invalid type" $ do
-        case parseThinkingLevel (object ["type" .= ("turbo" :: String)]) of
-          Left _ -> pure ()
-          Right _ -> assertFailure "Expected Left for invalid type"
+        Adaptive (Just EffortLow) == Adaptive (Just EffortLow) @?= True
+        Adaptive Nothing == Adaptive Nothing @?= True
+        Budget 1024 == Budget 1024 @?= True
+        Budget 1024 == Budget 2048 @?= False
+        Adaptive (Just EffortHigh) == Budget 4096 @?= False
+    ]
+
+thinkingOverridesTests :: TestTree
+thinkingOverridesTests =
+  testGroup
+    "ThinkingOverrides"
+    [ testCase "parses enable + mode" $ do
+        let json = object ["enable" .= True, "mode" .= object ["adaptive" .= object ["effort" .= ("medium" :: String)]]]
+        case fromJSON json of
+          Error err -> assertFailure $ "Parse failed: " <> err
+          Success (ovr :: ThinkingOverrides) -> do
+            ovr.enable @?= Last (Just True)
+            ovr.mode @?= Last (Just (Adaptive (Just EffortMedium))),
+      testCase "parses enable only" $ do
+        let json = object ["enable" .= False]
+        case fromJSON json of
+          Error err -> assertFailure $ "Parse failed: " <> err
+          Success (ovr :: ThinkingOverrides) -> do
+            ovr.enable @?= Last (Just False)
+            ovr.mode @?= Last Nothing,
+      testCase "parses empty object" $ do
+        let json = object []
+        case fromJSON json of
+          Error err -> assertFailure $ "Parse failed: " <> err
+          Success (ovr :: ThinkingOverrides) -> do
+            ovr.enable @?= Last Nothing
+            ovr.mode @?= Last Nothing
     ]
 
 -- ---------------------------------------------------------------------------
@@ -322,7 +327,7 @@ exampleConfigTests =
         unsetEnv "ANTHROPIC_API_KEY"
         -- Verify agent profile fields
         config.agentProfile.model @?= "claude-sonnet-4-20250514"
-        config.agentProfile.thinking @?= ThinkingOff
+        config.agentProfile.thinking @?= Nothing
         config.agentProfile.toolSearch @?= ToolSearchDisabled
         length config.telegramChats @?= 1
         let tc = head config.telegramChats

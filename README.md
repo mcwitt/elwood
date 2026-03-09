@@ -65,7 +65,9 @@ channels:
 agent:
   model: claude-sonnet-4-20250514
   thinking:
-    type: off  # off | adaptive (with effort) | fixed (with budget_tokens)
+    enable: false  # set to true to enable thinking
+    mode:
+      adaptive: {}  # or fixed: { budget_tokens: 4096 }
   max_tokens: 16384
   # cache:
   #   enable: true  # set to false to disable prompt caching
@@ -93,7 +95,7 @@ agent:
 #     fast:
 #       description: Quick Haiku responses
 #       model: claude-haiku-4-20250414
-#       thinking: { type: off }
+#       thinking: { enable: false }
 
 compaction:
   token_threshold: 50000

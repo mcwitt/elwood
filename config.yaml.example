@@ -21,8 +21,10 @@ channels:
     # agent:                             # per-chat agent overrides (default: use global settings)
     #   model: claude-haiku-4-20250414
     #   thinking:
-    #     type: adaptive
-    #     effort: low
+    #     enable: true
+    #     mode:
+    #       adaptive:
+    #         effort: low
     #   max_iterations: 10
     #   max_tokens: 8192
     #   cache:
@@ -44,21 +46,23 @@ agent:
 
   # Extended thinking configuration
   # Controls Claude's internal reasoning before responding.
-  # Default: off
-  #
-  # Structured format only:
-  #   thinking:
-  #     type: off
+  # Default: disabled (enable: false)
   #
   #   thinking:
-  #     type: adaptive
-  #     effort: medium          # low | medium | high (omit for API default)
+  #     enable: true
+  #     mode:
+  #       adaptive:
+  #         effort: medium       # low | medium | high (omit for API default)
   #
   #   thinking:
-  #     type: fixed
-  #     budget_tokens: 4096      # explicit budget_tokens value
+  #     enable: true
+  #     mode:
+  #       fixed:
+  #         budget_tokens: 4096
   thinking:
-    type: off
+    enable: false                # default: false — set to true to enable thinking
+    mode:                        # thinking mode (used when enable: true)
+      adaptive: {}               # or fixed: { budget_tokens: 4096 }
 
   # Maximum tokens for API responses
   # Since billing is per actual token used, a high limit costs nothing extra.
@@ -134,7 +138,7 @@ agent:
 #     description: General-purpose sub-agent   # optional, surfaced in tool description
 #     model: claude-haiku-4-20250414
 #     thinking:
-#       type: off
+#       enable: false
 #     max_iterations: 10          # default: 10
 #     max_tokens: 8192
 #     cache:
@@ -152,14 +156,16 @@ agent:
 #       description: Quick Haiku responses     # optional, surfaced in agent param description
 #       model: claude-haiku-4-20250414
 #       thinking:
-#         type: off
+#         enable: false
 #       max_tokens: 4096
 #     deep:
 #       description: Extended thinking for complex analysis
 #       model: claude-sonnet-4-20250514
 #       thinking:
-#         type: adaptive
-#         effort: high
+#         enable: true
+#         mode:
+#           adaptive:
+#             effort: high
 #       max_tokens: 32768
 #   allowed_models:               # models the main agent can choose from
 #     - claude-haiku-4-20250414
@@ -255,8 +261,10 @@ webhook:
       # agent:                            # per-endpoint agent overrides (default: use global settings)
       #   model: claude-haiku-4-20250414
       #   thinking:
-      #     type: adaptive
-      #     effort: low
+      #     enable: true
+      #     mode:
+      #       adaptive:
+      #         effort: low
       #   max_iterations: 5
       #   max_tokens: 8192
       #   cache:

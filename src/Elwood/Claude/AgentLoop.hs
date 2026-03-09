@@ -37,7 +37,7 @@ import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (PermissionConfig, ToolPolicy (..), getToolPolicy)
 import Elwood.Positive (Positive (getPositive))
-import Elwood.Thinking (ThinkingLevel (..))
+import Elwood.Thinking (ThinkingMode (..))
 import Elwood.Tools.Registry
   ( ToolRegistry,
     lookupTool,
@@ -83,11 +83,11 @@ data AgentConfig = AgentConfig
     outputFormat :: Maybe OutputFormat
   }
 
--- | Convert a thinking level to the API thinking config
-thinkingToConfig :: ThinkingLevel -> Maybe ThinkingConfig
-thinkingToConfig ThinkingOff = Nothing
-thinkingToConfig (ThinkingAdaptive effort) = Just (ThinkingConfigAdaptive effort)
-thinkingToConfig (ThinkingBudget n) = Just (ThinkingConfigBudget n)
+-- | Convert a thinking mode to the API thinking config
+thinkingToConfig :: Maybe ThinkingMode -> Maybe ThinkingConfig
+thinkingToConfig Nothing = Nothing
+thinkingToConfig (Just (Adaptive effort)) = Just (ThinkingConfigAdaptive effort)
+thinkingToConfig (Just (Budget n)) = Just (ThinkingConfigBudget n)
 
 -- | Run a complete agent turn, handling tool use loops.
 -- Returns only the new messages produced during this turn (the delta),

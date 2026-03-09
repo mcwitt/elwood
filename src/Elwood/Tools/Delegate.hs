@@ -22,7 +22,7 @@ import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
 import Elwood.Positive (Positive (getPositive))
 import Elwood.Prompt (PromptInput (InlineText), assemblePrompt)
-import Elwood.Thinking (parseThinkingLevel)
+import Elwood.Thinking (ThinkingOverrides (..))
 import Elwood.Tools.Command (mkRunCommandTool)
 import Elwood.Tools.Registry (ToolRegistry, registerTool)
 import Elwood.Tools.Types
@@ -31,7 +31,7 @@ import Elwood.Tools.Types
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
 -- Other fields (model, thinking, system_prompt, tool_search, permissions) inherit from parent.
 delegateDefaults :: AgentOverrides
-delegateDefaults = AgentOverrides (Last Nothing) (Last Nothing) (Last (Just 10)) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+delegateDefaults = AgentOverrides (Last Nothing) Nothing (Last (Just 10)) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
 
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
@@ -167,27 +167,20 @@ delegateSchema allowedModels presets =
                   ],
               "thinking"
                 .= object
-                  [ "type" .= ("object" :: Text),
-                    "description" .= ("Thinking config for the sub-agent. Example: {\"type\": \"adaptive\", \"effort\": \"medium\"} or {\"type\": \"off\"}. Ensure compatibility with the model (e.g., Haiku does not support adaptive thinking)." :: Text),
+                  [ "description" .= ("Thinking config for the sub-agent. Use {\"enable\": true, \"mode\": {\"adaptive\": {\"effort\": \"medium\"}}} to enable, or {\"enable\": false} to disable. Omit to inherit. Ensure model compatibility (e.g., Haiku does not support adaptive thinking)." :: Text),
+                    "type" .= ("object" :: Text),
                     "properties"
                       .= object
-                        [ "type"
+                        [ "enable"
                             .= object
-                              [ "type" .= ("string" :: Text),
-                                "enum" .= (["off", "adaptive", "fixed"] :: [Text])
+                              [ "type" .= ("boolean" :: Text)
                               ],
-                          "effort"
+                          "mode"
                             .= object
-                              [ "type" .= ("string" :: Text),
-                                "enum" .= (["low", "medium", "high"] :: [Text])
-                              ],
-                          "budget_tokens"
-                            .= object
-                              [ "type" .= ("integer" :: Text),
-                                "minimum" .= (1 :: Int)
+                              [ "type" .= ("object" :: Text),
+                                "description" .= ("Thinking mode: {\"adaptive\": {\"effort\": \"medium\"}} or {\"fixed\": {\"budget_tokens\": 4096}}" :: Text)
                               ]
-                        ],
-                    "required" .= (["type"] :: [Text])
+                        ]
                   ],
               "max_iterations"
                 .= object
@@ -269,10 +262,12 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
     Just _ -> Left "Invalid 'model' parameter (must be a string)"
     Nothing -> Right Nothing
   thinkingParam <- case KM.lookup "thinking" obj of
-    Just val@(Aeson.Object _) -> case parseThinkingLevel val of
-      Right level -> Right (Just level)
-      Left err -> Left $ "Invalid thinking config: " <> err
-    Just _ -> Left "Invalid 'thinking' parameter (must be an object like {\"type\": \"adaptive\", \"effort\": \"medium\"})"
+    Just (Aeson.Bool False) -> Right (Just (ThinkingOverrides (Last (Just False)) (Last Nothing)))
+    Just (Aeson.Bool True) -> Right (Just (ThinkingOverrides (Last (Just True)) (Last Nothing)))
+    Just val@(Aeson.Object _) -> case Aeson.fromJSON val of
+      Aeson.Success ovr -> Right (Just ovr)
+      Aeson.Error err -> Left $ "Invalid thinking config: " <> T.pack err
+    Just _ -> Left "Invalid 'thinking' parameter (must be an object like {\"enable\": true, \"mode\": {\"adaptive\": {}}} or false)"
     Nothing -> Right Nothing
   maxIterParam <- case KM.lookup "max_iterations" obj of
     Just (Aeson.Number n) ->
@@ -292,6 +287,6 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
     Just val@(Aeson.Object _) -> Right (Just val)
     Just _ -> Left "Invalid 'output_schema' parameter (must be a JSON object)"
     Nothing -> Right Nothing
-  let ovr = AgentOverrides {model = Last modelParam, thinking = Last thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, permissions = Nothing}
+  let ovr = AgentOverrides {model = Last modelParam, thinking = thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, permissions = Nothing}
   Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam}
 parseDelegateInput _ _ _ = Left "Expected object input"

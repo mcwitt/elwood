@@ -8,45 +8,47 @@
 let
   cfg = config.services.assistant;
 
-  # Reusable strategy submodule for pruning options.
-  # Has type (keep_turns | keep_fraction), keepTurns, and keepFraction.
-  strategySubmodule =
-    {
-      defaultType ? "keep_turns",
-      defaultKeepTurns ? 3,
-    }:
-    lib.types.submodule {
-      options = {
-        type = lib.mkOption {
-          type = lib.types.enum [
-            "keep_turns"
-            "keep_fraction"
-          ];
-          default = defaultType;
-          description = "Strategy type: keep_turns or keep_fraction.";
-        };
+  # Pruning/compaction strategy: {keep_turns = N;} or {keep_fraction = F;}.
+  strategyType = lib.types.attrTag {
+    keep_turns = lib.mkOption {
+      type = lib.types.int;
+      description = "Number of recent turns to protect.";
+    };
+    keep_fraction = lib.mkOption {
+      type = lib.types.float;
+      description = "Fraction of total turns to protect.";
+    };
+  };
 
-        keepTurns = lib.mkOption {
-          type = lib.types.int;
-          default = defaultKeepTurns;
-          description = "Number of recent turns to protect (keep_turns strategy).";
-        };
-
-        keepFraction = lib.mkOption {
-          type = lib.types.float;
-          default = 0.5;
-          description = "Fraction of total turns to protect (keep_fraction strategy).";
+  # Thinking mode: {adaptive = {effort = "medium";};} or {fixed = {budget_tokens = N;};}.
+  thinkingModeType = lib.types.attrTag {
+    adaptive = lib.mkOption {
+      type = lib.types.submodule {
+        options.effort = lib.mkOption {
+          type = lib.types.nullOr (
+            lib.types.enum [
+              "low"
+              "medium"
+              "high"
+            ]
+          );
+          default = null;
+          description = "Effort level for adaptive thinking. Null uses API default.";
+          example = "medium";
         };
       };
+      description = "Adaptive thinking with optional effort level.";
     };
-
-  # Serialize a strategy submodule value to a YAML-ready attrset.
-  mkStrategyYaml =
-    strat:
-    if strat.type == "keep_turns" then
-      { keep_turns = strat.keepTurns; }
-    else
-      { keep_fraction = strat.keepFraction; };
+    fixed = lib.mkOption {
+      type = lib.types.submodule {
+        options.budget_tokens = lib.mkOption {
+          type = lib.types.int;
+          description = "Fixed budget_tokens value.";
+        };
+      };
+      description = "Fixed thinking budget.";
+    };
+  };
 
   # Generate YAML config for an agent
   mkConfigFile =
@@ -101,9 +103,12 @@ let
         agentOvr:
         { }
         // lib.optionalAttrs (agentOvr.model != null) { model = agentOvr.model; }
-        // lib.optionalAttrs (agentOvr.thinking != null) {
-          thinking = mkThinkingConfig agentOvr.thinking;
-        }
+        // (
+          let
+            thinkingAttrs = mkThinkingOverridesAttrs agentOvr.thinking;
+          in
+          lib.optionalAttrs (thinkingAttrs != { }) { thinking = thinkingAttrs; }
+        )
         // lib.optionalAttrs (agentOvr.maxIterations != null) {
           max_iterations = agentOvr.maxIterations;
         }
@@ -233,7 +238,7 @@ let
           enable = agentCfg.compaction.enable;
           token_threshold = agentCfg.compaction.tokenThreshold;
           model = agentCfg.compaction.model;
-          strategy = mkStrategyYaml agentCfg.compaction.strategy;
+          strategy = agentCfg.compaction.strategy;
         }
         // lib.optionalAttrs (agentCfg.compaction.prompt != null) {
           prompt = agentCfg.compaction.prompt;
@@ -241,7 +246,7 @@ let
 
         pruning = {
           enable = agentCfg.pruning.enable;
-          strategy = mkStrategyYaml agentCfg.pruning.strategy;
+          strategy = agentCfg.pruning.strategy;
         }
         // (
           if agentCfg.pruning.thinking.enable then
@@ -249,7 +254,7 @@ let
               thinking =
                 { }
                 // lib.optionalAttrs (agentCfg.pruning.thinking.strategy != null) {
-                  strategy = mkStrategyYaml agentCfg.pruning.thinking.strategy;
+                  strategy = agentCfg.pruning.thinking.strategy;
                 };
             }
           else
@@ -262,7 +267,7 @@ let
             tail_chars = agentCfg.pruning.tools.tailChars;
           }
           // lib.optionalAttrs (agentCfg.pruning.tools.strategy != null) {
-            strategy = mkStrategyYaml agentCfg.pruning.tools.strategy;
+            strategy = agentCfg.pruning.tools.strategy;
           }
           //
             lib.optionalAttrs
@@ -275,7 +280,7 @@ let
                 input =
                   { }
                   // lib.optionalAttrs (agentCfg.pruning.tools.input.strategy != null) {
-                    strategy = mkStrategyYaml agentCfg.pruning.tools.input.strategy;
+                    strategy = agentCfg.pruning.tools.input.strategy;
                   }
                   // lib.optionalAttrs (agentCfg.pruning.tools.input.headChars != null) {
                     head_chars = agentCfg.pruning.tools.input.headChars;
@@ -295,7 +300,7 @@ let
                 output =
                   { }
                   // lib.optionalAttrs (agentCfg.pruning.tools.output.strategy != null) {
-                    strategy = mkStrategyYaml agentCfg.pruning.tools.output.strategy;
+                    strategy = agentCfg.pruning.tools.output.strategy;
                   }
                   // lib.optionalAttrs (agentCfg.pruning.tools.output.headChars != null) {
                     head_chars = agentCfg.pruning.tools.output.headChars;
@@ -382,57 +387,32 @@ let
         + lib.concatMapStrings mkFileCheck (lib.unique files)
       );
 
-  # Submodule for thinking configuration
-  thinkingModule = lib.types.submodule {
-    options = {
-      type = lib.mkOption {
-        type = lib.types.enum [
-          "off"
-          "adaptive"
-          "fixed"
-        ];
-        default = "off";
-        description = "Thinking type: off, adaptive, or fixed.";
-        example = "adaptive";
-      };
+  # Serialize a thinking mode to YAML, omitting null effort from adaptive.
+  mkThinkingModeYaml =
+    mode:
+    if mode ? adaptive then
+      {
+        adaptive =
+          { }
+          // lib.optionalAttrs (mode.adaptive.effort != null) {
+            effort = mode.adaptive.effort;
+          };
+      }
+    else
+      mode;
 
-      effort = lib.mkOption {
-        type = lib.types.nullOr (
-          lib.types.enum [
-            "low"
-            "medium"
-            "high"
-          ]
-        );
-        default = null;
-        description = "Effort level for adaptive thinking.";
-        example = "medium";
-      };
-
-      budgetTokens = lib.mkOption {
-        type = lib.types.nullOr lib.types.int;
-        default = null;
-        description = "Fixed budget_tokens value for older models.";
-      };
-    };
+  # Serialize thinking config (enable + mode) to a YAML-ready attrset.
+  mkThinkingConfig = tc: {
+    enable = tc.enable;
+    mode = mkThinkingModeYaml tc.mode;
   };
 
-  # Helper to serialize a thinking config submodule to a YAML-ready value
-  # "off" emits false (YAML: `thinking: false`, parsed as ThinkingOff)
-  mkThinkingConfig =
+  # Serialize thinking overrides (nullable fields) to a YAML-ready attrset.
+  mkThinkingOverridesAttrs =
     tc:
-    if tc.type == "off" then
-      false
-    else
-      {
-        inherit (tc) type;
-      }
-      // lib.optionalAttrs (tc.effort != null) {
-        inherit (tc) effort;
-      }
-      // lib.optionalAttrs (tc.budgetTokens != null) {
-        budget_tokens = tc.budgetTokens;
-      };
+    { }
+    // lib.optionalAttrs (tc.enable != null) { enable = tc.enable; }
+    // lib.optionalAttrs (tc.mode != null) { mode = mkThinkingModeYaml tc.mode; };
 
   # Submodule for delivery targets
   deliveryTargetModule = lib.types.submodule {
@@ -544,10 +524,17 @@ let
       example = "claude-haiku-4-20250414";
     };
 
-    thinking = lib.mkOption {
-      type = lib.types.nullOr thinkingModule;
-      default = null;
-      description = "Thinking override. Null means use the agent's global thinking.";
+    thinking = {
+      enable = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Thinking enable override. Null means use the agent's global value.";
+      };
+      mode = lib.mkOption {
+        type = lib.types.nullOr thinkingModeType;
+        default = null;
+        description = "Thinking mode override. Null means use the agent's global mode.";
+      };
     };
 
     maxIterations = lib.mkOption {
@@ -750,13 +737,19 @@ let
             description = "Claude model to use.";
           };
 
-          thinking = lib.mkOption {
-            type = thinkingModule;
-            default = { };
-            description = ''
-              Extended thinking configuration. Default is off.
-              Set type to "adaptive" with an effort level, or "fixed" with budgetTokens.
-            '';
+          thinking = {
+            enable = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "Enable extended thinking. Default is false.";
+            };
+            mode = lib.mkOption {
+              type = thinkingModeType;
+              default = {
+                adaptive = { };
+              };
+              description = "Thinking mode: {adaptive = {};} or {fixed = {budget_tokens = N;};}. Used when enable is true.";
+            };
           };
 
           maxIterations = lib.mkOption {
@@ -929,10 +922,10 @@ let
           };
 
           strategy = lib.mkOption {
-            type = strategySubmodule {
-              defaultKeepTurns = 10;
+            type = strategyType;
+            default = {
+              keep_turns = 10;
             };
-            default = { };
             description = "Strategy for splitting messages into compact vs keep regions.";
           };
         };
@@ -945,8 +938,10 @@ let
           };
 
           strategy = lib.mkOption {
-            type = strategySubmodule { };
-            default = { };
+            type = strategyType;
+            default = {
+              keep_turns = 3;
+            };
             description = "Global default retention strategy for pruning.";
           };
 
@@ -958,7 +953,7 @@ let
             };
 
             strategy = lib.mkOption {
-              type = lib.types.nullOr (strategySubmodule { });
+              type = lib.types.nullOr (strategyType);
               default = null;
               description = "Override strategy for thinking pruning. Null inherits global strategy.";
             };
@@ -984,14 +979,14 @@ let
             };
 
             strategy = lib.mkOption {
-              type = lib.types.nullOr (strategySubmodule { });
+              type = lib.types.nullOr (strategyType);
               default = null;
               description = "Override strategy for all tool pruning. Null inherits global strategy.";
             };
 
             input = {
               strategy = lib.mkOption {
-                type = lib.types.nullOr (strategySubmodule { });
+                type = lib.types.nullOr (strategyType);
                 default = null;
                 description = "Override strategy for tool inputs. Null inherits from tools.";
               };
@@ -1011,7 +1006,7 @@ let
 
             output = {
               strategy = lib.mkOption {
-                type = lib.types.nullOr (strategySubmodule { });
+                type = lib.types.nullOr (strategyType);
                 default = null;
                 description = "Override strategy for tool outputs. Null inherits from tools.";
               };

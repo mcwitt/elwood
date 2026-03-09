@@ -32,7 +32,7 @@ import Elwood.Claude.Types (CacheTtl (..))
 import Elwood.Permissions (PermissionConfig, PermissionConfigFile, resolvePermissions, toPermissionConfigFile)
 import Elwood.Positive (Positive)
 import Elwood.Prompt (PromptInput (..))
-import Elwood.Thinking (ThinkingLevel (..))
+import Elwood.Thinking (ThinkingMode (..), ThinkingOverrides (..), resolveThinking)
 import GHC.Generics (Generic, Generically (..))
 
 -- | Tool search configuration
@@ -71,7 +71,7 @@ instance FromJSON CacheOverrides where
 -- 'Last' fields are right-biased replace; 'Maybe' fields deep-merge via their 'Semigroup'.
 data AgentOverrides = AgentOverrides
   { model :: Last Text,
-    thinking :: Last ThinkingLevel,
+    thinking :: Maybe ThinkingOverrides,
     maxIterations :: Last Positive,
     cache :: Maybe CacheOverrides,
     maxTokens :: Last Positive,
@@ -85,7 +85,7 @@ data AgentOverrides = AgentOverrides
 -- | Resolved agent profile — all fields concrete. Used at runtime.
 data AgentProfile = AgentProfile
   { model :: Text,
-    thinking :: ThinkingLevel,
+    thinking :: Maybe ThinkingMode,
     maxIterations :: Positive,
     cache :: Maybe CacheTtl,
     maxTokens :: Positive,
@@ -100,7 +100,7 @@ agentDefaults :: AgentOverrides
 agentDefaults =
   AgentOverrides
     { model = Last (Just "claude-sonnet-4-20250514"),
-      thinking = Last (Just ThinkingOff),
+      thinking = Just (ThinkingOverrides (Last (Just False)) (Last Nothing)),
       maxIterations = Last (Just 20),
       cache = Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl5Min))),
       maxTokens = Last (Just 16384),
@@ -117,9 +117,10 @@ resolveProfile o =
           | co.enable == Last (Just False) -> Nothing
           | otherwise -> Just (fromMaybe CacheTtl5Min (getLast co.ttl))
         Nothing -> Just CacheTtl5Min
+      resolvedThinking = resolveThinking (fromMaybe mempty o.thinking)
    in AgentProfile
         { model = fromMaybe "claude-sonnet-4-20250514" (getLast o.model),
-          thinking = fromMaybe ThinkingOff (getLast o.thinking),
+          thinking = resolvedThinking,
           maxIterations = fromMaybe 20 (getLast o.maxIterations),
           cache = resolvedCache,
           maxTokens = fromMaybe 16384 (getLast o.maxTokens),
@@ -133,7 +134,9 @@ toOverrides :: AgentProfile -> AgentOverrides
 toOverrides s =
   AgentOverrides
     { model = Last (Just s.model),
-      thinking = Last (Just s.thinking),
+      thinking = Just $ case s.thinking of
+        Nothing -> ThinkingOverrides (Last (Just False)) (Last Nothing)
+        Just m -> ThinkingOverrides (Last (Just True)) (Last (Just m)),
       maxIterations = Last (Just s.maxIterations),
       cache = case s.cache of
         Nothing -> Just (CacheOverrides (Last (Just False)) (Last Nothing))
@@ -153,7 +156,7 @@ parseAgentOverrides :: Object -> Parser AgentOverrides
 parseAgentOverrides v =
   AgentOverrides . Last
     <$> v .:? "model"
-    <*> (Last <$> v .:? "thinking")
+    <*> v .:? "thinking"
     <*> (Last <$> v .:? "max_iterations")
     <*> v .:? "cache"
     <*> (Last <$> v .:? "max_tokens")

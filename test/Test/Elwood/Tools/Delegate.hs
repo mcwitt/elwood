@@ -86,15 +86,15 @@ thinkingValidationTests =
     [ testCase "string thinking returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "thinking" .= ("medium" :: Text)])
-        result @?= ToolError "Invalid 'thinking' parameter (must be an object like {\"type\": \"adaptive\", \"effort\": \"medium\"})",
+        result @?= ToolError "Invalid 'thinking' parameter (must be an object like {\"enable\": true, \"mode\": {\"adaptive\": {}}} or false)",
       testCase "non-object thinking returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "thinking" .= (42 :: Int)])
-        result @?= ToolError "Invalid 'thinking' parameter (must be an object like {\"type\": \"adaptive\", \"effort\": \"medium\"})",
-      testCase "invalid thinking type in object returns error" $ do
+        result @?= ToolError "Invalid 'thinking' parameter (must be an object like {\"enable\": true, \"mode\": {\"adaptive\": {}}} or false)",
+      testCase "array thinking returns error" $ do
         let tool = mkStubDelegateTool
-        result <- tool.execute (object ["task" .= ("test" :: Text), "thinking" .= object ["type" .= ("turbo" :: Text)]])
-        result @?= ToolError "Invalid thinking config: Invalid thinking type 'turbo'. Allowed: off, adaptive, fixed"
+        result <- tool.execute (object ["task" .= ("test" :: Text), "thinking" .= [True]])
+        result @?= ToolError "Invalid 'thinking' parameter (must be an object like {\"enable\": true, \"mode\": {\"adaptive\": {}}} or false)"
     ]
 
 maxIterationsValidationTests :: TestTree
