@@ -121,7 +121,7 @@ handleWebhookRequest lgr webhookCfg env request respond = do
       let envWithOverrides = applyOverrides env webhookCfg
 
       -- Assemble prompt from configured inputs
-      promptResult <- assemblePrompt envWithOverrides.workspaceDir webhookCfg.prompt
+      promptResult <- assemblePrompt envWithOverrides.workspace webhookCfg.prompt
 
       case promptResult of
         Nothing -> do

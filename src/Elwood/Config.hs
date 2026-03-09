@@ -102,7 +102,7 @@ data Config = Config
   { -- | Directory for persistent state
     stateDir :: FilePath,
     -- | Directory containing SOUL.md, AGENTS.md, etc.
-    workspaceDir :: FilePath,
+    workspace :: FilePath,
     -- | Telegram bot token (loaded from environment)
     telegramToken :: Text,
     -- | Anthropic API key (loaded from environment)
@@ -229,7 +229,7 @@ newtype ChannelsConfigFile = ChannelsConfigFile
 -- | YAML file configuration (without secrets)
 data ConfigFile = ConfigFile
   { stateDir :: Maybe FilePath,
-    workspaceDir :: Maybe FilePath,
+    workspace :: Maybe FilePath,
     channels :: Maybe ChannelsConfigFile,
     agentOverrides :: AgentOverrides,
     compaction :: Maybe CompactionConfigFile,
@@ -529,7 +529,7 @@ loadConfig path = do
       resolveDeliveryTarget DeliveryTargetFileBroadcast = TelegramBroadcast
       resolveDeliveryTarget DeliveryTargetFileLog = LogOnly
 
-  let workspaceDir_ = fromMaybe "/var/lib/assistant/workspace" configFile.workspaceDir
+  let workspace_ = fromMaybe "/var/lib/assistant/workspace" configFile.workspace
       telegramChatFiles = fromMaybe [] $ configFile.channels >>= (.telegram)
 
   -- Webhook secret: env var takes precedence over config file
@@ -593,7 +593,7 @@ loadConfig path = do
   pure
     Config
       { stateDir = fromMaybe "/var/lib/assistant" configFile.stateDir,
-        workspaceDir = workspaceDir_,
+        workspace = workspace_,
         telegramToken = telegramToken_,
         anthropicApiKey = anthropicApiKey_,
         telegramChats = telegramChats_,

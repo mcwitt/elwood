@@ -17,7 +17,7 @@ import System.Exit (ExitCode (..))
 
 -- | Construct a tool for running shell commands
 mkRunCommandTool :: Logger -> FilePath -> PermissionConfig -> Tool
-mkRunCommandTool logger workspaceDir_ perms =
+mkRunCommandTool logger workspace_ perms =
   Tool
     { schema =
         ToolSchema
@@ -37,7 +37,7 @@ mkRunCommandTool logger workspaceDir_ perms =
               pure $ toolError $ "Permission denied: " <> reason
             Allowed -> do
               logInfo logger "Executing command" [("command", cmd)]
-              toToolResult <$> Cmd.runCommandWithTimeout cmd timeoutSecs workspaceDir_
+              toToolResult <$> Cmd.runCommandWithTimeout cmd timeoutSecs workspace_
     }
 
 -- | Convert a generic command result to a tool result

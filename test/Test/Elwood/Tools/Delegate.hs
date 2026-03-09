@@ -242,7 +242,7 @@ mkStubDelegateToolWithModels =
     undefined -- context
     undefined -- parentProfile
     undefined -- pruning
-    undefined -- workspaceDir
+    undefined -- workspace
     undefined -- metrics
     (AgentPreset Nothing mempty) -- delegateAgentPreset
     Map.empty -- extraAgents
@@ -256,7 +256,7 @@ mkStubDelegateToolWithAgents agentNames =
     undefined -- context
     undefined -- parentProfile
     undefined -- pruning
-    undefined -- workspaceDir
+    undefined -- workspace
     undefined -- metrics
     (AgentPreset Nothing mempty) -- delegateAgentPreset
     (Map.fromList [(n, AgentPreset Nothing mempty) | n <- agentNames])

@@ -86,7 +86,7 @@ runApp config = do
   -- (so per-chat/per-webhook/per-delegate overrides take effect).
   let builtinRegistry =
         Tools.registerTool (Tools.mkQueueAttachmentTool logger attachmentQueue_) $
-          Tools.registerTool (Tools.mkRunCommandTool logger config.workspaceDir config.agentProfile.permissions) $
+          Tools.registerTool (Tools.mkRunCommandTool logger config.workspace config.agentProfile.permissions) $
             Tools.registerTool (Tools.mkSaveMemoryTool logger memoryStore) $
               Tools.registerTool
                 (Tools.mkSearchMemoryTool logger memoryStore)
@@ -150,7 +150,7 @@ runApp config = do
             requestApproval = baseApprovalFn,
             compaction = config.compaction,
             pruning = config.pruning,
-            workspaceDir = config.workspaceDir,
+            workspace = config.workspace,
             agentProfile = config.agentProfile,
             telegramChatMap = Map.fromList [(tc.id_, tc) | tc <- config.telegramChats],
             attachmentQueue = attachmentQueue_,

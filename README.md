@@ -159,7 +159,7 @@ Add the flake to your NixOS configuration:
             enable = true;
             channels.telegram = [ { id = 123456789; session = "main"; } ];
             environmentFile = "/run/secrets/elwood-env";
-            workspaceDir = "/var/lib/assistant/elwood/workspace";
+            workspace = "/var/lib/assistant/elwood/workspace";
 
             agent = {
               systemPrompt = [

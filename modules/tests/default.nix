@@ -31,7 +31,7 @@ in
           enable = true;
           channels.telegram = [ { id = 123456789; } ];
           stateDir = "/var/lib/assistant/test-agent";
-          workspaceDir = "/var/lib/assistant/test-agent/workspace";
+          workspace = "/var/lib/assistant/test-agent/workspace";
 
           webhook = {
             enable = true;
@@ -368,7 +368,7 @@ in
           enable = true;
           channels.telegram = [ { id = 123456789; } ];
           stateDir = "/var/lib/assistant/prompt-test";
-          workspaceDir = "/var/lib/assistant/prompt-test/workspace";
+          workspace = "/var/lib/assistant/prompt-test/workspace";
 
           agent.systemPrompt = [
             {

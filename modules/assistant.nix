@@ -194,7 +194,7 @@ let
 
       configContent = {
         state_dir = agentCfg.stateDir;
-        workspace = agentCfg.workspaceDir;
+        workspace = agentCfg.workspace;
         channels.telegram = map (
           tc:
           {
@@ -366,7 +366,7 @@ let
       mkFileCheck =
         pi:
         let
-          fullPath = "${agentCfg.workspaceDir}/${pi.path}";
+          fullPath = "${agentCfg.workspace}/${pi.path}";
         in
         ''
           if [ ! -f ${lib.escapeShellArg fullPath} ]; then
@@ -378,7 +378,7 @@ let
       null
     else
       pkgs.writeShellScript "assistant-default-content" (
-        "mkdir -p ${lib.escapeShellArg agentCfg.workspaceDir}\n"
+        "mkdir -p ${lib.escapeShellArg agentCfg.workspace}\n"
         + lib.concatMapStrings mkFileCheck (lib.unique files)
       );
 
@@ -469,7 +469,7 @@ let
       path = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "File path relative to workspaceDir (workspaceFile type only).";
+        description = "File path relative to workspace directory (workspaceFile type only).";
       };
 
       content = lib.mkOption {
@@ -710,7 +710,7 @@ let
           description = "Directory for persistent state.";
         };
 
-        workspaceDir = lib.mkOption {
+        workspace = lib.mkOption {
           type = lib.types.path;
           default = "/var/lib/assistant/${name}/workspace";
           description = "Directory containing SOUL.md and other workspace files.";
@@ -1267,7 +1267,7 @@ in
     ]
     ++ lib.concatMap (agentCfg: [
       "d ${agentCfg.stateDir} 0750 ${agentCfg.user} ${agentCfg.group} -"
-      "d ${agentCfg.workspaceDir} 0750 ${agentCfg.user} ${agentCfg.group} -"
+      "d ${agentCfg.workspace} 0750 ${agentCfg.user} ${agentCfg.group} -"
     ]) (lib.attrValues enabledAgents);
 
     # Firewall rules
@@ -1341,7 +1341,7 @@ in
             RestrictSUIDSGID = true;
             ReadWritePaths = lib.unique [
               agentCfg.stateDir
-              agentCfg.workspaceDir
+              agentCfg.workspace
             ];
             StandardOutput = "journal";
             StandardError = "journal";

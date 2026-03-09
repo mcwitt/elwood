@@ -57,7 +57,7 @@ mkDelegateTaskTool ::
   Map Text AgentPreset ->
   [Text] ->
   Tool
-mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspaceDir metrics delegateAgentPreset extraAgents allowedModels =
+mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspace metrics delegateAgentPreset extraAgents allowedModels =
   Tool
     { schema =
         ToolSchema
@@ -103,7 +103,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
           ]
 
         -- Assemble sub-agent system prompt from workspace files
-        subSystemPrompt <- assemblePrompt workspaceDir subProfile.systemPrompt
+        subSystemPrompt <- assemblePrompt workspace subProfile.systemPrompt
 
         -- Convert sub-profile's tool search to Maybe (Set ToolName)
         let subToolSearch = case subProfile.toolSearch of
@@ -112,7 +112,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
 
         -- Re-register run_command with sub-profile's permissions (so delegate
         -- permission overrides affect command-pattern checking)
-        let subRunCmd = mkRunCommandTool logger workspaceDir subProfile.permissions
+        let subRunCmd = mkRunCommandTool logger workspace subProfile.permissions
             subRegistry = registerTool subRunCmd baseRegistry
 
         let outputFmt = fmap jsonSchemaFormat di.outputSchema

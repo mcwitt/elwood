@@ -291,7 +291,7 @@ handleTelegramMessage env msg =
     handleRun :: Text -> IO (Maybe Text)
     handleRun cmd = do
       logInfo lgr "Running command from Telegram" [("chat_id", T.pack (show chatIdVal)), ("command", cmd)]
-      result <- Cmd.runCommandWithTimeout cmd 30 env.workspaceDir
+      result <- Cmd.runCommandWithTimeout cmd 30 env.workspace
       let prefix = case result.exitCode of
             ExitSuccess -> ""
             ExitFailure code -> "[exit " <> T.pack (show code) <> "] "

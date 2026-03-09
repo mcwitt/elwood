@@ -102,7 +102,7 @@ data AppEnv = AppEnv
     -- | Tool result pruning configuration (Nothing = disabled)
     pruning :: Maybe PruningConfig,
     -- | Directory containing workspace files
-    workspaceDir :: FilePath,
+    workspace :: FilePath,
     -- | Resolved agent profile (model, thinking, permissions, system prompt, tool search, etc.)
     agentProfile :: AgentProfile,
     -- | Telegram chat ID to full chat config (source of truth for allowed chats)
@@ -201,7 +201,7 @@ handleEventCore env event callbacks = do
       pure (history, h)
 
   -- Assemble system prompt from workspace files (re-read each request)
-  systemPrompt <- assemblePrompt env.workspaceDir prof.systemPrompt
+  systemPrompt <- assemblePrompt env.workspace prof.systemPrompt
 
   -- Build user message with optional image
   let contentBlocks = case event.image of
@@ -218,7 +218,7 @@ handleEventCore env event callbacks = do
 
   -- Re-register run_command with current permissions (so per-chat/per-webhook
   -- overrides reach the command-pattern checking in run_command)
-  let runCmdTool = Tools.mkRunCommandTool lgr env.workspaceDir prof.permissions
+  let runCmdTool = Tools.mkRunCommandTool lgr env.workspace prof.permissions
       registryWithPerms = Tools.registerTool runCmdTool env.registry
 
   -- Build registry with delegate tool (base registry has no delegate_task,
@@ -231,7 +231,7 @@ handleEventCore env event callbacks = do
           env.requestApproval
           prof
           env.pruning
-          env.workspaceDir
+          env.workspace
           env.metrics
           env.delegateAgent
           env.delegateExtraAgents
