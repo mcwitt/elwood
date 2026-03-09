@@ -1,5 +1,6 @@
 module Test.Elwood.Permissions (tests) where
 
+import Data.Monoid (Last (..))
 import Data.Text (Text)
 import Elwood.Permissions
 import Test.Tasty
@@ -41,7 +42,7 @@ commandPermissionTests =
 mkCfg :: [Text] -> [Text] -> PermissionConfig
 mkCfg dangerous safe =
   resolvePermissions $
-    PermissionConfigFile (Just safe) (Just dangerous) Nothing Nothing Nothing
+    PermissionConfigFile (Last (Just safe)) (Last (Just dangerous)) (Last Nothing) (Last Nothing) (Last Nothing)
 
 -- | Assert a PermissionResult is Denied
 assertDenied :: PermissionResult -> IO ()

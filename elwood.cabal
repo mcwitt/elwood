@@ -103,6 +103,7 @@ library
   default-extensions:
     DeriveAnyClass
     DeriveGeneric
+    DerivingVia
     DuplicateRecordFields
     GeneralizedNewtypeDeriving
     NoFieldSelectors

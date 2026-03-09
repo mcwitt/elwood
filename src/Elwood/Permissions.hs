@@ -20,17 +20,17 @@ module Elwood.Permissions
   )
 where
 
-import Control.Applicative ((<|>))
 import Data.Aeson (FromJSON (..), withObject, withText, (.:?))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import Data.Monoid (Last (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.Claude.Types (ToolName)
 import Elwood.Positive (Positive)
-import GHC.Generics (Generic)
+import GHC.Generics (Generic, Generically (..))
 import Text.Regex.TDFA ((=~))
 
 -- | Policy for tool execution
@@ -107,56 +107,43 @@ getToolPolicy config toolName_ =
 
 -- | Permission configuration from YAML file (partial, mergeable)
 data PermissionConfigFile = PermissionConfigFile
-  { safePatterns :: Maybe [Text],
-    dangerousPatterns :: Maybe [Text],
-    toolPolicies :: Maybe (Map ToolName ToolPolicy),
-    defaultPolicy :: Maybe ToolPolicy,
-    approvalTimeoutSeconds :: Maybe Positive
+  { safePatterns :: Last [Text],
+    dangerousPatterns :: Last [Text],
+    toolPolicies :: Last (Map ToolName ToolPolicy),
+    defaultPolicy :: Last ToolPolicy,
+    approvalTimeoutSeconds :: Last Positive
   }
   deriving stock (Show, Eq, Generic)
-
--- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
-instance Semigroup PermissionConfigFile where
-  a <> b =
-    PermissionConfigFile
-      { safePatterns = b.safePatterns <|> a.safePatterns,
-        dangerousPatterns = b.dangerousPatterns <|> a.dangerousPatterns,
-        toolPolicies = b.toolPolicies <|> a.toolPolicies,
-        defaultPolicy = b.defaultPolicy <|> a.defaultPolicy,
-        approvalTimeoutSeconds = b.approvalTimeoutSeconds <|> a.approvalTimeoutSeconds
-      }
-
-instance Monoid PermissionConfigFile where
-  mempty = PermissionConfigFile Nothing Nothing Nothing Nothing Nothing
+  deriving (Semigroup, Monoid) via Generically PermissionConfigFile
 
 instance FromJSON PermissionConfigFile where
   parseJSON = withObject "PermissionConfigFile" $ \v -> do
     rejectUnknownKeys "PermissionConfigFile" ["safe_patterns", "dangerous_patterns", "tool_policies", "default_policy", "approval_timeout_seconds"] v
-    PermissionConfigFile
+    PermissionConfigFile . Last
       <$> v .:? "safe_patterns"
-      <*> v .:? "dangerous_patterns"
-      <*> v .:? "tool_policies"
-      <*> v .:? "default_policy"
-      <*> v .:? "approval_timeout_seconds"
+      <*> (Last <$> v .:? "dangerous_patterns")
+      <*> (Last <$> v .:? "tool_policies")
+      <*> (Last <$> v .:? "default_policy")
+      <*> (Last <$> v .:? "approval_timeout_seconds")
 
 -- | Resolve a partial permission config against hardcoded defaults.
 resolvePermissions :: PermissionConfigFile -> PermissionConfig
 resolvePermissions pcf =
   PermissionConfig
-    { safePatterns = fromMaybe [] pcf.safePatterns,
-      dangerousPatterns = fromMaybe [] pcf.dangerousPatterns,
-      toolPolicies = fromMaybe Map.empty pcf.toolPolicies,
-      defaultPolicy = fromMaybe PolicyAllow pcf.defaultPolicy,
-      approvalTimeoutSeconds = fromMaybe 300 pcf.approvalTimeoutSeconds
+    { safePatterns = fromMaybe [] (getLast pcf.safePatterns),
+      dangerousPatterns = fromMaybe [] (getLast pcf.dangerousPatterns),
+      toolPolicies = fromMaybe Map.empty (getLast pcf.toolPolicies),
+      defaultPolicy = fromMaybe PolicyAllow (getLast pcf.defaultPolicy),
+      approvalTimeoutSeconds = fromMaybe 300 (getLast pcf.approvalTimeoutSeconds)
     }
 
 -- | Convert a resolved 'PermissionConfig' back to a 'PermissionConfigFile' (all 'Just').
 toPermissionConfigFile :: PermissionConfig -> PermissionConfigFile
 toPermissionConfigFile pc =
   PermissionConfigFile
-    { safePatterns = Just pc.safePatterns,
-      dangerousPatterns = Just pc.dangerousPatterns,
-      toolPolicies = Just pc.toolPolicies,
-      defaultPolicy = Just pc.defaultPolicy,
-      approvalTimeoutSeconds = Just pc.approvalTimeoutSeconds
+    { safePatterns = Last (Just pc.safePatterns),
+      dangerousPatterns = Last (Just pc.dangerousPatterns),
+      toolPolicies = Last (Just pc.toolPolicies),
+      defaultPolicy = Last (Just pc.defaultPolicy),
+      approvalTimeoutSeconds = Last (Just pc.approvalTimeoutSeconds)
     }

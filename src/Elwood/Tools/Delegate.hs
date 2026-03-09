@@ -9,6 +9,7 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Monoid (Last (..))
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -30,7 +31,7 @@ import Elwood.Tools.Types
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
 -- Other fields (model, thinking, system_prompt, tool_search, permissions) inherit from parent.
 delegateDefaults :: AgentOverrides
-delegateDefaults = AgentOverrides Nothing Nothing (Just 10) (Just (CacheOverrides (Just False) Nothing)) Nothing Nothing Nothing Nothing
+delegateDefaults = AgentOverrides (Last Nothing) (Last Nothing) (Last (Just 10)) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
 
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
@@ -291,6 +292,6 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
     Just val@(Aeson.Object _) -> Right (Just val)
     Just _ -> Left "Invalid 'output_schema' parameter (must be a JSON object)"
     Nothing -> Right Nothing
-  let ovr = AgentOverrides {model = modelParam, thinking = thinkingParam, maxIterations = maxIterParam, cache = Nothing, maxTokens = Nothing, systemPrompt = systemPromptParam, toolSearch = Nothing, permissions = Nothing}
+  let ovr = AgentOverrides {model = Last modelParam, thinking = Last thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, permissions = Nothing}
   Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam}
 parseDelegateInput _ _ _ = Left "Expected object input"

@@ -21,10 +21,10 @@ module Elwood.AgentSettings
   )
 where
 
-import Control.Applicative ((<|>))
 import Data.Aeson (FromJSON (..), Key, Object, Value (..), withObject, (.:?))
 import Data.Aeson.Types (Parser)
 import Data.Maybe (fromMaybe)
+import Data.Monoid (Last (..))
 import Data.Text (Text)
 import Data.Vector qualified as V
 import Elwood.Aeson (rejectUnknownKeys)
@@ -33,7 +33,7 @@ import Elwood.Permissions (PermissionConfig, PermissionConfigFile, resolvePermis
 import Elwood.Positive (Positive)
 import Elwood.Prompt (PromptInput (..))
 import Elwood.Thinking (ThinkingLevel (..))
-import GHC.Generics (Generic)
+import GHC.Generics (Generic, Generically (..))
 
 -- | Tool search configuration
 --
@@ -55,60 +55,32 @@ instance FromJSON ToolSearchConfig where
 -- | Partial cache configuration for layering overrides.
 -- Right-biased field-level merge (like 'PermissionConfigFile').
 data CacheOverrides = CacheOverrides
-  { enable :: Maybe Bool,
-    ttl :: Maybe CacheTtl
+  { enable :: Last Bool,
+    ttl :: Last CacheTtl
   }
   deriving stock (Show, Eq, Generic)
-
-instance Semigroup CacheOverrides where
-  a <> b = CacheOverrides {enable = b.enable <|> a.enable, ttl = b.ttl <|> a.ttl}
+  deriving (Semigroup, Monoid) via Generically CacheOverrides
 
 instance FromJSON CacheOverrides where
   parseJSON = withObject "CacheOverrides" $ \v -> do
     rejectUnknownKeys "CacheOverrides" ["enable", "ttl"] v
-    CacheOverrides <$> v .:? "enable" <*> v .:? "ttl"
+    CacheOverrides . Last <$> v .:? "enable" <*> (Last <$> v .:? "ttl")
 
 -- | Partial agent settings for layering overrides.
 --
--- Right-biased semigroup: @a <> b@ picks @b@'s values when 'Just'.
--- Permissions use field-level merge via 'PermissionConfigFile' 'Semigroup'.
+-- 'Last' fields are right-biased replace; 'Maybe' fields deep-merge via their 'Semigroup'.
 data AgentOverrides = AgentOverrides
-  { model :: Maybe Text,
-    thinking :: Maybe ThinkingLevel,
-    maxIterations :: Maybe Positive,
+  { model :: Last Text,
+    thinking :: Last ThinkingLevel,
+    maxIterations :: Last Positive,
     cache :: Maybe CacheOverrides,
-    maxTokens :: Maybe Positive,
-    systemPrompt :: Maybe [PromptInput],
-    toolSearch :: Maybe ToolSearchConfig,
+    maxTokens :: Last Positive,
+    systemPrompt :: Last [PromptInput],
+    toolSearch :: Last ToolSearchConfig,
     permissions :: Maybe PermissionConfigFile
   }
   deriving stock (Show, Eq, Generic)
-
--- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
--- Permissions use field-level merge (not replace) via 'PermissionConfigFile' 'Semigroup'.
-instance Semigroup AgentOverrides where
-  a <> b =
-    AgentOverrides
-      { model = b.model <|> a.model,
-        thinking = b.thinking <|> a.thinking,
-        maxIterations = b.maxIterations <|> a.maxIterations,
-        cache = case (a.cache, b.cache) of
-          (Nothing, Nothing) -> Nothing
-          (Just ca, Nothing) -> Just ca
-          (Nothing, Just cb) -> Just cb
-          (Just ca, Just cb) -> Just (ca <> cb),
-        maxTokens = b.maxTokens <|> a.maxTokens,
-        systemPrompt = b.systemPrompt <|> a.systemPrompt,
-        toolSearch = b.toolSearch <|> a.toolSearch,
-        permissions = case (a.permissions, b.permissions) of
-          (Nothing, Nothing) -> Nothing
-          (Just pa, Nothing) -> Just pa
-          (Nothing, Just pb) -> Just pb
-          (Just pa, Just pb) -> Just (pa <> pb)
-      }
-
-instance Monoid AgentOverrides where
-  mempty = AgentOverrides Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+  deriving (Semigroup, Monoid) via Generically AgentOverrides
 
 -- | Resolved agent profile — all fields concrete. Used at runtime.
 data AgentProfile = AgentProfile
@@ -127,13 +99,13 @@ data AgentProfile = AgentProfile
 agentDefaults :: AgentOverrides
 agentDefaults =
   AgentOverrides
-    { model = Just "claude-sonnet-4-20250514",
-      thinking = Just ThinkingOff,
-      maxIterations = Just 20,
-      cache = Just (CacheOverrides (Just True) (Just CacheTtl5Min)),
-      maxTokens = Just 16384,
-      systemPrompt = Just [WorkspaceFile "SOUL.md"],
-      toolSearch = Just ToolSearchDisabled,
+    { model = Last (Just "claude-sonnet-4-20250514"),
+      thinking = Last (Just ThinkingOff),
+      maxIterations = Last (Just 20),
+      cache = Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl5Min))),
+      maxTokens = Last (Just 16384),
+      systemPrompt = Last (Just [WorkspaceFile "SOUL.md"]),
+      toolSearch = Last (Just ToolSearchDisabled),
       permissions = Just mempty
     }
 
@@ -142,17 +114,17 @@ resolveProfile :: AgentOverrides -> AgentProfile
 resolveProfile o =
   let resolvedCache = case o.cache of
         Just co
-          | co.enable == Just False -> Nothing
-          | otherwise -> Just (fromMaybe CacheTtl5Min co.ttl)
+          | co.enable == Last (Just False) -> Nothing
+          | otherwise -> Just (fromMaybe CacheTtl5Min (getLast co.ttl))
         Nothing -> Just CacheTtl5Min
    in AgentProfile
-        { model = fromMaybe "claude-sonnet-4-20250514" o.model,
-          thinking = fromMaybe ThinkingOff o.thinking,
-          maxIterations = fromMaybe 20 o.maxIterations,
+        { model = fromMaybe "claude-sonnet-4-20250514" (getLast o.model),
+          thinking = fromMaybe ThinkingOff (getLast o.thinking),
+          maxIterations = fromMaybe 20 (getLast o.maxIterations),
           cache = resolvedCache,
-          maxTokens = fromMaybe 16384 o.maxTokens,
-          systemPrompt = fromMaybe [WorkspaceFile "SOUL.md"] o.systemPrompt,
-          toolSearch = fromMaybe ToolSearchDisabled o.toolSearch,
+          maxTokens = fromMaybe 16384 (getLast o.maxTokens),
+          systemPrompt = fromMaybe [WorkspaceFile "SOUL.md"] (getLast o.systemPrompt),
+          toolSearch = fromMaybe ToolSearchDisabled (getLast o.toolSearch),
           permissions = resolvePermissions (fromMaybe mempty o.permissions)
         }
 
@@ -160,15 +132,15 @@ resolveProfile o =
 toOverrides :: AgentProfile -> AgentOverrides
 toOverrides s =
   AgentOverrides
-    { model = Just s.model,
-      thinking = Just s.thinking,
-      maxIterations = Just s.maxIterations,
+    { model = Last (Just s.model),
+      thinking = Last (Just s.thinking),
+      maxIterations = Last (Just s.maxIterations),
       cache = case s.cache of
-        Nothing -> Just (CacheOverrides (Just False) Nothing)
-        Just ttl -> Just (CacheOverrides (Just True) (Just ttl)),
-      maxTokens = Just s.maxTokens,
-      systemPrompt = Just s.systemPrompt,
-      toolSearch = Just s.toolSearch,
+        Nothing -> Just (CacheOverrides (Last (Just False)) (Last Nothing))
+        Just ttl -> Just (CacheOverrides (Last (Just True)) (Last (Just ttl))),
+      maxTokens = Last (Just s.maxTokens),
+      systemPrompt = Last (Just s.systemPrompt),
+      toolSearch = Last (Just s.toolSearch),
       permissions = Just (toPermissionConfigFile s.permissions)
     }
 
@@ -179,14 +151,14 @@ agentOverrideKeys = ["model", "thinking", "max_iterations", "cache", "max_tokens
 -- | Parse agent overrides from an Aeson object (shared by 'AgentOverrides' and 'AgentPreset').
 parseAgentOverrides :: Object -> Parser AgentOverrides
 parseAgentOverrides v =
-  AgentOverrides
+  AgentOverrides . Last
     <$> v .:? "model"
-    <*> v .:? "thinking"
-    <*> v .:? "max_iterations"
+    <*> (Last <$> v .:? "thinking")
+    <*> (Last <$> v .:? "max_iterations")
     <*> v .:? "cache"
-    <*> v .:? "max_tokens"
-    <*> v .:? "system_prompt"
-    <*> v .:? "tool_search"
+    <*> (Last <$> v .:? "max_tokens")
+    <*> (Last <$> v .:? "system_prompt")
+    <*> (Last <$> v .:? "tool_search")
     <*> v .:? "permissions"
 
 instance FromJSON AgentOverrides where

@@ -33,6 +33,7 @@ import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import Data.Monoid (Last (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Yaml qualified as Yaml
@@ -53,7 +54,7 @@ import Elwood.Webhook.Types
     WebhookServerConfig (..),
     WebhookServerConfigFile (..),
   )
-import GHC.Generics (Generic)
+import GHC.Generics (Generic, Generically (..))
 import Numeric.Natural (Natural)
 import System.Environment (lookupEnv)
 
@@ -253,31 +254,18 @@ data DelegateConfigFile = DelegateConfigFile
 
 -- | Compaction configuration from YAML file
 data CompactionConfigFile = CompactionConfigFile
-  { enable :: Maybe Bool,
-    tokenThreshold :: Maybe Positive,
-    model :: Maybe Text,
-    prompt :: Maybe Text,
-    strategy :: Maybe CompactionStrategy
+  { enable :: Last Bool,
+    tokenThreshold :: Last Positive,
+    model :: Last Text,
+    prompt :: Last Text,
+    strategy :: Last CompactionStrategy
   }
   deriving stock (Show, Generic)
+  deriving (Semigroup, Monoid) via Generically CompactionConfigFile
 
--- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
-instance Semigroup CompactionConfigFile where
-  a <> b =
-    CompactionConfigFile
-      { enable = b.enable <|> a.enable,
-        tokenThreshold = b.tokenThreshold <|> a.tokenThreshold,
-        model = b.model <|> a.model,
-        prompt = b.prompt <|> a.prompt,
-        strategy = b.strategy <|> a.strategy
-      }
-
-instance Monoid CompactionConfigFile where
-  mempty = CompactionConfigFile Nothing Nothing Nothing Nothing Nothing
-
--- | @isEnabled Nothing == True@; only an explicit @Just False@ disables.
-isEnabled :: Maybe Bool -> Bool
-isEnabled = fromMaybe True
+-- | @isEnabled (Last Nothing) == True@; only an explicit @Last (Just False)@ disables.
+isEnabled :: Last Bool -> Bool
+isEnabled = fromMaybe True . getLast
 
 -- | Resolve a partial compaction config against hardcoded defaults.
 -- Returns 'Nothing' when @enable = False@.
@@ -286,105 +274,55 @@ resolveCompaction ccf
   | isEnabled ccf.enable =
       Just
         CompactionConfig
-          { tokenThreshold = fromMaybe 50000 ccf.tokenThreshold,
-            model = fromMaybe "claude-3-5-haiku-20241022" ccf.model,
-            prompt = ccf.prompt,
-            strategy = fromMaybe (CKeepTurns 10) ccf.strategy
+          { tokenThreshold = fromMaybe 50000 (getLast ccf.tokenThreshold),
+            model = fromMaybe "claude-3-5-haiku-20241022" (getLast ccf.model),
+            prompt = getLast ccf.prompt,
+            strategy = fromMaybe (CKeepTurns 10) (getLast ccf.strategy)
           }
   | otherwise = Nothing
 
 -- | Pruning configuration from YAML file.
 --
--- Double-'Maybe' fields use @.:!@ parsing: @Nothing@ = absent (inherit
--- defaults), @Just Nothing@ = explicit null (disable), @Just (Just cfg)@
--- = explicit configuration.
+-- Double-'Maybe' fields use 'Last': @Last Nothing@ = absent (inherit
+-- defaults), @Last (Just Nothing)@ = explicit null (disable),
+-- @Last (Just (Just cfg))@ = explicit configuration.
 data PruningConfigFile = PruningConfigFile
-  { enable :: Maybe Bool,
-    strategy :: Maybe PruningStrategy,
-    thinking :: Maybe (Maybe ThinkingPruningConfigFile),
-    tools :: Maybe (Maybe ToolPruningConfigFile)
+  { enable :: Last Bool,
+    strategy :: Last PruningStrategy,
+    thinking :: Last (Maybe ThinkingPruningConfigFile),
+    tools :: Last (Maybe ToolPruningConfigFile)
   }
   deriving stock (Show, Generic)
+  deriving (Semigroup, Monoid) via Generically PruningConfigFile
 
 -- | Thinking pruning configuration from YAML file
 data ThinkingPruningConfigFile = ThinkingPruningConfigFile
-  { enable :: Maybe Bool,
-    strategy :: Maybe PruningStrategy
+  { enable :: Last Bool,
+    strategy :: Last PruningStrategy
   }
   deriving stock (Show, Eq, Generic)
-
--- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
-instance Semigroup ThinkingPruningConfigFile where
-  a <> b =
-    ThinkingPruningConfigFile
-      { enable = b.enable <|> a.enable,
-        strategy = b.strategy <|> a.strategy
-      }
-
-instance Monoid ThinkingPruningConfigFile where
-  mempty = ThinkingPruningConfigFile Nothing Nothing
+  deriving (Semigroup, Monoid) via Generically ThinkingPruningConfigFile
 
 -- | Tool pruning configuration from YAML file
 data ToolPruningConfigFile = ToolPruningConfigFile
-  { enable :: Maybe Bool,
-    headChars :: Maybe Int,
-    tailChars :: Maybe Int,
-    strategy :: Maybe PruningStrategy,
+  { enable :: Last Bool,
+    headChars :: Last Int,
+    tailChars :: Last Int,
+    strategy :: Last PruningStrategy,
     input :: Maybe ToolDirectionConfigFile,
     output :: Maybe ToolDirectionConfigFile
   }
   deriving stock (Show, Eq, Generic)
-
--- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
-instance Semigroup ToolPruningConfigFile where
-  a <> b =
-    ToolPruningConfigFile
-      { enable = b.enable <|> a.enable,
-        headChars = b.headChars <|> a.headChars,
-        tailChars = b.tailChars <|> a.tailChars,
-        strategy = b.strategy <|> a.strategy,
-        input = b.input <|> a.input,
-        output = b.output <|> a.output
-      }
-
-instance Monoid ToolPruningConfigFile where
-  mempty = ToolPruningConfigFile Nothing Nothing Nothing Nothing Nothing Nothing
+  deriving (Semigroup, Monoid) via Generically ToolPruningConfigFile
 
 -- | Per-direction tool pruning configuration from YAML file
 data ToolDirectionConfigFile = ToolDirectionConfigFile
-  { strategy :: Maybe PruningStrategy,
-    headChars :: Maybe Int,
-    tailChars :: Maybe Int
+  { strategy :: Last PruningStrategy,
+    headChars :: Last Int,
+    tailChars :: Last Int
   }
   deriving stock (Show, Eq, Generic)
-
--- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
-instance Semigroup ToolDirectionConfigFile where
-  a <> b =
-    ToolDirectionConfigFile
-      { strategy = b.strategy <|> a.strategy,
-        headChars = b.headChars <|> a.headChars,
-        tailChars = b.tailChars <|> a.tailChars
-      }
-
-instance Monoid ToolDirectionConfigFile where
-  mempty = ToolDirectionConfigFile Nothing Nothing Nothing
-
--- | Right-biased: @a <> b@ picks @b@'s values when 'Just'.
--- For double-Maybe fields ('thinking', 'tools'), outer 'Maybe' controls
--- layer presence: @Nothing@ = "not specified" (fall through to @a@),
--- @Just _@ = "specified" (overrides @a@, including @Just Nothing@ = disable).
-instance Semigroup PruningConfigFile where
-  a <> b =
-    PruningConfigFile
-      { enable = b.enable <|> a.enable,
-        strategy = b.strategy <|> a.strategy,
-        thinking = b.thinking <|> a.thinking,
-        tools = b.tools <|> a.tools
-      }
-
-instance Monoid PruningConfigFile where
-  mempty = PruningConfigFile Nothing Nothing Nothing Nothing
+  deriving (Semigroup, Monoid) via Generically ToolDirectionConfigFile
 
 -- | Resolve a partial pruning config against hardcoded defaults.
 -- Returns 'Nothing' when @enable = False@.  Sub-component enable flags
@@ -400,34 +338,35 @@ resolvePruning pcf
             tools = toolsCfg
           }
   where
-    globalStrategy = fromMaybe (KeepTurns 3) pcf.strategy
+    globalStrategy = fromMaybe (KeepTurns 3) (getLast pcf.strategy)
 
-    -- Thinking: Nothing = absent (enable with defaults), Just Nothing = null (disable),
-    -- Just (Just tcf) = explicit config
-    thinkingCfg = case pcf.thinking of
+    -- Thinking: Last Nothing = absent (enable with defaults),
+    -- Last (Just Nothing) = null (disable),
+    -- Last (Just (Just tcf)) = explicit config
+    thinkingCfg = case getLast pcf.thinking of
       Nothing ->
         Just ThinkingPruningConfig {strategy = globalStrategy}
       Just Nothing -> Nothing
       Just (Just tcf)
         | isEnabled tcf.enable ->
-            Just ThinkingPruningConfig {strategy = fromMaybe globalStrategy tcf.strategy}
+            Just ThinkingPruningConfig {strategy = fromMaybe globalStrategy (getLast tcf.strategy)}
         | otherwise -> Nothing
 
     -- Tools: same three-state semantics as thinking
-    toolsCfg = case pcf.tools of
+    toolsCfg = case getLast pcf.tools of
       Nothing -> Just (defaultTools globalStrategy)
       Just Nothing -> Nothing
       Just (Just toolsCf)
         | isEnabled toolsCf.enable ->
-            let toolsHeadChars = fromMaybe 500 toolsCf.headChars
-                toolsTailChars = fromMaybe 500 toolsCf.tailChars
-                toolsStrategy = fromMaybe globalStrategy toolsCf.strategy
+            let toolsHeadChars = fromMaybe 500 (getLast toolsCf.headChars)
+                toolsTailChars = fromMaybe 500 (getLast toolsCf.tailChars)
+                toolsStrategy = fromMaybe globalStrategy (getLast toolsCf.strategy)
                 mkDirection dcf =
                   let dc = fromMaybe mempty dcf
                    in ToolDirectionConfig
-                        { strategy = fromMaybe toolsStrategy dc.strategy,
-                          headChars = fromMaybe toolsHeadChars dc.headChars,
-                          tailChars = fromMaybe toolsTailChars dc.tailChars
+                        { strategy = fromMaybe toolsStrategy (getLast dc.strategy),
+                          headChars = fromMaybe toolsHeadChars (getLast dc.headChars),
+                          tailChars = fromMaybe toolsTailChars (getLast dc.tailChars)
                         }
              in Just
                   ToolPruningConfig
@@ -486,47 +425,47 @@ instance FromJSON ConfigFile where
 instance FromJSON CompactionConfigFile where
   parseJSON = withObject "CompactionConfigFile" $ \v -> do
     rejectUnknownKeys "CompactionConfigFile" ["enable", "token_threshold", "model", "prompt", "strategy"] v
-    CompactionConfigFile
+    CompactionConfigFile . Last
       <$> v .:? "enable"
-      <*> v .:? "token_threshold"
-      <*> v .:? "model"
-      <*> v .:? "prompt"
-      <*> v .:? "strategy"
+      <*> (Last <$> v .:? "token_threshold")
+      <*> (Last <$> v .:? "model")
+      <*> (Last <$> v .:? "prompt")
+      <*> (Last <$> v .:? "strategy")
 
 instance FromJSON PruningConfigFile where
   parseJSON = withObject "PruningConfigFile" $ \v -> do
     rejectUnknownKeys "PruningConfigFile" ["enable", "strategy", "thinking", "tools"] v
-    PruningConfigFile
+    PruningConfigFile . Last
       <$> v .:? "enable"
-      <*> v .:? "strategy"
-      <*> v .:! "thinking"
-      <*> v .:! "tools"
+      <*> (Last <$> v .:? "strategy")
+      <*> (Last <$> v .:! "thinking")
+      <*> (Last <$> v .:! "tools")
 
 instance FromJSON ThinkingPruningConfigFile where
   parseJSON = withObject "ThinkingPruningConfigFile" $ \v -> do
     rejectUnknownKeys "ThinkingPruningConfigFile" ["enable", "strategy"] v
-    ThinkingPruningConfigFile
+    ThinkingPruningConfigFile . Last
       <$> v .:? "enable"
-      <*> v .:? "strategy"
+      <*> (Last <$> v .:? "strategy")
 
 instance FromJSON ToolPruningConfigFile where
   parseJSON = withObject "ToolPruningConfigFile" $ \v -> do
     rejectUnknownKeys "ToolPruningConfigFile" ["enable", "head_chars", "tail_chars", "strategy", "input", "output"] v
-    ToolPruningConfigFile
+    ToolPruningConfigFile . Last
       <$> v .:? "enable"
-      <*> v .:? "head_chars"
-      <*> v .:? "tail_chars"
-      <*> v .:? "strategy"
+      <*> (Last <$> v .:? "head_chars")
+      <*> (Last <$> v .:? "tail_chars")
+      <*> (Last <$> v .:? "strategy")
       <*> v .:? "input"
       <*> v .:? "output"
 
 instance FromJSON ToolDirectionConfigFile where
   parseJSON = withObject "ToolDirectionConfigFile" $ \v -> do
     rejectUnknownKeys "ToolDirectionConfigFile" ["strategy", "head_chars", "tail_chars"] v
-    ToolDirectionConfigFile
+    ToolDirectionConfigFile . Last
       <$> v .:? "strategy"
-      <*> v .:? "head_chars"
-      <*> v .:? "tail_chars"
+      <*> (Last <$> v .:? "head_chars")
+      <*> (Last <$> v .:? "tail_chars")
 
 instance FromJSON DelegateConfigFile where
   parseJSON = withObject "DelegateConfigFile" $ \v -> do
