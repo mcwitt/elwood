@@ -8,8 +8,9 @@ module Elwood.Webhook.Server
   )
 where
 
+import Control.Concurrent (forkIO)
 import Control.Concurrent.STM (atomically, writeTVar)
-import Control.Exception (SomeException, catch)
+import Control.Exception (SomeException, catch, handle)
 import Data.Aeson (Value (..), eitherDecode, encode)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
@@ -18,7 +19,7 @@ import Data.List (find)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Time (getCurrentTime)
+import Data.Time (UTCTime, getCurrentTime)
 import Elwood.AgentSettings (resolveProfile, toOverrides)
 import Elwood.Event (AppEnv (..), BufferedResult (..), DeliveryTarget (..), Event (..), EventSource (..), handleEvent, handleEventBuffered)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
@@ -31,6 +32,7 @@ import Network.HTTP.Types
     hContentType,
     mkStatus,
     status200,
+    status202,
     status401,
     status404,
     status500,
@@ -100,6 +102,10 @@ webhookApp config env request respond = do
       respond $ jsonResponse status404 $ errorJson "Not found"
 
 -- | Handle a webhook request after authentication
+--
+-- Returns 202 Accepted immediately and processes the event asynchronously.
+-- Results are delivered via the configured delivery target (e.g. Telegram),
+-- not in the HTTP response.
 handleWebhookRequest :: Logger -> WebhookConfig -> AppEnv -> Request -> (Response -> IO a) -> IO a
 handleWebhookRequest lgr webhookCfg env request respond = do
   -- Read and parse request body
@@ -120,7 +126,7 @@ handleWebhookRequest lgr webhookCfg env request respond = do
       -- Apply per-endpoint model/thinking overrides
       let envWithOverrides = applyOverrides env webhookCfg
 
-      -- Assemble prompt from configured inputs
+      -- Assemble prompt from configured inputs (synchronous — can fail fast)
       promptResult <- assemblePrompt envWithOverrides.workspace webhookCfg.prompt
 
       case promptResult of
@@ -131,64 +137,59 @@ handleWebhookRequest lgr webhookCfg env request respond = do
           let promptText = renderTemplate assembled payloadVal
           now <- getCurrentTime
 
-          case webhookCfg.suppressIfContains of
-            -- No suppression: eager delivery through the normal pipeline
-            Nothing -> do
-              let evt =
-                    Event
-                      { source = WebhookSource webhookCfg.name,
-                        timestamp = now,
-                        payload = payloadVal,
-                        prompt = promptText,
-                        image = Nothing,
-                        session = webhookCfg.session,
-                        deliveryTarget = webhookCfg.deliveryTarget
-                      }
+          -- Fork event handling and return 202 immediately
+          _ <- forkIO $ processWebhookEvent lgr webhookCfg envWithOverrides payloadVal promptText now
 
-              result <- handleEvent envWithOverrides evt
+          respond $ jsonResponse status202 acceptedJson
 
-              case result of
-                Right responseText -> do
-                  logInfo lgr "Webhook processed successfully" [("name", webhookCfg.name)]
-                  respond $ jsonResponse status200 $ successJson responseText
-                Left err -> do
-                  logError lgr "Webhook processing failed" [("name", webhookCfg.name), ("error", err)]
-                  respond $ jsonResponse status500 $ errorJson err
-
-            -- With suppression: buffer output, then decide whether to flush
-            Just suppressPattern -> do
-              let evt =
-                    Event
-                      { source = WebhookSource webhookCfg.name,
-                        timestamp = now,
-                        payload = payloadVal,
-                        prompt = promptText,
-                        image = Nothing,
-                        session = webhookCfg.session,
-                        deliveryTarget = LogOnly
-                      }
-
-              buffered <- handleEventBuffered envWithOverrides evt webhookCfg.deliveryTarget
-
-              case buffered of
-                BufferedSuccess responseText flushAction -> do
-                  if suppressPattern `T.isInfixOf` responseText
-                    then do
-                      -- Suppressed: discard buffered output and attachments
-                      atomically $ writeTVar envWithOverrides.attachmentQueue []
-                      logInfo
-                        lgr
-                        "Webhook response suppressed"
-                        [("name", webhookCfg.name), ("pattern", suppressPattern)]
-                      respond $ jsonResponse status200 $ successJson responseText
-                    else do
-                      -- Not suppressed: replay buffered output
-                      flushAction
-                      logInfo lgr "Webhook processed successfully" [("name", webhookCfg.name)]
-                      respond $ jsonResponse status200 $ successJson responseText
-                BufferedError err -> do
-                  logError lgr "Webhook processing failed" [("name", webhookCfg.name), ("error", err)]
-                  respond $ jsonResponse status500 $ errorJson err
+-- | Process a webhook event asynchronously (runs in a forked thread)
+processWebhookEvent :: Logger -> WebhookConfig -> AppEnv -> Value -> Text -> UTCTime -> IO ()
+processWebhookEvent lgr webhookCfg env payloadVal promptText now =
+  handle (\(e :: SomeException) -> logError lgr "Webhook processing exception" [("name", webhookCfg.name), ("error", T.pack (show e))]) $
+    case webhookCfg.suppressIfContains of
+      Nothing -> do
+        let evt =
+              Event
+                { source = WebhookSource webhookCfg.name,
+                  timestamp = now,
+                  payload = payloadVal,
+                  prompt = promptText,
+                  image = Nothing,
+                  session = webhookCfg.session,
+                  deliveryTarget = webhookCfg.deliveryTarget
+                }
+        result <- handleEvent env evt
+        case result of
+          Right _ ->
+            logInfo lgr "Webhook processed successfully" [("name", webhookCfg.name)]
+          Left err ->
+            logError lgr "Webhook processing failed" [("name", webhookCfg.name), ("error", err)]
+      Just suppressPattern -> do
+        let evt =
+              Event
+                { source = WebhookSource webhookCfg.name,
+                  timestamp = now,
+                  payload = payloadVal,
+                  prompt = promptText,
+                  image = Nothing,
+                  session = webhookCfg.session,
+                  deliveryTarget = LogOnly
+                }
+        buffered <- handleEventBuffered env evt webhookCfg.deliveryTarget
+        case buffered of
+          BufferedSuccess responseText flushAction -> do
+            if suppressPattern `T.isInfixOf` responseText
+              then do
+                atomically $ writeTVar env.attachmentQueue []
+                logInfo
+                  lgr
+                  "Webhook response suppressed"
+                  [("name", webhookCfg.name), ("pattern", suppressPattern)]
+              else do
+                flushAction
+                logInfo lgr "Webhook processed successfully" [("name", webhookCfg.name)]
+          BufferedError err ->
+            logError lgr "Webhook processing failed" [("name", webhookCfg.name), ("error", err)]
 
 -- | Apply per-endpoint agent overrides to the environment
 applyOverrides :: AppEnv -> WebhookConfig -> AppEnv
@@ -253,6 +254,6 @@ jsonResponse status =
 errorJson :: Text -> LBS.ByteString
 errorJson msg = encode $ Object $ KM.fromList [("status", String "error"), ("error", String msg)]
 
--- | Create success JSON with response
-successJson :: Text -> LBS.ByteString
-successJson response = encode $ Object $ KM.fromList [("status", String "accepted"), ("response", String response)]
+-- | Create accepted JSON (fire-and-forget acknowledgement)
+acceptedJson :: LBS.ByteString
+acceptedJson = encode $ Object $ KM.fromList [("status", String "accepted")]

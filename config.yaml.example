@@ -245,6 +245,8 @@ mcp_servers:
 
 # Webhook server configuration
 # Exposes HTTP endpoints that trigger agent conversations.
+# Webhooks are fire-and-forget: POST returns 202 Accepted immediately,
+# and results are delivered via the configured delivery_target.
 # Built-in endpoints (no auth required):
 #   GET /health   - health check (returns {"status":"ok"})
 #   GET /metrics  - Prometheus metrics endpoint
