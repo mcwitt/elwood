@@ -36,7 +36,7 @@ module Elwood.Event
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.STM (TVar, atomically, readTVar, writeTVar)
+import Control.Concurrent.STM (TVar, atomically, newTVarIO, readTVar, writeTVar)
 import Control.Exception (SomeException, catch)
 import Control.Monad (unless)
 import Data.Aeson (Value (..))
@@ -142,11 +142,13 @@ data DeliveryCallbacks = DeliveryCallbacks
 
 -- | Handle any event through the agent pipeline
 --
--- Returns Either error message or success response text
+-- Returns Either error message or success response text.
+-- Each event gets its own attachment queue to prevent cross-event interference.
 handleEvent :: AppEnv -> Event -> IO (Either Text Text)
-handleEvent env event =
-  withSessionLockIfNamed env event $
-    handleEventCore env event (eagerCallbacks env event)
+handleEvent env event = do
+  env' <- withLocalAttachmentQueue env
+  withSessionLockIfNamed env' event $
+    handleEventCore env' event (eagerCallbacks env' event)
 
 -- | Construct eager (immediate-delivery) callbacks from an event's delivery targets
 eagerCallbacks :: AppEnv -> Event -> DeliveryCallbacks
@@ -224,10 +226,14 @@ handleEventCore env event callbacks = do
         ToolSearchDisabled -> Nothing
         ToolSearchEnabled names -> Just (Set.fromList (map Claude.ToolName names))
 
-  -- Re-register run_command with current permissions (so per-chat/per-webhook
-  -- overrides reach the command-pattern checking in run_command)
+  -- Re-register tools that need per-event state:
+  -- - run_command: per-chat/per-webhook permission overrides
+  -- - queue_attachment: per-event attachment queue (prevents cross-event interference)
   let runCmdTool = Tools.mkRunCommandTool lgr env.workspace prof.permissions
-      registryWithPerms = Tools.registerTool runCmdTool env.registry
+      attachmentTool = Tools.mkQueueAttachmentTool lgr env.attachmentQueue
+      registryWithPerms =
+        Tools.registerTool attachmentTool $
+          Tools.registerTool runCmdTool env.registry
 
   -- Build registry with delegate tool (base registry has no delegate_task,
   -- preventing recursive nesting)
@@ -335,18 +341,19 @@ data BufferedResult
 handleEventBuffered ::
   AppEnv -> Event -> DeliveryTarget -> IO BufferedResult
 handleEventBuffered env event targets = do
+  env' <- withLocalAttachmentQueue env
   bufRef <- newIORef ([] :: [BufferedItem])
   let callbacks =
         DeliveryCallbacks
           { onText = Just $ \t -> do
               -- Drain any attachments queued since the last text callback
               atts <- atomically $ do
-                a <- readTVar env.attachmentQueue
-                writeTVar env.attachmentQueue []
+                a <- readTVar env'.attachmentQueue
+                writeTVar env'.attachmentQueue []
                 pure a
               modifyIORef' bufRef (BufferedText t atts :),
             onToolUse =
-              if env.toolUseMessages
+              if env'.toolUseMessages
                 then Just $ \names -> do
                   let m = formatToolUseMessage names
                   modifyIORef' bufRef (BufferedText m [] :)
@@ -360,19 +367,19 @@ handleEventBuffered env event targets = do
             onBeforeApiCall = Nothing,
             onResponse = \_ -> pure (),
             onDelegateToolUse =
-              if env.toolUseMessages
+              if env'.toolUseMessages
                 then Just $ \task names ->
                   modifyIORef' bufRef (BufferedText (formatDelegateToolUseMessage task names) [] :)
                 else Nothing
           }
-  result <- withSessionLockIfNamed env event $ handleEventCore env event callbacks
+  result <- withSessionLockIfNamed env' event $ handleEventCore env' event callbacks
   case result of
     Left err -> do
-      drainAttachmentQueue env
+      drainAttachmentQueue env'
       pure (BufferedError err)
     Right rsp -> do
       buf <- readIORef bufRef
-      pure $ BufferedSuccess rsp (flushBuffer env targets (reverse buf) rsp)
+      pure $ BufferedSuccess rsp (flushBuffer env' targets (reverse buf) rsp)
 
 -- | Replay buffered items with typing indicators and pacing, then deliver
 -- the final response (including attachment drain).
@@ -399,6 +406,12 @@ flushBuffer env target items finalResponse = do
 drainAttachmentQueue :: AppEnv -> IO ()
 drainAttachmentQueue env =
   atomically $ writeTVar env.attachmentQueue []
+
+-- | Create a fresh per-event attachment queue, replacing the global one in the env
+withLocalAttachmentQueue :: AppEnv -> IO AppEnv
+withLocalAttachmentQueue env = do
+  localQueue <- newTVarIO []
+  pure env {attachmentQueue = localQueue}
 
 -- | Deliver response to configured targets, then send queued attachments
 deliverResponse :: AppEnv -> Event -> Text -> IO ()
