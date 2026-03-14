@@ -10,7 +10,7 @@ module Elwood.Tools.AsyncTask
 
     -- * Tools
     mkCheckTaskTool,
-    mkStopTaskTool,
+    mkCancelTaskTool,
   )
 where
 
@@ -122,17 +122,17 @@ parseCheckTaskInput (Aeson.Object obj) = do
   Right CheckTaskInput {taskId = tid, timeoutDuration = dur}
 parseCheckTaskInput _ = Left "Expected object input"
 
--- | Parsed stop_task input
-newtype StopTaskInput = StopTaskInput
+-- | Parsed cancel_task input
+newtype CancelTaskInput = CancelTaskInput
   { taskId :: TaskId
   }
 
--- | Parse stop_task input
-parseStopTaskInput :: Value -> Either Text StopTaskInput
-parseStopTaskInput (Aeson.Object obj) = do
+-- | Parse cancel_task input
+parseCancelTaskInput :: Value -> Either Text CancelTaskInput
+parseCancelTaskInput (Aeson.Object obj) = do
   tid <- parseRequiredTaskId obj
-  Right StopTaskInput {taskId = tid}
-parseStopTaskInput _ = Left "Expected object input"
+  Right CancelTaskInput {taskId = tid}
+parseCancelTaskInput _ = Left "Expected object input"
 
 -- | Construct the check_task tool
 mkCheckTaskTool :: AsyncTaskStore -> Tool
@@ -145,25 +145,25 @@ mkCheckTaskTool store =
               "Check on async delegate tasks. "
                 <> "Without task_id, lists all tasks with their ID, label, and status. "
                 <> "With task_id, polls that task. Use timeout (seconds) to wait for completion "
-                <> "(default: 0 = instant poll). Results are retained and can be re-checked.",
+                <> "(default: 0 = instant poll). Finished results are consumed on retrieval.",
             inputSchema = checkTaskSchema
           },
       execute = executeCheckTask store
     }
 
--- | Construct the stop_task tool
-mkStopTaskTool :: AsyncTaskStore -> Tool
-mkStopTaskTool store =
+-- | Construct the cancel_task tool
+mkCancelTaskTool :: AsyncTaskStore -> Tool
+mkCancelTaskTool store =
   Tool
     { schema =
         ToolSchema
-          { name = "stop_task",
+          { name = "cancel_task",
             description =
               "Cancel a running async delegate task. "
-                <> "The task is cancelled and removed from the store.",
-            inputSchema = stopTaskSchema
+                <> "The task is cancelled and removed from the store. This is not recoverable.",
+            inputSchema = cancelTaskSchema
           },
-      execute = executeStopTask store
+      execute = executeCancelTask store
     }
 
 -- | JSON Schema for check_task input
@@ -187,9 +187,9 @@ checkTaskSchema =
           ]
     ]
 
--- | JSON Schema for stop_task input
-stopTaskSchema :: Value
-stopTaskSchema =
+-- | JSON Schema for cancel_task input
+cancelTaskSchema :: Value
+cancelTaskSchema =
   object
     [ "type" .= ("object" :: Text),
       "properties"
@@ -213,13 +213,13 @@ executeCheckTask store input = case parseCheckTaskInput input of
       Nothing -> listAllTasks store
       Just tid -> pollTask store tid ci.timeoutDuration
 
--- | Execute stop_task.
+-- | Execute cancel_task.
 -- The task is removed from the store atomically, then cancelled.
 -- If cancellation throws (e.g. thread already dead), the task is still
 -- removed — this is intentional since a failed cancel means the thread
 -- is already gone.
-executeStopTask :: AsyncTaskStore -> Value -> IO ToolResult
-executeStopTask store input = case parseStopTaskInput input of
+executeCancelTask :: AsyncTaskStore -> Value -> IO ToolResult
+executeCancelTask store input = case parseCancelTaskInput input of
   Left err -> pure $ toolError err
   Right si -> do
     mTask <- atomically $ do
@@ -257,7 +257,8 @@ listAllTasks store = do
             Just (Left _) -> "failed"
       pure (tid.unTaskId <> " (" <> task.label <> "): " <> status, task.createdAt)
 
--- | Poll a specific task, optionally waiting
+-- | Poll a specific task, optionally waiting.
+-- Finished tasks are consumed: removed from the store after returning their result.
 pollTask :: AsyncTaskStore -> TaskId -> NominalDiffTime -> IO ToolResult
 pollTask store tid dur = do
   mTask <- atomically $ Map.lookup tid <$> readTVar store.tasks
@@ -269,13 +270,21 @@ pollTask store tid dur = do
           mResult <- poll task.result
           case mResult of
             Nothing -> pure $ toolSuccess $ "Task " <> tid.unTaskId <> " (" <> task.label <> ") is still running."
-            Just r -> formatResult r
+            Just r -> consumeAndFormat store tid r
       | otherwise -> do
           -- Wait with timeout
           mResult <- timeout (toMicroseconds dur) (waitCatch task.result)
           case mResult of
             Nothing -> pure $ toolSuccess $ "Task " <> tid.unTaskId <> " (" <> task.label <> ") is still running after " <> T.pack (show (round dur :: Int)) <> "s wait."
-            Just r -> formatResult r
+            Just r -> consumeAndFormat store tid r
+
+-- | Remove a finished task from the store and format its result.
+consumeAndFormat :: AsyncTaskStore -> TaskId -> Either SomeException AgentResult -> IO ToolResult
+consumeAndFormat store tid r = do
+  atomically $ do
+    taskMap <- readTVar store.tasks
+    writeTVar store.tasks (Map.delete tid taskMap)
+  formatResult r
 
 -- | Format a completed task result
 formatResult :: Either SomeException AgentResult -> IO ToolResult

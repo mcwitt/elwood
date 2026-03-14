@@ -23,7 +23,7 @@ module Elwood.Tools
     mkSearchMemoryTool,
     mkDelegateTaskTool,
     mkCheckTaskTool,
-    mkStopTaskTool,
+    mkCancelTaskTool,
 
     -- * Async Task Store
     AsyncTaskStore,
@@ -31,7 +31,7 @@ module Elwood.Tools
   )
 where
 
-import Elwood.Tools.AsyncTask (AsyncTaskStore, mkCheckTaskTool, mkStopTaskTool, newAsyncTaskStore)
+import Elwood.Tools.AsyncTask (AsyncTaskStore, mkCancelTaskTool, mkCheckTaskTool, newAsyncTaskStore)
 import Elwood.Tools.Attachment (mkQueueAttachmentTool)
 import Elwood.Tools.Command (mkRunCommandTool)
 import Elwood.Tools.Delegate (mkDelegateTaskTool)

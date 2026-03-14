@@ -64,7 +64,7 @@ import Elwood.Event.Types
   )
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
-import Elwood.Notify (Severity (..), escapeUnderscores, formatNotify, sanitizeBackticks, truncateText)
+import Elwood.Notify (Severity (..), escapeUnderscores, formatNotify, sanitizeBackticks)
 import Elwood.Prompt (assemblePrompt)
 import Elwood.Session (SessionLocks, withSessionLock)
 import Elwood.Telegram qualified as Telegram
@@ -255,9 +255,9 @@ handleEventCore env event callbacks = do
           callbacks.onDelegateToolUse
           (Just env.asyncTaskStore)
       checkTaskTool = Tools.mkCheckTaskTool env.asyncTaskStore
-      stopTaskTool = Tools.mkStopTaskTool env.asyncTaskStore
+      cancelTaskTool = Tools.mkCancelTaskTool env.asyncTaskStore
       registryWithDelegate =
-        Tools.registerTool stopTaskTool $
+        Tools.registerTool cancelTaskTool $
           Tools.registerTool checkTaskTool $
             Tools.registerTool delegateTool registryWithPerms
 
@@ -522,15 +522,13 @@ mkToolUseCallback env event names =
     logInfo env.logger "Tool use" [("tools", T.intercalate ", " names)]
 
 -- | Format a delegate sub-agent tool use notification message.
--- The task description is truncated to 30 characters to identify the delegate.
 formatDelegateToolUseMessage :: Text -> [Text] -> Text
 formatDelegateToolUseMessage _ [] = ""
-formatDelegateToolUseMessage task (first : rest) =
-  let taskLabel = truncateText 30 task
-      tools
+formatDelegateToolUseMessage label (first : rest) =
+  let tools
         | length rest < 5 = escapeUnderscores (T.intercalate ", " (first : rest))
         | otherwise = escapeUnderscores first <> " + " <> T.pack (show (length rest)) <> " others"
-   in "  \8627 _\\[" <> escapeUnderscores taskLabel <> "] Using " <> tools <> "_"
+   in "  \8627 _\\[" <> escapeUnderscores label <> "] used " <> tools <> "_"
 
 -- | Create delegate tool use notification callback factory based on event delivery targets
 mkDelegateToolUseCallback :: AppEnv -> Event -> Text -> Claude.ToolUseCallback

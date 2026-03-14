@@ -135,7 +135,9 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
             let subRunCmd = mkRunCommandTool logger workspace subProfile.permissions
                 subRegistry = registerTool subRunCmd baseRegistry
 
-            let outputFmt = fmap jsonSchemaFormat di.outputSchema
+            let resolvedLabel = fromMaybe di.task di.label
+                notifyLabel = truncateText 20 resolvedLabel
+                outputFmt = fmap jsonSchemaFormat di.outputSchema
                 subConfig =
                   AgentConfig
                     { logger = logger,
@@ -147,7 +149,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                       observer = metricsObserver metrics subProfile.model "delegate",
                       onRateLimit = Nothing,
                       onText = Nothing,
-                      onToolUse = fmap (\f -> f di.task) delegateOnToolUse,
+                      onToolUse = fmap (\f -> f notifyLabel) delegateOnToolUse,
                       onBeforeApiCall = Nothing,
                       toolSearch = subToolSearch,
                       pruningConfig = pruning,
@@ -165,7 +167,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
             case (di.async, asyncStore) of
               (True, Just store) -> do
                 taskId <- TaskId . UUID.toText <$> UUID.nextRandom
-                let taskLabel = fromMaybe (truncateText 40 di.task) di.label
+                let taskLabel = truncateText 40 resolvedLabel
                     ttlMicros = storeTtlMicros store
                 -- Fork the sub-agent, then insert into the store.
                 -- insertTask must happen before the thread can be observed
@@ -255,7 +257,7 @@ delegateSchema allowedModels presets =
               "label"
                 .= object
                   [ "type" .= ("string" :: Text),
-                    "description" .= ("Human-readable label for the async task. Defaults to a truncation of the task description." :: Text)
+                    "description" .= ("Human-readable label for this task, e.g. \"fetch weather data\". Used in status messages and tool-use notifications." :: Text)
                   ]
             ]
               ++ modelProp

@@ -6,7 +6,7 @@ import Data.Aeson (Value (..), object, (.=))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Claude.AgentLoop (AgentResult (..))
-import Elwood.Tools.AsyncTask (TaskId (..), insertTask, mkCheckTaskTool, mkStopTaskTool, newAsyncTaskStore)
+import Elwood.Tools.AsyncTask (TaskId (..), insertTask, mkCancelTaskTool, mkCheckTaskTool, newAsyncTaskStore)
 import Elwood.Tools.Types
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -17,8 +17,8 @@ tests =
     "Tools.AsyncTask"
     [ checkTaskParsingTests,
       checkTaskRoundTripTests,
-      stopTaskParsingTests,
-      stopTaskRoundTripTests,
+      cancelTaskParsingTests,
+      cancelTaskRoundTripTests,
       ttlSweepTests
     ]
 
@@ -83,16 +83,16 @@ checkTaskRoundTripTests =
         let tool = mkCheckTaskTool store
         result <- tool.execute (object ["task_id" .= ("err-id" :: Text)])
         result @?= ToolError "something went wrong",
-      testCase "result can be re-checked multiple times" $ do
+      testCase "finished task is consumed on first check" $ do
         store <- newAsyncTaskStore 3600
-        a <- Async.async $ pure $ AgentSuccess "reusable result" []
+        a <- Async.async $ pure $ AgentSuccess "one-time result" []
         _ <- Async.wait a
-        insertTask store (TaskId "re-id") "recheck" a
+        insertTask store (TaskId "re-id") "consume-once" a
         let tool = mkCheckTaskTool store
         r1 <- tool.execute (object ["task_id" .= ("re-id" :: Text)])
+        r1 @?= ToolSuccess "one-time result"
         r2 <- tool.execute (object ["task_id" .= ("re-id" :: Text)])
-        r1 @?= ToolSuccess "reusable result"
-        r2 @?= ToolSuccess "reusable result",
+        r2 @?= ToolError "Unknown task: re-id",
       testCase "poll running task returns still running" $ do
         store <- newAsyncTaskStore 3600
         block <- newEmptyMVar
@@ -132,51 +132,51 @@ checkTaskRoundTripTests =
         result @?= ToolSuccess "waited result"
     ]
 
-stopTaskParsingTests :: TestTree
-stopTaskParsingTests =
+cancelTaskParsingTests :: TestTree
+cancelTaskParsingTests =
   testGroup
-    "stop_task input parsing"
+    "cancel_task input parsing"
     [ testCase "missing task_id returns error" $ do
         store <- newAsyncTaskStore 3600
-        let tool = mkStopTaskTool store
+        let tool = mkCancelTaskTool store
         result <- tool.execute (object [])
         result @?= ToolError "Missing required 'task_id' parameter",
       testCase "empty task_id returns error" $ do
         store <- newAsyncTaskStore 3600
-        let tool = mkStopTaskTool store
+        let tool = mkCancelTaskTool store
         result <- tool.execute (object ["task_id" .= ("  " :: Text)])
         result @?= ToolError "task_id must not be empty",
       testCase "non-string task_id returns error" $ do
         store <- newAsyncTaskStore 3600
-        let tool = mkStopTaskTool store
+        let tool = mkCancelTaskTool store
         result <- tool.execute (object ["task_id" .= (42 :: Int)])
         result @?= ToolError "Invalid 'task_id' parameter (must be a string)",
       testCase "unknown task_id returns error" $ do
         store <- newAsyncTaskStore 3600
-        let tool = mkStopTaskTool store
+        let tool = mkCancelTaskTool store
         result <- tool.execute (object ["task_id" .= ("nonexistent" :: Text)])
         result @?= ToolError "Unknown task: nonexistent"
     ]
 
-stopTaskRoundTripTests :: TestTree
-stopTaskRoundTripTests =
+cancelTaskRoundTripTests :: TestTree
+cancelTaskRoundTripTests =
   testGroup
-    "stop_task round-trip"
-    [ testCase "stop cancels and removes task" $ do
+    "cancel_task round-trip"
+    [ testCase "cancel cancels and removes task" $ do
         store <- newAsyncTaskStore 3600
         block <- newEmptyMVar
         blocker <- Async.async $ takeMVar block >> pure (AgentSuccess "never" [])
-        insertTask store (TaskId "stop-id") "stoppable" blocker
-        let stopTool = mkStopTaskTool store
-        result <- stopTool.execute (object ["task_id" .= ("stop-id" :: Text)])
+        insertTask store (TaskId "cancel-id") "cancellable" blocker
+        let cancelTool = mkCancelTaskTool store
+        result <- cancelTool.execute (object ["task_id" .= ("cancel-id" :: Text)])
         assertBool "should confirm cancellation" $
           case result of
             ToolSuccess t -> T.isInfixOf "cancelled" t
             _ -> False
         -- Verify task is removed from store
         let checkTool = mkCheckTaskTool store
-        checkResult <- checkTool.execute (object ["task_id" .= ("stop-id" :: Text)])
-        checkResult @?= ToolError "Unknown task: stop-id"
+        checkResult <- checkTool.execute (object ["task_id" .= ("cancel-id" :: Text)])
+        checkResult @?= ToolError "Unknown task: cancel-id"
     ]
 
 ttlSweepTests :: TestTree
