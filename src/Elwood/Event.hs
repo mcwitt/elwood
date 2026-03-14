@@ -64,7 +64,7 @@ import Elwood.Event.Types
   )
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
-import Elwood.Notify (Severity (..), escapeUnderscores, formatNotify, sanitizeBackticks)
+import Elwood.Notify (Severity (..), escapeUnderscores, formatNotify, sanitizeBackticks, truncateText)
 import Elwood.Prompt (assemblePrompt)
 import Elwood.Session (SessionLocks, withSessionLock)
 import Elwood.Telegram qualified as Telegram
@@ -124,7 +124,9 @@ data AppEnv = AppEnv
     -- | Allowed models for delegate_task tool parameter
     delegateAllowedModels :: [Text],
     -- | Maximum image dimension for resizing (Nothing = disabled)
-    maxImageDimension :: Maybe Int
+    maxImageDimension :: Maybe Int,
+    -- | Async task store for delegate_task async mode
+    asyncTaskStore :: Tools.AsyncTaskStore
   }
 
 -- | Callbacks wired into the agent loop for delivery during a turn
@@ -235,8 +237,8 @@ handleEventCore env event callbacks = do
         Tools.registerTool attachmentTool $
           Tools.registerTool runCmdTool env.registry
 
-  -- Build registry with delegate tool (base registry has no delegate_task,
-  -- preventing recursive nesting)
+  -- Build registry with delegate and check_task tools (base registry has no
+  -- delegate_task or check_task, preventing recursive nesting)
   let delegateTool =
         Tools.mkDelegateTaskTool
           lgr
@@ -251,7 +253,13 @@ handleEventCore env event callbacks = do
           env.delegateExtraAgents
           env.delegateAllowedModels
           callbacks.onDelegateToolUse
-      registryWithDelegate = Tools.registerTool delegateTool registryWithPerms
+          (Just env.asyncTaskStore)
+      checkTaskTool = Tools.mkCheckTaskTool env.asyncTaskStore
+      stopTaskTool = Tools.mkStopTaskTool env.asyncTaskStore
+      registryWithDelegate =
+        Tools.registerTool stopTaskTool $
+          Tools.registerTool checkTaskTool $
+            Tools.registerTool delegateTool registryWithPerms
 
   -- Build agent config from environment
   let agentConfig =
@@ -518,19 +526,11 @@ mkToolUseCallback env event names =
 formatDelegateToolUseMessage :: Text -> [Text] -> Text
 formatDelegateToolUseMessage _ [] = ""
 formatDelegateToolUseMessage task (first : rest) =
-  let label = truncateTask 30 task
+  let taskLabel = truncateText 30 task
       tools
         | length rest < 5 = escapeUnderscores (T.intercalate ", " (first : rest))
         | otherwise = escapeUnderscores first <> " + " <> T.pack (show (length rest)) <> " others"
-   in "  \8627 _\\[" <> escapeUnderscores label <> "] Using " <> tools <> "_"
-
--- | Truncate a task description for display, adding ellipsis if needed
-truncateTask :: Int -> Text -> Text
-truncateTask maxLen t =
-  let stripped = T.strip t
-   in if T.length stripped <= maxLen
-        then stripped
-        else T.take maxLen stripped <> "\8230"
+   in "  \8627 _\\[" <> escapeUnderscores taskLabel <> "] Using " <> tools <> "_"
 
 -- | Create delegate tool use notification callback factory based on event delivery targets
 mkDelegateToolUseCallback :: AppEnv -> Event -> Text -> Claude.ToolUseCallback

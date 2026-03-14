@@ -60,6 +60,7 @@ library
     Elwood.Telegram.Types
     Elwood.Thinking
     Elwood.Tools
+    Elwood.Tools.AsyncTask
     Elwood.Tools.Attachment
     Elwood.Tools.Command
     Elwood.Tools.Delegate
@@ -145,12 +146,14 @@ test-suite elwood-test
     Test.Elwood.Permissions
     Test.Elwood.Session
     Test.Elwood.Telegram.Markdown
+    Test.Elwood.Tools.AsyncTask
     Test.Elwood.Tools.Delegate
     Test.Elwood.Tools.Registry
     Test.Elwood.Webhook
 
   build-depends:
     , aeson             >=2.1  && <2.3
+    , async             >=2.2  && <2.3
     , base              >=4.20 && <5
     , bytestring        >=0.12 && <0.13
     , containers        >=0.7  && <0.8

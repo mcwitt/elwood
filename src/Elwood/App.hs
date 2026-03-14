@@ -139,6 +139,9 @@ runApp config = do
   -- Record MCP server count in metrics
   setMCPServerCount mets (length mcpServers)
 
+  -- Create async task store for delegate_task async mode (1 hour TTL)
+  asyncStore <- Tools.newAsyncTaskStore 3600
+
   -- Create base app environment (shared by webhook and telegram handlers)
   let appEnv =
         AppEnv
@@ -161,7 +164,8 @@ runApp config = do
             delegateAgent = config.delegateAgent,
             delegateExtraAgents = config.delegateExtraAgents,
             delegateAllowedModels = config.delegateAllowedModels,
-            maxImageDimension = config.maxImageDimension
+            maxImageDimension = config.maxImageDimension,
+            asyncTaskStore = asyncStore
           }
 
   -- Telegram message handler: inject per-chat approval and overrides

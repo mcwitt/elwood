@@ -15,6 +15,7 @@ import Test.Elwood.Metrics qualified
 import Test.Elwood.Permissions qualified
 import Test.Elwood.Session qualified
 import Test.Elwood.Telegram.Markdown qualified
+import Test.Elwood.Tools.AsyncTask qualified
 import Test.Elwood.Tools.Delegate qualified
 import Test.Elwood.Tools.Registry qualified
 import Test.Elwood.Webhook qualified
@@ -41,6 +42,7 @@ tests =
       Test.Elwood.Webhook.tests,
       Test.Elwood.Attachment.tests,
       Test.Elwood.Metrics.tests,
+      Test.Elwood.Tools.AsyncTask.tests,
       Test.Elwood.Tools.Delegate.tests,
       Test.Elwood.Tools.Registry.tests,
       Test.Elwood.Telegram.Markdown.tests,

@@ -3,6 +3,7 @@ module Elwood.Notify
     formatNotify,
     sanitizeBackticks,
     escapeUnderscores,
+    truncateText,
   )
 where
 
@@ -29,3 +30,11 @@ escapeUnderscores = T.replace "_" "\\_"
 -- | Replace backticks with single quotes to avoid breaking inline code spans.
 sanitizeBackticks :: Text -> Text
 sanitizeBackticks = T.replace "`" "'"
+
+-- | Truncate text for display, adding ellipsis if needed.
+truncateText :: Int -> Text -> Text
+truncateText maxLen t =
+  let stripped = T.strip t
+   in if T.length stripped <= maxLen
+        then stripped
+        else T.take maxLen stripped <> "\8230"

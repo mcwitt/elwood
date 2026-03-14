@@ -24,6 +24,8 @@ tests =
       maxIterationsValidationTests,
       agentSelectionTests,
       systemPromptValidationTests,
+      asyncValidationTests,
+      labelValidationTests,
       descriptionTests
     ]
 
@@ -147,6 +149,34 @@ systemPromptValidationTests =
         result @?= ToolError "system_prompt must not be empty"
     ]
 
+asyncValidationTests :: TestTree
+asyncValidationTests =
+  testGroup
+    "async validation"
+    [ testCase "non-boolean async returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "async" .= ("yes" :: Text)])
+        result @?= ToolError "Invalid 'async' parameter (must be a boolean)",
+      testCase "async without store returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "async" .= True])
+        result @?= ToolError "Async delegation is not available"
+    ]
+
+labelValidationTests :: TestTree
+labelValidationTests =
+  testGroup
+    "label validation"
+    [ testCase "non-string label returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "label" .= (42 :: Int)])
+        result @?= ToolError "Invalid 'label' parameter (must be a string)",
+      testCase "empty label returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "label" .= ("  " :: Text)])
+        result @?= ToolError "label must not be empty"
+    ]
+
 descriptionTests :: TestTree
 descriptionTests =
   testGroup
@@ -171,6 +201,7 @@ descriptionTests =
                 presets
                 []
                 Nothing
+                Nothing
             agentDesc = extractAgentDescription tool.schema.inputSchema
         assertBool "should contain 'fast'" (T.isInfixOf "fast" agentDesc)
         assertBool "should contain fast description" (T.isInfixOf "Quick Haiku responses" agentDesc)
@@ -191,6 +222,7 @@ descriptionTests =
                 Map.empty
                 []
                 Nothing
+                Nothing
         assertBool "tool description should contain default agent description" $
           T.isInfixOf "General-purpose sub-agent" tool.schema.description,
       testCase "preset without description shows just the name" $ do
@@ -208,6 +240,7 @@ descriptionTests =
                 (AgentPreset Nothing mempty)
                 presets
                 []
+                Nothing
                 Nothing
             agentDesc = extractAgentDescription tool.schema.inputSchema
         assertBool "should contain 'fast'" (T.isInfixOf "fast" agentDesc)
@@ -251,6 +284,7 @@ mkStubDelegateToolWithModels models =
     Map.empty -- extraAgents
     models
     Nothing -- delegateOnToolUse
+    Nothing -- asyncStore
 
 mkStubDelegateToolWithAgents :: [Text] -> Tool
 mkStubDelegateToolWithAgents agentNames =
@@ -267,3 +301,4 @@ mkStubDelegateToolWithAgents agentNames =
     (Map.fromList [(n, AgentPreset Nothing mempty) | n <- agentNames])
     [] -- allowedModels
     Nothing -- delegateOnToolUse
+    Nothing -- asyncStore

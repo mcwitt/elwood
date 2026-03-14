@@ -3,16 +3,20 @@ module Elwood.Tools.Delegate
   )
 where
 
+import Control.Concurrent.Async qualified as Async
 import Control.Exception (SomeException, catch)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Monoid (Last (..))
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.UUID qualified as UUID
+import Data.UUID.V4 qualified as UUID
 import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), CacheOverrides (..), ToolSearchConfig (..), resolveProfile, toOverrides)
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
@@ -21,12 +25,15 @@ import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), To
 import Elwood.Config (PruningConfig)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
+import Elwood.Notify (truncateText)
 import Elwood.Positive (Positive (getPositive))
 import Elwood.Prompt (PromptInput (InlineText), assemblePrompt)
 import Elwood.Thinking (ThinkingOverrides (..))
+import Elwood.Tools.AsyncTask (AsyncTaskStore, TaskId (..), insertTask, storeTtlMicros)
 import Elwood.Tools.Command (mkRunCommandTool)
 import Elwood.Tools.Registry (ToolRegistry, registerTool)
 import Elwood.Tools.Types
+import System.Timeout (timeout)
 
 -- | Default overrides for delegate sub-agents.
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
@@ -39,7 +46,9 @@ data DelegateInput = DelegateInput
   { task :: Text,
     agentName :: Maybe Text,
     overrides :: AgentOverrides,
-    outputSchema :: Maybe Value
+    outputSchema :: Maybe Value,
+    async :: Bool,
+    label :: Maybe Text
   }
 
 -- | Construct a delegate_task tool that spawns a sub-agent with an isolated
@@ -59,8 +68,10 @@ mkDelegateTaskTool ::
   [Text] ->
   -- | Factory for delegate tool-use callbacks (Nothing = no notifications)
   Maybe (Text -> ToolUseCallback) ->
+  -- | Async task store (Nothing = async not available)
+  Maybe AsyncTaskStore ->
   Tool
-mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspace metrics delegateAgentPreset extraAgents allowedModels delegateOnToolUse =
+mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspace metrics delegateAgentPreset extraAgents allowedModels delegateOnToolUse asyncStore =
   Tool
     { schema =
         ToolSchema
@@ -76,6 +87,8 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                 <> "requires many tool calls (e.g., multi-file edits, long research). "
                 <> "Pass output_schema to constrain the sub-agent's final response to a JSON schema, "
                 <> "making it easy to parse structured results programmatically. "
+                <> "Set async: true to run the task in the background and get a task ID back immediately. "
+                <> "Use check_task to poll for results later. "
                 <> "When using a named agent preset, you can further override individual "
                 <> "settings (model, thinking, max_iterations) via tool parameters. "
                 <> "Note: when overriding model or thinking, ensure they are compatible "
@@ -91,70 +104,102 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
     executeDelegateTask :: Value -> IO ToolResult
     executeDelegateTask input = case parseDelegateInput allowedModels extraAgentKeys input of
       Left err -> pure $ toolError err
-      Right di -> do
-        -- Layering: parent profile < delegate defaults < config agent < extra agent < tool params
-        let extraAgentOvr = maybe mempty (\n -> maybe mempty (.overrides) (Map.lookup n extraAgents)) di.agentName
-            baseOverrides = toOverrides parentProfile <> delegateDefaults <> delegateAgentPreset.overrides <> extraAgentOvr
-            subProfile = resolveProfile (baseOverrides <> di.overrides)
+      Right di
+        | di.async,
+          Nothing <- asyncStore ->
+            pure $ toolError "Async delegation is not available"
+        | otherwise -> do
+            -- Layering: parent profile < delegate defaults < config agent < extra agent < tool params
+            let extraAgentOvr = maybe mempty (\n -> maybe mempty (.overrides) (Map.lookup n extraAgents)) di.agentName
+                baseOverrides = toOverrides parentProfile <> delegateDefaults <> delegateAgentPreset.overrides <> extraAgentOvr
+                subProfile = resolveProfile (baseOverrides <> di.overrides)
 
-        logInfo
-          logger
-          "Delegating task to sub-agent"
-          [ ("task_length", T.pack (show (T.length di.task))),
-            ("model", subProfile.model),
-            ("max_iterations", T.pack (show subProfile.maxIterations.getPositive))
-          ]
-
-        -- Assemble sub-agent system prompt from workspace files
-        subSystemPrompt <- assemblePrompt workspace subProfile.systemPrompt
-
-        -- Convert sub-profile's tool search to Maybe (Set ToolName)
-        let subToolSearch = case subProfile.toolSearch of
-              ToolSearchDisabled -> Nothing
-              ToolSearchEnabled names -> Just (Set.fromList (map ToolName names))
-
-        -- Re-register run_command with sub-profile's permissions (so delegate
-        -- permission overrides affect command-pattern checking)
-        let subRunCmd = mkRunCommandTool logger workspace subProfile.permissions
-            subRegistry = registerTool subRunCmd baseRegistry
-
-        let outputFmt = fmap jsonSchemaFormat di.outputSchema
-            subConfig =
-              AgentConfig
-                { logger = logger,
-                  client = client,
-                  registry = subRegistry,
-                  requestApproval = approve,
-                  systemPrompt = subSystemPrompt,
-                  agentProfile = subProfile,
-                  observer = metricsObserver metrics subProfile.model "delegate",
-                  onRateLimit = Nothing,
-                  onText = Nothing,
-                  onToolUse = fmap (\f -> f di.task) delegateOnToolUse,
-                  onBeforeApiCall = Nothing,
-                  toolSearch = subToolSearch,
-                  pruningConfig = pruning,
-                  pruneHorizon = 0,
-                  outputFormat = outputFmt
-                }
-            userMsg = ClaudeMessage User [TextBlock di.task]
-
-        result <-
-          runAgentTurn subConfig [] userMsg
-            `catch` \(e :: SomeException) -> do
-              logError logger "Delegate sub-agent error" [("error", T.pack (show e))]
-              pure $ AgentError $ "Sub-agent error: " <> T.pack (show e)
-
-        case result of
-          AgentSuccess responseText _ -> do
             logInfo
               logger
-              "Delegate task completed"
-              [("response_length", T.pack (show (T.length responseText)))]
-            pure $ toolSuccess responseText
-          AgentError err -> do
-            logError logger "Delegate task failed" [("error", err)]
-            pure $ toolError err
+              "Delegating task to sub-agent"
+              [ ("task_length", T.pack (show (T.length di.task))),
+                ("model", subProfile.model),
+                ("max_iterations", T.pack (show subProfile.maxIterations.getPositive))
+              ]
+
+            -- Assemble sub-agent system prompt from workspace files
+            subSystemPrompt <- assemblePrompt workspace subProfile.systemPrompt
+
+            -- Convert sub-profile's tool search to Maybe (Set ToolName)
+            let subToolSearch = case subProfile.toolSearch of
+                  ToolSearchDisabled -> Nothing
+                  ToolSearchEnabled names -> Just (Set.fromList (map ToolName names))
+
+            -- Re-register run_command with sub-profile's permissions (so delegate
+            -- permission overrides affect command-pattern checking)
+            let subRunCmd = mkRunCommandTool logger workspace subProfile.permissions
+                subRegistry = registerTool subRunCmd baseRegistry
+
+            let outputFmt = fmap jsonSchemaFormat di.outputSchema
+                subConfig =
+                  AgentConfig
+                    { logger = logger,
+                      client = client,
+                      registry = subRegistry,
+                      requestApproval = approve,
+                      systemPrompt = subSystemPrompt,
+                      agentProfile = subProfile,
+                      observer = metricsObserver metrics subProfile.model "delegate",
+                      onRateLimit = Nothing,
+                      onText = Nothing,
+                      onToolUse = fmap (\f -> f di.task) delegateOnToolUse,
+                      onBeforeApiCall = Nothing,
+                      toolSearch = subToolSearch,
+                      pruningConfig = pruning,
+                      pruneHorizon = 0,
+                      outputFormat = outputFmt
+                    }
+                userMsg = ClaudeMessage User [TextBlock di.task]
+
+            let runWithCatch =
+                  runAgentTurn subConfig [] userMsg
+                    `catch` \(e :: SomeException) -> do
+                      logError logger "Delegate sub-agent error" [("error", T.pack (show e))]
+                      pure $ AgentError $ "Sub-agent error: " <> T.pack (show e)
+
+            case (di.async, asyncStore) of
+              (True, Just store) -> do
+                taskId <- TaskId . UUID.toText <$> UUID.nextRandom
+                let taskLabel = fromMaybe (truncateText 40 di.task) di.label
+                    ttlMicros = storeTtlMicros store
+                -- Fork the sub-agent, then insert into the store.
+                -- insertTask must happen before the thread can be observed
+                -- via check_task; since Haskell's async spawns the thread
+                -- lazily (it won't run until the current thread yields),
+                -- the insert below runs before the forked thread starts.
+                -- Even if scheduling were eager, the only consequence is a
+                -- brief window where check_task returns "still running"
+                -- which is correct.
+                a <-
+                  Async.async $ do
+                    mResult <- timeout ttlMicros runWithCatch
+                    pure $ fromMaybe (AgentError "Async task timed out") mResult
+                insertTask store taskId taskLabel a
+                logInfo
+                  logger
+                  "Async delegate task started"
+                  [ ("task_id", taskId.unTaskId),
+                    ("label", taskLabel)
+                  ]
+                pure $ toolSuccess $ "Task started: " <> taskId.unTaskId <> " (" <> taskLabel <> ")"
+              _ -> do
+                result <- runWithCatch
+
+                case result of
+                  AgentSuccess responseText _ -> do
+                    logInfo
+                      logger
+                      "Delegate task completed"
+                      [("response_length", T.pack (show (T.length responseText)))]
+                    pure $ toolSuccess responseText
+                  AgentError err -> do
+                    logError logger "Delegate task failed" [("error", err)]
+                    pure $ toolError err
 
 -- | JSON Schema for delegate_task input
 delegateSchema :: [Text] -> Map Text AgentPreset -> Value
@@ -201,6 +246,16 @@ delegateSchema allowedModels presets =
                 .= object
                   [ "type" .= ("object" :: Text),
                     "description" .= ("JSON Schema to constrain the sub-agent's final response. When provided, the response will be valid JSON matching this schema." :: Text)
+                  ],
+              "async"
+                .= object
+                  [ "type" .= ("boolean" :: Text),
+                    "description" .= ("If true, run the task in the background and return a task ID immediately. Use check_task to poll for results." :: Text)
+                  ],
+              "label"
+                .= object
+                  [ "type" .= ("string" :: Text),
+                    "description" .= ("Human-readable label for the async task. Defaults to a truncation of the task description." :: Text)
                   ]
             ]
               ++ modelProp
@@ -290,6 +345,16 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
     Just val@(Aeson.Object _) -> Right (Just val)
     Just _ -> Left "Invalid 'output_schema' parameter (must be a JSON object)"
     Nothing -> Right Nothing
+  asyncParam <- case KM.lookup "async" obj of
+    Just (Aeson.Bool b) -> Right b
+    Just _ -> Left "Invalid 'async' parameter (must be a boolean)"
+    Nothing -> Right False
+  labelParam <- case KM.lookup "label" obj of
+    Just (Aeson.String t)
+      | T.null (T.strip t) -> Left "label must not be empty"
+      | otherwise -> Right (Just t)
+    Just _ -> Left "Invalid 'label' parameter (must be a string)"
+    Nothing -> Right Nothing
   let ovr = AgentOverrides {model = Last modelParam, thinking = thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, permissions = Nothing}
-  Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam}
+  Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam, async = asyncParam, label = labelParam}
 parseDelegateInput _ _ _ = Left "Expected object input"
