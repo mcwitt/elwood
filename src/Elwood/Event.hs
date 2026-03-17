@@ -528,7 +528,7 @@ formatDelegateToolUseMessage label (first : rest) =
   let tools
         | length rest < 5 = escapeUnderscores (T.intercalate ", " (first : rest))
         | otherwise = escapeUnderscores first <> " + " <> T.pack (show (length rest)) <> " others"
-   in "  \8627 _\\[" <> escapeUnderscores label <> "] used " <> tools <> "_"
+   in "\128295 _\8627 \\[" <> escapeUnderscores label <> "] Using " <> tools <> "_"
 
 -- | Create delegate tool use notification callback factory based on event delivery targets
 mkDelegateToolUseCallback :: AppEnv -> Event -> Text -> Claude.ToolUseCallback
