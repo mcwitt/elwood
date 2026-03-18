@@ -11,6 +11,7 @@ module Elwood.Tools.AsyncTask
     -- * Tools
     mkCheckTaskTool,
     mkCancelTaskTool,
+    cancelAllTasks,
   )
 where
 
@@ -253,6 +254,7 @@ listAllTasks store = do
       let status = case mResult of
             Nothing -> "running"
             Just (Right (AgentSuccess _ _)) -> "completed"
+            Just (Right AgentCancelled) -> "cancelled"
             Just (Right (AgentError _)) -> "failed"
             Just (Left _) -> "failed"
       pure (tid.unTaskId <> " (" <> task.label <> "): " <> status, task.createdAt)
@@ -290,7 +292,20 @@ consumeAndFormat store tid r = do
 formatResult :: Either SomeException AgentResult -> IO ToolResult
 formatResult (Right (AgentSuccess text _)) = pure $ toolSuccess text
 formatResult (Right (AgentError err)) = pure $ toolError err
+formatResult (Right AgentCancelled) = pure $ toolError "Task was cancelled"
 formatResult (Left exc) = pure $ toolError $ "Task failed with exception: " <> T.pack (show exc)
+
+-- | Cancel all running async tasks. Returns the number of tasks cancelled.
+-- Uses 'Async.uninterruptibleCancel' so that an async exception arriving
+-- mid-loop cannot leave drained tasks uncancelled.
+cancelAllTasks :: AsyncTaskStore -> IO Int
+cancelAllTasks store = do
+  tasks <- atomically $ do
+    taskMap <- readTVar store.tasks
+    writeTVar store.tasks Map.empty
+    pure (Map.elems taskMap)
+  mapM_ (Async.uninterruptibleCancel . (.result)) tasks
+  pure (length tasks)
 
 -- | Sweep expired entries from the store.
 -- Safe to remove regardless of running status because async tasks are wrapped

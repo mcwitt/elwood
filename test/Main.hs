@@ -2,6 +2,7 @@ module Main (main) where
 
 import Test.Elwood.AgentSettings qualified
 import Test.Elwood.Attachment qualified
+import Test.Elwood.Claude.AgentLoop qualified
 import Test.Elwood.Claude.Client qualified
 import Test.Elwood.Claude.Compaction qualified
 import Test.Elwood.Claude.Pruning qualified
@@ -32,6 +33,7 @@ tests =
       Test.Elwood.Memory.tests,
       Test.Elwood.Permissions.tests,
       Test.Elwood.Config.tests,
+      Test.Elwood.Claude.AgentLoop.tests,
       Test.Elwood.Claude.Types.tests,
       Test.Elwood.Claude.Compaction.tests,
       Test.Elwood.Claude.Pruning.tests,

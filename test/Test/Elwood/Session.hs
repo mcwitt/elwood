@@ -4,7 +4,7 @@ import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar, thread
 import Control.Concurrent.STM (atomically, newTVarIO, readTVarIO, writeTVar)
 import Control.Exception (SomeException, try)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
-import Elwood.Session (newSessionLocks, withSessionLock)
+import Elwood.Session (cancelSession, newSessionLocks, sessionCancelFlag, withSessionLock)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -97,7 +97,42 @@ tests =
         threadDelay 100000
         -- Try non-blocking take; should be empty because the thread is deadlocked
         val <- tryTakeMVarTimeout result
-        val @?= Nothing
+        val @?= Nothing,
+      testCase "cancelSession returns False for unknown session" $ do
+        locks <- newSessionLocks
+        result <- cancelSession locks "nonexistent"
+        result @?= False,
+      testCase "cancelSession sets the cancel flag" $ do
+        locks <- newSessionLocks
+        -- Create session state by acquiring the lock
+        withSessionLock locks "s1" $ pure ()
+        -- Cancel it
+        result <- cancelSession locks "s1"
+        result @?= True
+        -- Verify the flag is set
+        mFlag <- sessionCancelFlag locks "s1"
+        case mFlag of
+          Nothing -> assertFailure "expected cancel flag to exist"
+          Just tv -> do
+            val <- readTVarIO tv
+            val @?= True,
+      testCase "withSessionLock resets cancel flag" $ do
+        locks <- newSessionLocks
+        -- Create session and cancel it
+        withSessionLock locks "s1" $ pure ()
+        _ <- cancelSession locks "s1"
+        -- Acquire the lock again — should reset the flag
+        withSessionLock locks "s1" $ do
+          mFlag <- sessionCancelFlag locks "s1"
+          case mFlag of
+            Nothing -> assertFailure "expected cancel flag to exist"
+            Just tv -> do
+              val <- readTVarIO tv
+              val @?= False,
+      testCase "sessionCancelFlag returns Nothing for unknown session" $ do
+        locks <- newSessionLocks
+        mFlag <- sessionCancelFlag locks "nonexistent"
+        assertBool "expected Nothing" (null mFlag)
     ]
 
 -- | Try to take from an MVar, returning Nothing if empty

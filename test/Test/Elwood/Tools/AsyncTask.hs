@@ -6,7 +6,7 @@ import Data.Aeson (Value (..), object, (.=))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Claude.AgentLoop (AgentResult (..))
-import Elwood.Tools.AsyncTask (TaskId (..), insertTask, mkCancelTaskTool, mkCheckTaskTool, newAsyncTaskStore)
+import Elwood.Tools.AsyncTask (TaskId (..), cancelAllTasks, insertTask, mkCancelTaskTool, mkCheckTaskTool, newAsyncTaskStore)
 import Elwood.Tools.Types
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -19,6 +19,7 @@ tests =
       checkTaskRoundTripTests,
       cancelTaskParsingTests,
       cancelTaskRoundTripTests,
+      cancelAllTasksTests,
       ttlSweepTests
     ]
 
@@ -177,6 +178,30 @@ cancelTaskRoundTripTests =
         let checkTool = mkCheckTaskTool store
         checkResult <- checkTool.execute (object ["task_id" .= ("cancel-id" :: Text)])
         checkResult @?= ToolError "Unknown task: cancel-id"
+    ]
+
+cancelAllTasksTests :: TestTree
+cancelAllTasksTests =
+  testGroup
+    "cancelAllTasks"
+    [ testCase "returns 0 for empty store" $ do
+        store <- newAsyncTaskStore 3600
+        n <- cancelAllTasks store
+        n @?= 0,
+      testCase "cancels all tasks and empties store" $ do
+        store <- newAsyncTaskStore 3600
+        block1 <- newEmptyMVar
+        block2 <- newEmptyMVar
+        a1 <- Async.async $ takeMVar block1 >> pure (AgentSuccess "a" [])
+        a2 <- Async.async $ takeMVar block2 >> pure (AgentSuccess "b" [])
+        insertTask store (TaskId "t1") "task1" a1
+        insertTask store (TaskId "t2") "task2" a2
+        n <- cancelAllTasks store
+        n @?= 2
+        -- Verify store is empty
+        let tool = mkCheckTaskTool store
+        result <- tool.execute (object [])
+        result @?= ToolSuccess "No async tasks."
     ]
 
 ttlSweepTests :: TestTree

@@ -154,7 +154,8 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                       toolSearch = subToolSearch,
                       pruningConfig = pruning,
                       pruneHorizon = 0,
-                      outputFormat = outputFmt
+                      outputFormat = outputFmt,
+                      isCancelled = pure False
                     }
                 userMsg = ClaudeMessage User [TextBlock di.task]
 
@@ -199,6 +200,9 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                       "Delegate task completed"
                       [("response_length", T.pack (show (T.length responseText)))]
                     pure $ toolSuccess responseText
+                  AgentCancelled -> do
+                    logInfo logger "Delegate task cancelled" []
+                    pure $ toolError "Task was cancelled"
                   AgentError err -> do
                     logError logger "Delegate task failed" [("error", err)]
                     pure $ toolError err

@@ -36,7 +36,7 @@ module Elwood.Event
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.STM (TVar, atomically, newTVarIO, readTVar, writeTVar)
+import Control.Concurrent.STM (TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar)
 import Control.Exception (SomeException, catch)
 import Control.Monad (unless)
 import Data.Aeson (Value (..))
@@ -66,7 +66,7 @@ import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
 import Elwood.Notify (Severity (..), escapeUnderscores, formatNotify, sanitizeBackticks)
 import Elwood.Prompt (assemblePrompt)
-import Elwood.Session (SessionLocks, withSessionLock)
+import Elwood.Session (SessionLocks, sessionCancelFlag, withSessionLock)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Tools qualified as Tools
 import Elwood.Tools.Attachment (isPhotoExtension)
@@ -261,6 +261,13 @@ handleEventCore env event callbacks = do
           Tools.registerTool checkTaskTool $
             Tools.registerTool delegateTool registryWithPerms
 
+  -- Build cancellation check for this session (always False for isolated sessions)
+  isCancelled_ <- case mConversationId of
+    Nothing -> pure (pure False)
+    Just cid -> do
+      mtv <- sessionCancelFlag env.sessionLocks cid
+      pure $ maybe (pure False) readTVarIO mtv
+
   -- Build agent config from environment
   let agentConfig =
         Claude.AgentConfig
@@ -278,7 +285,8 @@ handleEventCore env event callbacks = do
             toolSearch = toolSearch_,
             pruningConfig = env.pruning,
             pruneHorizon = pruneHorizon,
-            outputFormat = Nothing
+            outputFormat = Nothing,
+            isCancelled = isCancelled_
           }
 
   -- Run the agent turn
@@ -306,6 +314,10 @@ handleEventCore env event callbacks = do
         ]
 
       pure (Right responseText)
+    Claude.AgentCancelled -> do
+      logInfo lgr "Event cancelled by user" [("source", formatSource src)]
+      -- Turn discarded — don't save anything or deliver a response
+      pure (Right "")
     Claude.AgentError err -> do
       logError lgr "Event handling failed" [("source", formatSource src), ("error", err)]
       pure (Left err)

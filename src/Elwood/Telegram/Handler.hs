@@ -45,8 +45,9 @@ import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (estimateJsonTokens, estimateTextTokens, recordApiResponse, recordCompaction)
 import Elwood.Notify (Severity (..), formatNotify)
 import Elwood.Positive (Positive (getPositive))
-import Elwood.Session (withSessionLock)
+import Elwood.Session (cancelSession, withSessionLock)
 import Elwood.Telegram qualified as Telegram
+import Elwood.Tools.AsyncTask (cancelAllTasks)
 import Numeric (showFFloat)
 import System.Exit (ExitCode (..))
 
@@ -130,6 +131,7 @@ handleTelegramMessage env msg =
         Command "clear" "Clear conversation history" $ NoArgs handleClear,
         Command "compact" "Compact conversation to save context" $ NoArgs handleCompact,
         Command "context" "Show token usage breakdown" $ NoArgs handleContext,
+        Command "stop" "Stop the running agent" $ NoArgs handleStop,
         Command "run" "Execute a shell command" $ WithArg "command" handleRun
       ]
 
@@ -287,6 +289,19 @@ handleTelegramMessage env msg =
 
     formatKTok :: Int -> Text
     formatKTok tokens = T.pack (show (round (fromIntegral tokens / 1e3 :: Double) :: Int)) <> "k"
+
+    handleStop :: IO (Maybe Text)
+    handleStop = do
+      sessionCancelled <- case sessionToConversationId chatSession of
+        Nothing -> pure False
+        Just sid -> cancelSession env.sessionLocks sid
+      tasksCancelled <- cancelAllTasks env.asyncTaskStore
+      if sessionCancelled || tasksCancelled > 0
+        then do
+          logInfo lgr "Stop requested" [("chat_id", T.pack (show chatIdVal)), ("tasks_cancelled", T.pack (show tasksCancelled))]
+          pure (Just $ formatNotify Info "Stopping...")
+        else
+          pure (Just $ formatNotify Info "Nothing to stop")
 
     handleRun :: Text -> IO (Maybe Text)
     handleRun cmd = do
