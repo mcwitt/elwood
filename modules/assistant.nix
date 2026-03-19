@@ -79,7 +79,7 @@ let
           chat_ids = dt.chatIds;
         };
 
-      # Serialize a prompt input, stripping the NixOS-only defaultContent field
+      # Serialize a prompt input to a YAML-ready attrset
       mkPromptInputYaml =
         pi:
         {
@@ -213,7 +213,7 @@ let
 
       configContent = {
         state_dir = agentCfg.stateDir;
-        workspace = agentCfg.workspace;
+        workspace = agentCfg.workspace.path;
         channels.telegram = map (
           tc:
           {
@@ -359,46 +359,41 @@ let
     in
     pkgs.writeText "assistant-${name}-config.yaml" (lib.generators.toYAML { } configContent);
 
-  # Collect all workspaceFile inputs with defaultContent from an agent config
-  collectDefaultContentFiles =
+  # Generate ExecStartPre script for provisioning workspace files.
+  # Immutable files (default) are written unconditionally on every start.
+  # Mutable files are only written if they don't already exist.
+  mkWorkspaceFilesScript =
     agentCfg:
     let
-      fromInputs =
-        inputs:
-        lib.filter (pi: pi.type == "workspace_file" && pi.path != null && pi.defaultContent != null) inputs;
-
-      systemPromptFiles = fromInputs agentCfg.agent.systemPrompt;
-
-      webhookFiles = lib.concatMap (epCfg: fromInputs epCfg.prompt) (
-        lib.attrValues agentCfg.webhook.endpoints
-      );
-
-      cronFiles = lib.concatMap (cronCfg: fromInputs cronCfg.prompt) (lib.attrValues agentCfg.cronJobs);
-    in
-    systemPromptFiles ++ webhookFiles ++ cronFiles;
-
-  # Generate ExecStartPre script for creating default workspace files
-  mkDefaultContentScript =
-    agentCfg:
-    let
-      files = collectDefaultContentFiles agentCfg;
-      mkFileCheck =
-        pi:
+      files = agentCfg.workspace.files;
+      mkFileEntry =
+        name:
         let
-          fullPath = "${agentCfg.workspace}/${pi.path}";
+          fileCfg = files.${name};
+          fullPath = "${agentCfg.workspace.path}/${name}";
+          # Content lives in the Nix store; the script copies it into place.
+          storePath = if fileCfg.text != null then pkgs.writeText name fileCfg.text else fileCfg.path;
+          copyCmd = "install -m 0640 ${storePath} ${lib.escapeShellArg fullPath}";
         in
         ''
-          if [ ! -f ${lib.escapeShellArg fullPath} ]; then
-            printf '%s' ${lib.escapeShellArg pi.defaultContent} > ${lib.escapeShellArg fullPath}
-          fi
-        '';
+          mkdir -p "$(dirname ${lib.escapeShellArg fullPath})"
+        ''
+        + (
+          if fileCfg.mutable then
+            ''
+              if [ ! -f ${lib.escapeShellArg fullPath} ]; then
+                ${copyCmd}
+              fi
+            ''
+          else
+            "  ${copyCmd}\n"
+        );
     in
-    if files == [ ] then
+    if files == { } then
       null
     else
-      pkgs.writeShellScript "assistant-default-content" (
-        "mkdir -p ${lib.escapeShellArg agentCfg.workspace}\n"
-        + lib.concatMapStrings mkFileCheck (lib.unique files)
+      pkgs.writeShellScript "assistant-workspace-files" (
+        lib.concatMapStrings mkFileEntry (lib.attrNames files)
       );
 
   # Serialize a thinking mode to YAML, converting camelCase to snake_case keys.
@@ -478,11 +473,6 @@ let
         description = "Inline text content (text type only).";
       };
 
-      defaultContent = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Create file with this content if missing (NixOS-only, workspaceFile type only).";
-      };
     };
   };
 
@@ -717,10 +707,49 @@ let
           description = "Directory for persistent state.";
         };
 
-        workspace = lib.mkOption {
-          type = lib.types.path;
-          default = "/var/lib/assistant/${name}/workspace";
-          description = "Directory containing SOUL.md and other workspace files.";
+        workspace = {
+          path = lib.mkOption {
+            type = lib.types.path;
+            default = "/var/lib/assistant/${name}/workspace";
+            description = "Directory containing SOUL.md and other workspace files.";
+          };
+
+          files = lib.mkOption {
+            type = lib.types.attrsOf (
+              lib.types.submodule {
+                options = {
+                  text = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Inline text content for the file.";
+                  };
+
+                  path = lib.mkOption {
+                    type = lib.types.nullOr lib.types.path;
+                    default = null;
+                    description = "Path to a file whose contents are copied into the workspace.";
+                  };
+
+                  mutable = lib.mkOption {
+                    type = lib.types.bool;
+                    default = false;
+                    description = "If true, the file is only written when missing (agent can modify it). If false (default), the file is overwritten on every service start.";
+                  };
+                };
+              }
+            );
+            default = { };
+            description = "Files to provision in the workspace directory. Each key is a filename relative to workspace.path.";
+            example = lib.literalExpression ''
+              {
+                "SOUL.md".text = "You are a helpful assistant.";
+                "USER.md" = {
+                  path = ./USER.md;
+                  mutable = true;
+                };
+              }
+            '';
+          };
         };
 
         environmentFile = lib.mkOption {
@@ -1238,8 +1267,32 @@ in
                 ${t.path}.chatIds = [ <chat-id> ];
             '';
           }) allTargets;
+        # Each workspace file must have exactly one of text or path
+        workspaceFileAssertions = lib.concatLists (
+          lib.mapAttrsToList (
+            agentName: agentCfg:
+            lib.mapAttrsToList (
+              fileName: fileCfg:
+              let
+                hasText = fileCfg.text != null;
+                hasPath = fileCfg.path != null;
+              in
+              {
+                assertion = (hasText || hasPath) && !(hasText && hasPath);
+                message = ''
+                  services.assistant.agents.${agentName}.workspace.files."${fileName}"
+                  must have exactly one of 'text' or 'path' set.
+                '';
+              }
+            ) agentCfg.workspace.files
+          ) enabledAgents
+        );
       in
-      webhookAssertions ++ portConflictAssertions ++ chatIdAssertions ++ deliveryTargetAssertions;
+      webhookAssertions
+      ++ portConflictAssertions
+      ++ chatIdAssertions
+      ++ deliveryTargetAssertions
+      ++ workspaceFileAssertions;
 
     # Collect all unique users and groups
     # Use lib.unique to avoid duplicate definitions when multiple agents share the same user
@@ -1282,7 +1335,7 @@ in
     ]
     ++ lib.concatMap (agentCfg: [
       "d ${agentCfg.stateDir} 0750 ${agentCfg.user} ${agentCfg.group} -"
-      "d ${agentCfg.workspace} 0750 ${agentCfg.user} ${agentCfg.group} -"
+      "d ${agentCfg.workspace.path} 0750 ${agentCfg.user} ${agentCfg.group} -"
     ]) (lib.attrValues enabledAgents);
 
     # Firewall rules
@@ -1310,7 +1363,7 @@ in
       (lib.mapAttrs' (
         name: agentCfg:
         let
-          defaultContentScript = mkDefaultContentScript agentCfg;
+          workspaceFilesScript = mkWorkspaceFilesScript agentCfg;
         in
         lib.nameValuePair "assistant-${name}" {
           description = "Elwood Assistant (${name})";
@@ -1356,14 +1409,14 @@ in
             RestrictSUIDSGID = true;
             ReadWritePaths = lib.unique [
               agentCfg.stateDir
-              agentCfg.workspace
+              agentCfg.workspace.path
             ];
             StandardOutput = "journal";
             StandardError = "journal";
             SyslogIdentifier = "assistant-${name}";
           }
-          // lib.optionalAttrs (defaultContentScript != null) {
-            ExecStartPre = "${defaultContentScript}";
+          // lib.optionalAttrs (workspaceFilesScript != null) {
+            ExecStartPre = "${workspaceFilesScript}";
           };
         }
       ) enabledAgents)

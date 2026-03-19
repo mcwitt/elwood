@@ -31,7 +31,7 @@ in
           enable = true;
           channels.telegram = [ { id = 123456789; } ];
           stateDir = "/var/lib/assistant/test-agent";
-          workspace = "/var/lib/assistant/test-agent/workspace";
+          workspace.path = "/var/lib/assistant/test-agent/workspace";
 
           webhook = {
             enable = true;
@@ -353,9 +353,9 @@ in
     '';
   };
 
-  # Test system prompt with defaultContent creates workspace files
-  system-prompt = pkgs.testers.runNixOSTest {
-    name = "assistant-system-prompt";
+  # Test workspace.files provisioning (immutable and mutable)
+  workspace-files = pkgs.testers.runNixOSTest {
+    name = "assistant-workspace-files";
 
     nodes.machine =
       { ... }:
@@ -364,17 +364,23 @@ in
 
         services.assistant.package = mockElwood;
 
-        services.assistant.agents.prompt-test = {
+        services.assistant.agents.files-test = {
           enable = true;
           channels.telegram = [ { id = 123456789; } ];
-          stateDir = "/var/lib/assistant/prompt-test";
-          workspace = "/var/lib/assistant/prompt-test/workspace";
+          stateDir = "/var/lib/assistant/files-test";
+          workspace = {
+            path = "/var/lib/assistant/files-test/workspace";
+            files."SOUL.md".text = "You are a helpful assistant.";
+            files."MUTABLE.md" = {
+              text = "Initial content.";
+              mutable = true;
+            };
+          };
 
           agent.systemPrompt = [
             {
               type = "workspace_file";
               path = "SOUL.md";
-              defaultContent = "You are a helpful assistant.";
             }
             {
               type = "text";
@@ -391,16 +397,35 @@ in
 
     testScript = ''
       machine.start()
-      machine.wait_for_unit("assistant-prompt-test.service")
+      machine.wait_for_unit("assistant-files-test.service")
 
-      # Check that ExecStartPre created the default SOUL.md file
-      machine.succeed("test -f /var/lib/assistant/prompt-test/workspace/SOUL.md")
-      content = machine.succeed("cat /var/lib/assistant/prompt-test/workspace/SOUL.md")
+      # Check that ExecStartPre created the immutable SOUL.md
+      machine.succeed("test -f /var/lib/assistant/files-test/workspace/SOUL.md")
+      content = machine.succeed("cat /var/lib/assistant/files-test/workspace/SOUL.md")
       assert content == "You are a helpful assistant.", f"Unexpected SOUL.md content: {content}"
+
+      # Check that mutable file was created
+      machine.succeed("test -f /var/lib/assistant/files-test/workspace/MUTABLE.md")
+      content = machine.succeed("cat /var/lib/assistant/files-test/workspace/MUTABLE.md")
+      assert content == "Initial content.", f"Unexpected MUTABLE.md content: {content}"
+
+      # Modify the mutable file, then restart — it should NOT be overwritten
+      machine.succeed("echo -n 'Modified.' > /var/lib/assistant/files-test/workspace/MUTABLE.md")
+      machine.succeed("systemctl restart assistant-files-test.service")
+      machine.wait_for_unit("assistant-files-test.service")
+      content = machine.succeed("cat /var/lib/assistant/files-test/workspace/MUTABLE.md")
+      assert content == "Modified.", f"Mutable file was overwritten: {content}"
+
+      # Immutable file should be restored on restart
+      machine.succeed("echo -n 'Tampered.' > /var/lib/assistant/files-test/workspace/SOUL.md")
+      machine.succeed("systemctl restart assistant-files-test.service")
+      machine.wait_for_unit("assistant-files-test.service")
+      content = machine.succeed("cat /var/lib/assistant/files-test/workspace/SOUL.md")
+      assert content == "You are a helpful assistant.", f"Immutable file was not restored: {content}"
 
       # Check config has systemPrompt with both inputs
       config_path = machine.succeed(
-        "systemctl show assistant-prompt-test.service -p Environment | grep -oP 'ELWOOD_CONFIG=\\K[^\\s]+'"
+        "systemctl show assistant-files-test.service -p Environment | grep -oP 'ELWOOD_CONFIG=\\K[^\\s]+'"
       ).strip()
       config = machine.succeed(f"cat {config_path}")
       assert "SOUL.md" in config, f"SOUL.md not in config: {config}"

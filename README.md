@@ -161,14 +161,20 @@ Add the flake to your NixOS configuration:
             enable = true;
             channels.telegram = [ { id = 123456789; session = "main"; } ];
             environmentFile = "/run/secrets/elwood-env";
-            workspace = "/var/lib/assistant/elwood/workspace";
+            workspace = {
+              path = "/var/lib/assistant/elwood/workspace";
+              files."SOUL.md".text = ''You are Elwood, a personal AI assistant.'';
+              files."USER.md" = {
+                path = ./USER.md;
+                mutable = true;  # agent can modify this file
+              };
+            };
 
             agent = {
               systemPrompt = [
                 {
                   type = "workspace_file";
                   path = "SOUL.md";
-                  defaultContent = ''You are Elwood, a personal AI assistant'';
                 }
                 {
                   type = "text";
