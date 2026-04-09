@@ -146,6 +146,7 @@ test-suite elwood-test
     Test.Elwood.Metrics
     Test.Elwood.Permissions
     Test.Elwood.Session
+    Test.Elwood.Telegram.Client
     Test.Elwood.Telegram.Markdown
     Test.Elwood.Tools.AsyncTask
     Test.Elwood.Tools.Delegate

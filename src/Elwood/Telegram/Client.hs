@@ -13,6 +13,10 @@ module Elwood.Telegram.Client
     sendPhoto,
     sendDocument,
     sendChatAction,
+    splitMessage,
+    splitMessageAt,
+    splitForTelegram,
+    telegramApiLimit,
   )
 where
 
@@ -149,7 +153,7 @@ getUpdatesAllowed client offset allowedUpdates = do
 -- original markdown as plain text so the message is never silently lost.
 sendMessage :: TelegramClient -> Int64 -> Text -> IO ()
 sendMessage client chatId_ msgText =
-  mapM_ (sendChunk client chatId_) (filter (not . T.null) $ splitMessage msgText)
+  mapM_ (sendChunk client chatId_) (filter (not . T.null) $ splitForTelegram msgText)
 
 -- | Send a single chunk, with HTML formatting and plain-text fallback.
 sendChunk :: TelegramClient -> Int64 -> Text -> IO ()
@@ -179,31 +183,53 @@ sendChunk client chatId_ chunk = do
                 Left (s, b) -> throwIO $ TelegramHttpError s b
       | otherwise -> throwIO $ TelegramHttpError status body
 
--- | Telegram's maximum message length. The API counts UTF-16 code units;
--- 'T.length' counts code points which can undercount for supplementary
--- characters (emoji etc.), so we use a smaller value for safety margin.
+-- | Telegram's hard API limit on message text length (UTF-16 code units).
+telegramApiLimit :: Int
+telegramApiLimit = 4096
+
+-- | Initial split target for markdown text. Below the API limit to leave
+-- room for HTML tag expansion; 'splitForTelegram' re-splits if HTML still
+-- exceeds 'telegramApiLimit'.
 telegramMaxLength :: Int
 telegramMaxLength = 4000
+
+-- | Split a markdown message into chunks whose HTML representations each fit
+-- within 'telegramApiLimit'. First splits markdown at 'telegramMaxLength',
+-- then re-splits any chunk whose HTML conversion exceeds the API limit.
+splitForTelegram :: Text -> [Text]
+splitForTelegram = concatMap ensureHtmlFits . splitMessage
+  where
+    ensureHtmlFits chunk
+      | T.length (markdownToTelegramHtml chunk) <= telegramApiLimit = [chunk]
+      | otherwise =
+          concatMap ensureHtmlFits $
+            filter (not . T.null) $
+              splitMessageAt (T.length chunk `div` 2) chunk
 
 -- | Split a message into chunks that fit within Telegram's limit.
 -- Splits on paragraph boundaries (double newlines) when possible,
 -- falls back to single newlines, then hard-cuts as a last resort.
 splitMessage :: Text -> [Text]
-splitMessage msg
-  | T.length msg <= telegramMaxLength = [msg]
+splitMessage = splitMessageAt telegramMaxLength
+
+-- | Split a message into chunks of at most @maxLen@ characters.
+splitMessageAt :: Int -> Text -> [Text]
+splitMessageAt maxLen msg
+  | maxLen <= 0 = [msg]
+  | T.length msg <= maxLen = [msg]
   | otherwise = go msg
   where
     go remaining
       | T.null remaining = []
-      | T.length remaining <= telegramMaxLength = [remaining]
+      | T.length remaining <= maxLen = [remaining]
       | otherwise =
-          let (chunk, rest) = splitAt' telegramMaxLength remaining
+          let (chunk, rest) = splitAt' remaining
            in chunk : go rest
 
     -- Take up to maxLen characters, breaking at the best boundary found.
     -- Whitespace between chunks (trailing newlines at the break point) is
     -- intentionally dropped so chunks don't start/end with blank lines.
-    splitAt' maxLen txt =
+    splitAt' txt =
       let candidate = T.take maxLen txt
           tryBreak sep = case T.breakOnEnd sep candidate of
             (before, _)
