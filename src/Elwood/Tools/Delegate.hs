@@ -1,17 +1,17 @@
 module Elwood.Tools.Delegate
   ( mkDelegateTaskTool,
+    labelMaxLen,
   )
 where
 
 import Control.Concurrent.Async qualified as Async
 import Control.Exception (SomeException, catch)
-import Control.Monad (when)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe)
 import Data.Monoid (Last (..))
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -31,11 +31,15 @@ import Elwood.Notify (truncateText)
 import Elwood.Positive (Positive (getPositive))
 import Elwood.Prompt (PromptInput (InlineText), assemblePrompt)
 import Elwood.Thinking (ThinkingOverrides (..))
-import Elwood.Tools.AsyncTask (AsyncTaskStore, TaskId (..), insertTask, storeTtlMicros, toMicroseconds)
+import Elwood.Tools.AsyncTask (AsyncTaskStore, TaskId (..), insertTask, storeTtlSeconds, toMicroseconds)
 import Elwood.Tools.Command (mkRunCommandTool)
 import Elwood.Tools.Registry (ToolRegistry, registerTool)
 import Elwood.Tools.Types
 import System.Timeout (timeout)
+
+-- | Maximum length for task labels in notifications and async task names.
+labelMaxLen :: Int
+labelMaxLen = 30
 
 -- | Default overrides for delegate sub-agents.
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
@@ -139,7 +143,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                 subRegistry = registerTool subRunCmd baseRegistry
 
             let resolvedLabel = fromMaybe di.task di.label
-                notifyLabel = truncateText 20 resolvedLabel
+                notifyLabel = truncateText labelMaxLen resolvedLabel
                 outputFmt = fmap jsonSchemaFormat di.outputSchema
                 subConfig =
                   AgentConfig
@@ -171,8 +175,8 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
             case (di.async, asyncStore) of
               (True, Just store) -> do
                 taskId <- TaskId . UUID.toText <$> UUID.nextRandom
-                let taskLabel = truncateText 40 resolvedLabel
-                    ttlMicros = storeTtlMicros store
+                let taskLabel = truncateText labelMaxLen resolvedLabel
+                    taskTimeout = toMicroseconds $ maybe (storeTtlSeconds store) (min (storeTtlSeconds store)) di.timeoutSeconds
                 -- Fork the sub-agent, then insert into the store.
                 -- Async.async calls forkIO which eagerly schedules the
                 -- new thread, so there is a brief window where the task
@@ -182,7 +186,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                 -- the forked thread makes meaningful progress.
                 a <-
                   Async.async $ do
-                    mResult <- timeout ttlMicros runWithCatch
+                    mResult <- timeout taskTimeout runWithCatch
                     pure $ fromMaybe (AgentError "Async task timed out") mResult
                 insertTask store taskId taskLabel a
                 logInfo
@@ -268,13 +272,13 @@ delegateSchema allowedModels presets =
               "timeout_seconds"
                 .= object
                   [ "type" .= ("integer" :: Text),
-                    "description" .= ("Maximum seconds to wait for the task to complete (sync mode only). Returns a timeout error if exceeded. Not valid with async mode." :: Text),
+                    "description" .= ("Maximum seconds to wait for the task to complete. In sync mode, returns a timeout error if exceeded. In async mode, sets a shorter timeout than the default store TTL (capped at the store TTL)." :: Text),
                     "minimum" .= (1 :: Int)
                   ],
               "label"
                 .= object
                   [ "type" .= ("string" :: Text),
-                    "description" .= ("Human-readable label for this task, e.g. \"fetch weather data\". Used in status messages and tool-use notifications." :: Text)
+                    "description" .= ("Short human-readable label for this task, e.g. \"fetch weather data\". Used in status messages and tool-use notifications. Truncated to " <> T.pack (show labelMaxLen) <> " characters." :: Text)
                   ]
             ]
               ++ modelProp
@@ -382,8 +386,6 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
             else Right (Just (fromIntegral i :: NominalDiffTime))
     Just _ -> Left "Invalid 'timeout_seconds' parameter (must be an integer)"
     Nothing -> Right Nothing
-  when (asyncParam && isJust timeoutParam) $
-    Left "timeout_seconds is not valid with async mode (use await_task instead)"
   let ovr = AgentOverrides {model = Last modelParam, thinking = thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, permissions = Nothing}
   Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam, async = asyncParam, label = labelParam, timeoutSeconds = timeoutParam}
 parseDelegateInput _ _ _ = Left "Expected object input"

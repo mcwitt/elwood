@@ -532,7 +532,7 @@ mkRateLimitCallback env event attemptNum waitSecs =
 -- | Format a tool use notification message
 formatToolUseMessage :: Int -> [Text] -> Text
 formatToolUseMessage _ [] = ""
-formatToolUseMessage iter names = formatToolList ("\128295 [" <> T.pack (show iter) <> "] ") names
+formatToolUseMessage _iter names = formatToolList "\128295 " names
 
 -- | Create tool use notification callback based on event delivery targets
 mkToolUseCallback :: AppEnv -> Event -> Claude.ToolUseCallback
@@ -543,8 +543,8 @@ mkToolUseCallback env event iter names =
 -- | Format a delegate sub-agent tool use notification message.
 formatDelegateToolUseMessage :: Text -> Int -> [Text] -> Text
 formatDelegateToolUseMessage _ _ [] = ""
-formatDelegateToolUseMessage label iter names =
-  formatToolList ("\128295 [" <> T.pack (show iter) <> "] " <> label <> ": ") names
+formatDelegateToolUseMessage label _iter names =
+  formatToolList ("\128295 **" <> label <> "**: ") names
 
 -- | Create delegate tool use notification callback based on event delivery targets
 mkDelegateToolUseCallback :: AppEnv -> Event -> Text -> Claude.ToolUseCallback

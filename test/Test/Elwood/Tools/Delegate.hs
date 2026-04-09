@@ -179,11 +179,7 @@ timeoutValidationTests =
       testCase "negative timeout_seconds returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "timeout_seconds" .= (-1 :: Int)])
-        result @?= ToolError "timeout_seconds must be positive",
-      testCase "timeout_seconds with async returns error" $ do
-        let tool = mkStubDelegateTool
-        result <- tool.execute (object ["task" .= ("test" :: Text), "async" .= True, "timeout_seconds" .= (30 :: Int)])
-        result @?= ToolError "timeout_seconds is not valid with async mode (use await_task instead)"
+        result @?= ToolError "timeout_seconds must be positive"
     ]
 
 labelValidationTests :: TestTree

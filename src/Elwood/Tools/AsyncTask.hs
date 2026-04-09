@@ -6,7 +6,7 @@ module Elwood.Tools.AsyncTask
     -- * Store Operations
     newAsyncTaskStore,
     insertTask,
-    storeTtlMicros,
+    storeTtlSeconds,
     toMicroseconds,
 
     -- * Tools
@@ -51,16 +51,14 @@ data AsyncTask = AsyncTask
 -- | Shared store for async delegate tasks
 data AsyncTaskStore = AsyncTaskStore
   { tasks :: TVar (Map TaskId AsyncTask),
-    ttlSeconds :: NominalDiffTime,
-    -- | Precomputed TTL in microseconds for System.Timeout.timeout
-    ttlMicros :: Int
+    ttlSeconds :: NominalDiffTime
   }
 
 -- | Create a new empty async task store
 newAsyncTaskStore :: NominalDiffTime -> IO AsyncTaskStore
 newAsyncTaskStore ttl = do
   tv <- newTVarIO Map.empty
-  pure AsyncTaskStore {tasks = tv, ttlSeconds = ttl, ttlMicros = toMicroseconds ttl}
+  pure AsyncTaskStore {tasks = tv, ttlSeconds = ttl}
 
 -- | Insert an async task into the store.
 -- The task must be inserted before the associated thread is spawned
@@ -73,9 +71,9 @@ insertTask store tid taskLabel a = do
     taskMap <- readTVar store.tasks
     writeTVar store.tasks (Map.insert tid (AsyncTask taskLabel a now) taskMap)
 
--- | Get the precomputed TTL in microseconds, suitable for System.Timeout.timeout
-storeTtlMicros :: AsyncTaskStore -> Int
-storeTtlMicros = (.ttlMicros)
+-- | Get the store TTL in seconds
+storeTtlSeconds :: AsyncTaskStore -> NominalDiffTime
+storeTtlSeconds = (.ttlSeconds)
 
 -- | Convert NominalDiffTime to microseconds for System.Timeout.timeout,
 -- clamping to maxBound to avoid Int overflow.
@@ -395,8 +393,8 @@ cancelAllTasks store = do
 
 -- | Sweep expired entries from the store.
 -- Safe to remove regardless of running status because async tasks are wrapped
--- with a timeout matching the TTL — by the time TTL expires, the task is
--- guaranteed to have completed or timed out.
+-- with a timeout at most equal to the TTL — by the time TTL expires, the task
+-- is guaranteed to have completed or timed out.
 sweepExpired :: AsyncTaskStore -> IO ()
 sweepExpired store = do
   now <- getCurrentTime
