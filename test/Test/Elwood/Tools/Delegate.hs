@@ -25,6 +25,7 @@ tests =
       agentSelectionTests,
       systemPromptValidationTests,
       asyncValidationTests,
+      timeoutValidationTests,
       labelValidationTests,
       descriptionTests
     ]
@@ -161,6 +162,28 @@ asyncValidationTests =
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "async" .= True])
         result @?= ToolError "Async delegation is not available"
+    ]
+
+timeoutValidationTests :: TestTree
+timeoutValidationTests =
+  testGroup
+    "timeout_seconds validation"
+    [ testCase "non-integer timeout_seconds returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "timeout_seconds" .= ("five" :: Text)])
+        result @?= ToolError "Invalid 'timeout_seconds' parameter (must be an integer)",
+      testCase "zero timeout_seconds returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "timeout_seconds" .= (0 :: Int)])
+        result @?= ToolError "timeout_seconds must be positive",
+      testCase "negative timeout_seconds returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "timeout_seconds" .= (-1 :: Int)])
+        result @?= ToolError "timeout_seconds must be positive",
+      testCase "timeout_seconds with async returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("test" :: Text), "async" .= True, "timeout_seconds" .= (30 :: Int)])
+        result @?= ToolError "timeout_seconds is not valid with async mode (use await_task instead)"
     ]
 
 labelValidationTests :: TestTree

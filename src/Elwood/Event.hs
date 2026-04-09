@@ -255,11 +255,13 @@ handleEventCore env event callbacks = do
           callbacks.onDelegateToolUse
           (Just env.asyncTaskStore)
       checkTaskTool = Tools.mkCheckTaskTool env.asyncTaskStore
+      awaitTaskTool = Tools.mkAwaitTaskTool env.asyncTaskStore
       cancelTaskTool = Tools.mkCancelTaskTool env.asyncTaskStore
       registryWithDelegate =
         Tools.registerTool cancelTaskTool $
-          Tools.registerTool checkTaskTool $
-            Tools.registerTool delegateTool registryWithPerms
+          Tools.registerTool awaitTaskTool $
+            Tools.registerTool checkTaskTool $
+              Tools.registerTool delegateTool registryWithPerms
 
   -- Build cancellation check for this session (always False for isolated sessions)
   isCancelled_ <- case mConversationId of

@@ -7,9 +7,11 @@ module Elwood.Tools.AsyncTask
     newAsyncTaskStore,
     insertTask,
     storeTtlMicros,
+    toMicroseconds,
 
     -- * Tools
     mkCheckTaskTool,
+    mkAwaitTaskTool,
     mkCancelTaskTool,
     cancelAllTasks,
   )
@@ -112,13 +114,13 @@ parseRequiredTaskId obj = do
 parseCheckTaskInput :: Value -> Either Text CheckTaskInput
 parseCheckTaskInput (Aeson.Object obj) = do
   tid <- parseOptionalTaskId obj
-  dur <- case KM.lookup "timeout" obj of
+  dur <- case KM.lookup "timeout_seconds" obj of
     Just (Aeson.Number n) ->
       let i = round n :: Int
        in if i < 0
-            then Left "timeout must be non-negative"
+            then Left "timeout_seconds must be non-negative"
             else Right (fromIntegral i :: NominalDiffTime)
-    Just _ -> Left "Invalid 'timeout' parameter (must be an integer)"
+    Just _ -> Left "Invalid 'timeout_seconds' parameter (must be an integer)"
     Nothing -> Right 0
   Right CheckTaskInput {taskId = tid, timeoutDuration = dur}
 parseCheckTaskInput _ = Left "Expected object input"
@@ -145,12 +147,96 @@ mkCheckTaskTool store =
             description =
               "Check on async delegate tasks. "
                 <> "Without task_id, lists all tasks with their ID, label, and status. "
-                <> "With task_id, polls that task. Use timeout (seconds) to wait for completion "
-                <> "(default: 0 = instant poll). Finished results are consumed on retrieval.",
+                <> "With task_id, polls that task. Use timeout_seconds to wait for completion "
+                <> "(default: 0 = instant poll). Prefer await_task for blocking waits. "
+                <> "Finished results are consumed on retrieval.",
             inputSchema = checkTaskSchema
           },
       execute = executeCheckTask store
     }
+
+-- | Parsed await_task input
+data AwaitTaskInput = AwaitTaskInput
+  { taskId :: TaskId,
+    timeoutDuration :: NominalDiffTime
+  }
+
+-- | Parse await_task input
+parseAwaitTaskInput :: Value -> Either Text AwaitTaskInput
+parseAwaitTaskInput (Aeson.Object obj) = do
+  tid <- parseRequiredTaskId obj
+  dur <- case KM.lookup "timeout_seconds" obj of
+    Just (Aeson.Number n) ->
+      let i = round n :: Int
+       in if i <= 0
+            then Left "timeout_seconds must be positive"
+            else Right (fromIntegral i :: NominalDiffTime)
+    Just _ -> Left "Invalid 'timeout_seconds' parameter (must be an integer)"
+    Nothing -> Right 60
+  Right AwaitTaskInput {taskId = tid, timeoutDuration = dur}
+parseAwaitTaskInput _ = Left "Expected object input"
+
+-- | Construct the await_task tool
+mkAwaitTaskTool :: AsyncTaskStore -> Tool
+mkAwaitTaskTool store =
+  Tool
+    { schema =
+        ToolSchema
+          { name = "await_task",
+            description =
+              "Block until an async delegate task completes or the timeout is reached. "
+                <> "Use this after doing sequential work to collect the result of an async delegate "
+                <> "without polling. Returns the task result on success, or a timeout error.",
+            inputSchema = awaitTaskSchema
+          },
+      execute = executeAwaitTask store
+    }
+
+-- | JSON Schema for await_task input
+awaitTaskSchema :: Value
+awaitTaskSchema =
+  object
+    [ "type" .= ("object" :: Text),
+      "properties"
+        .= object
+          [ "task_id"
+              .= object
+                [ "type" .= ("string" :: Text),
+                  "description" .= ("UUID of the async delegate task to wait for" :: Text)
+                ],
+            "timeout_seconds"
+              .= object
+                [ "type" .= ("integer" :: Text),
+                  "description" .= ("Maximum seconds to wait (default: 60)" :: Text),
+                  "minimum" .= (1 :: Int)
+                ]
+          ],
+      "required" .= (["task_id"] :: [Text])
+    ]
+
+-- | Execute await_task: block until the task finishes or timeout elapses
+executeAwaitTask :: AsyncTaskStore -> Value -> IO ToolResult
+executeAwaitTask store input = case parseAwaitTaskInput input of
+  Left err -> pure $ toolError err
+  Right ai -> do
+    sweepExpired store
+    awaitTask store ai.taskId ai.timeoutDuration
+
+-- | Block on a specific task until it completes or the timeout elapses.
+-- On completion, consumes the result. On timeout, returns an error.
+awaitTask :: AsyncTaskStore -> TaskId -> NominalDiffTime -> IO ToolResult
+awaitTask store tid dur = do
+  mTask <- atomically $ Map.lookup tid <$> readTVar store.tasks
+  case mTask of
+    Nothing -> pure $ toolError $ "Unknown task: " <> tid.unTaskId
+    Just task -> do
+      mResult <- timeout (toMicroseconds dur) (waitCatch task.result)
+      case mResult of
+        Nothing ->
+          pure $
+            toolError $
+              "Timed out waiting for task " <> tid.unTaskId <> " (" <> task.label <> ") after " <> T.pack (show (round dur :: Int)) <> "s."
+        Just r -> consumeAndFormat store tid r
 
 -- | Construct the cancel_task tool
 mkCancelTaskTool :: AsyncTaskStore -> Tool
@@ -179,7 +265,7 @@ checkTaskSchema =
                 [ "type" .= ("string" :: Text),
                   "description" .= ("UUID of an async delegate task to check" :: Text)
                 ],
-            "timeout"
+            "timeout_seconds"
               .= object
                 [ "type" .= ("integer" :: Text),
                   "description" .= ("Seconds to wait for completion (default: 0 = instant poll)" :: Text),

@@ -5,16 +5,18 @@ where
 
 import Control.Concurrent.Async qualified as Async
 import Control.Exception (SomeException, catch)
+import Control.Monad (when)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Monoid (Last (..))
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Time (NominalDiffTime)
 import Data.UUID qualified as UUID
 import Data.UUID.V4 qualified as UUID
 import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), CacheOverrides (..), ToolSearchConfig (..), resolveProfile, toOverrides)
@@ -29,7 +31,7 @@ import Elwood.Notify (truncateText)
 import Elwood.Positive (Positive (getPositive))
 import Elwood.Prompt (PromptInput (InlineText), assemblePrompt)
 import Elwood.Thinking (ThinkingOverrides (..))
-import Elwood.Tools.AsyncTask (AsyncTaskStore, TaskId (..), insertTask, storeTtlMicros)
+import Elwood.Tools.AsyncTask (AsyncTaskStore, TaskId (..), insertTask, storeTtlMicros, toMicroseconds)
 import Elwood.Tools.Command (mkRunCommandTool)
 import Elwood.Tools.Registry (ToolRegistry, registerTool)
 import Elwood.Tools.Types
@@ -48,7 +50,8 @@ data DelegateInput = DelegateInput
     overrides :: AgentOverrides,
     outputSchema :: Maybe Value,
     async :: Bool,
-    label :: Maybe Text
+    label :: Maybe Text,
+    timeoutSeconds :: Maybe NominalDiffTime
   }
 
 -- | Construct a delegate_task tool that spawns a sub-agent with an isolated
@@ -171,13 +174,12 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                 let taskLabel = truncateText 40 resolvedLabel
                     ttlMicros = storeTtlMicros store
                 -- Fork the sub-agent, then insert into the store.
-                -- insertTask must happen before the thread can be observed
-                -- via check_task; since Haskell's async spawns the thread
-                -- lazily (it won't run until the current thread yields),
-                -- the insert below runs before the forked thread starts.
-                -- Even if scheduling were eager, the only consequence is a
-                -- brief window where check_task returns "still running"
-                -- which is correct.
+                -- Async.async calls forkIO which eagerly schedules the
+                -- new thread, so there is a brief window where the task
+                -- is running but not yet in the store. This is benign:
+                -- check_task would return "Unknown task" rather than
+                -- "still running", and in practice the insert runs before
+                -- the forked thread makes meaningful progress.
                 a <-
                   Async.async $ do
                     mResult <- timeout ttlMicros runWithCatch
@@ -191,19 +193,24 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                   ]
                 pure $ toolSuccess $ "Task started: " <> taskId.unTaskId <> " (" <> taskLabel <> ")"
               _ -> do
-                result <- runWithCatch
+                mResult <- case di.timeoutSeconds of
+                  Nothing -> Just <$> runWithCatch
+                  Just secs -> timeout (toMicroseconds secs) runWithCatch
 
-                case result of
-                  AgentSuccess responseText _ -> do
+                case mResult of
+                  Nothing -> do
+                    logInfo logger "Delegate task timed out" []
+                    pure $ toolError "Delegate task timed out."
+                  Just (AgentSuccess responseText _) -> do
                     logInfo
                       logger
                       "Delegate task completed"
                       [("response_length", T.pack (show (T.length responseText)))]
                     pure $ toolSuccess responseText
-                  AgentCancelled -> do
+                  Just AgentCancelled -> do
                     logInfo logger "Delegate task cancelled" []
                     pure $ toolError "Task was cancelled"
-                  AgentError err -> do
+                  Just (AgentError err) -> do
                     logError logger "Delegate task failed" [("error", err)]
                     pure $ toolError err
 
@@ -256,7 +263,13 @@ delegateSchema allowedModels presets =
               "async"
                 .= object
                   [ "type" .= ("boolean" :: Text),
-                    "description" .= ("If true, run the task in the background and return a task ID immediately. Use check_task to poll for results." :: Text)
+                    "description" .= ("If true, run the task in the background and return a task ID immediately. Use check_task to poll or await_task to block for results." :: Text)
+                  ],
+              "timeout_seconds"
+                .= object
+                  [ "type" .= ("integer" :: Text),
+                    "description" .= ("Maximum seconds to wait for the task to complete (sync mode only). Returns a timeout error if exceeded. Not valid with async mode." :: Text),
+                    "minimum" .= (1 :: Int)
                   ],
               "label"
                 .= object
@@ -361,6 +374,16 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
       | otherwise -> Right (Just t)
     Just _ -> Left "Invalid 'label' parameter (must be a string)"
     Nothing -> Right Nothing
+  timeoutParam <- case KM.lookup "timeout_seconds" obj of
+    Just (Aeson.Number n) ->
+      let i = round n :: Int
+       in if i <= 0
+            then Left "timeout_seconds must be positive"
+            else Right (Just (fromIntegral i :: NominalDiffTime))
+    Just _ -> Left "Invalid 'timeout_seconds' parameter (must be an integer)"
+    Nothing -> Right Nothing
+  when (asyncParam && isJust timeoutParam) $
+    Left "timeout_seconds is not valid with async mode (use await_task instead)"
   let ovr = AgentOverrides {model = Last modelParam, thinking = thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, permissions = Nothing}
-  Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam, async = asyncParam, label = labelParam}
+  Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam, async = asyncParam, label = labelParam, timeoutSeconds = timeoutParam}
 parseDelegateInput _ _ _ = Left "Expected object input"

@@ -6,7 +6,7 @@ import Data.Aeson (Value (..), object, (.=))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Claude.AgentLoop (AgentResult (..))
-import Elwood.Tools.AsyncTask (TaskId (..), cancelAllTasks, insertTask, mkCancelTaskTool, mkCheckTaskTool, newAsyncTaskStore)
+import Elwood.Tools.AsyncTask (TaskId (..), cancelAllTasks, insertTask, mkAwaitTaskTool, mkCancelTaskTool, mkCheckTaskTool, newAsyncTaskStore)
 import Elwood.Tools.Types
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -17,6 +17,8 @@ tests =
     "Tools.AsyncTask"
     [ checkTaskParsingTests,
       checkTaskRoundTripTests,
+      awaitTaskParsingTests,
+      awaitTaskRoundTripTests,
       cancelTaskParsingTests,
       cancelTaskRoundTripTests,
       cancelAllTasksTests,
@@ -47,16 +49,16 @@ checkTaskParsingTests =
         let tool = mkCheckTaskTool store
         result <- tool.execute (object ["task_id" .= ("  " :: Text)])
         result @?= ToolError "task_id must not be empty",
-      testCase "non-integer timeout returns error" $ do
+      testCase "non-integer timeout_seconds returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCheckTaskTool store
-        result <- tool.execute (object ["timeout" .= ("five" :: Text)])
-        result @?= ToolError "Invalid 'timeout' parameter (must be an integer)",
-      testCase "negative timeout returns error" $ do
+        result <- tool.execute (object ["timeout_seconds" .= ("five" :: Text)])
+        result @?= ToolError "Invalid 'timeout_seconds' parameter (must be an integer)",
+      testCase "negative timeout_seconds returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCheckTaskTool store
-        result <- tool.execute (object ["timeout" .= (-1 :: Int)])
-        result @?= ToolError "timeout must be non-negative",
+        result <- tool.execute (object ["timeout_seconds" .= (-1 :: Int)])
+        result @?= ToolError "timeout_seconds must be non-negative",
       testCase "unknown task_id returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCheckTaskTool store
@@ -129,8 +131,93 @@ checkTaskRoundTripTests =
         a <- Async.async $ pure $ AgentSuccess "waited result" []
         insertTask store (TaskId "wait-id") "wait task" a
         let tool = mkCheckTaskTool store
-        result <- tool.execute (object ["task_id" .= ("wait-id" :: Text), "timeout" .= (5 :: Int)])
+        result <- tool.execute (object ["task_id" .= ("wait-id" :: Text), "timeout_seconds" .= (5 :: Int)])
         result @?= ToolSuccess "waited result"
+    ]
+
+awaitTaskParsingTests :: TestTree
+awaitTaskParsingTests =
+  testGroup
+    "await_task input parsing"
+    [ testCase "missing task_id returns error" $ do
+        store <- newAsyncTaskStore 3600
+        let tool = mkAwaitTaskTool store
+        result <- tool.execute (object [])
+        result @?= ToolError "Missing required 'task_id' parameter",
+      testCase "empty task_id returns error" $ do
+        store <- newAsyncTaskStore 3600
+        let tool = mkAwaitTaskTool store
+        result <- tool.execute (object ["task_id" .= ("  " :: Text)])
+        result @?= ToolError "task_id must not be empty",
+      testCase "non-string task_id returns error" $ do
+        store <- newAsyncTaskStore 3600
+        let tool = mkAwaitTaskTool store
+        result <- tool.execute (object ["task_id" .= (42 :: Int)])
+        result @?= ToolError "Invalid 'task_id' parameter (must be a string)",
+      testCase "non-integer timeout_seconds returns error" $ do
+        store <- newAsyncTaskStore 3600
+        let tool = mkAwaitTaskTool store
+        result <- tool.execute (object ["task_id" .= ("id" :: Text), "timeout_seconds" .= ("five" :: Text)])
+        result @?= ToolError "Invalid 'timeout_seconds' parameter (must be an integer)",
+      testCase "zero timeout_seconds returns error" $ do
+        store <- newAsyncTaskStore 3600
+        let tool = mkAwaitTaskTool store
+        result <- tool.execute (object ["task_id" .= ("id" :: Text), "timeout_seconds" .= (0 :: Int)])
+        result @?= ToolError "timeout_seconds must be positive",
+      testCase "negative timeout_seconds returns error" $ do
+        store <- newAsyncTaskStore 3600
+        let tool = mkAwaitTaskTool store
+        result <- tool.execute (object ["task_id" .= ("id" :: Text), "timeout_seconds" .= (-1 :: Int)])
+        result @?= ToolError "timeout_seconds must be positive",
+      testCase "unknown task_id returns error" $ do
+        store <- newAsyncTaskStore 3600
+        let tool = mkAwaitTaskTool store
+        result <- tool.execute (object ["task_id" .= ("nonexistent-id" :: Text)])
+        result @?= ToolError "Unknown task: nonexistent-id"
+    ]
+
+awaitTaskRoundTripTests :: TestTree
+awaitTaskRoundTripTests =
+  testGroup
+    "await_task round-trip"
+    [ testCase "await completed task returns result" $ do
+        store <- newAsyncTaskStore 3600
+        a <- Async.async $ pure $ AgentSuccess "awaited output" []
+        _ <- Async.wait a
+        insertTask store (TaskId "await-id") "my task" a
+        let tool = mkAwaitTaskTool store
+        result <- tool.execute (object ["task_id" .= ("await-id" :: Text)])
+        result @?= ToolSuccess "awaited output",
+      testCase "await completed task with error returns error" $ do
+        store <- newAsyncTaskStore 3600
+        a <- Async.async $ pure $ AgentError "something broke"
+        _ <- Async.wait a
+        insertTask store (TaskId "await-err") "failing task" a
+        let tool = mkAwaitTaskTool store
+        result <- tool.execute (object ["task_id" .= ("await-err" :: Text)])
+        result @?= ToolError "something broke",
+      testCase "awaited task is consumed on first await" $ do
+        store <- newAsyncTaskStore 3600
+        a <- Async.async $ pure $ AgentSuccess "one-time" []
+        _ <- Async.wait a
+        insertTask store (TaskId "consume-id") "consume-once" a
+        let tool = mkAwaitTaskTool store
+        r1 <- tool.execute (object ["task_id" .= ("consume-id" :: Text)])
+        r1 @?= ToolSuccess "one-time"
+        r2 <- tool.execute (object ["task_id" .= ("consume-id" :: Text)])
+        r2 @?= ToolError "Unknown task: consume-id",
+      testCase "await running task with short timeout returns timeout error" $ do
+        store <- newAsyncTaskStore 3600
+        block <- newEmptyMVar
+        blocker <- Async.async $ takeMVar block >> pure (AgentSuccess "never" [])
+        insertTask store (TaskId "slow-id") "slow task" blocker
+        let tool = mkAwaitTaskTool store
+        result <- tool.execute (object ["task_id" .= ("slow-id" :: Text), "timeout_seconds" .= (1 :: Int)])
+        assertBool "should be a timeout error" $
+          case result of
+            ToolError t -> T.isInfixOf "Timed out" t
+            _ -> False
+        Async.cancel blocker
     ]
 
 cancelTaskParsingTests :: TestTree
