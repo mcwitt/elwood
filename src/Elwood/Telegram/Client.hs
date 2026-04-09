@@ -16,12 +16,14 @@ module Elwood.Telegram.Client
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Exception (Exception, throwIO)
 import Control.Monad (when)
 import Data.Aeson (eitherDecode, encode, object, (.=))
 import Data.ByteString.Lazy (ByteString)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Int (Int64)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -146,8 +148,13 @@ getUpdatesAllowed client offset allowedUpdates = do
 -- HTML parse mode. If Telegram rejects the HTML, falls back to sending the
 -- original markdown as plain text so the message is never silently lost.
 sendMessage :: TelegramClient -> Int64 -> Text -> IO ()
-sendMessage client chatId_ msgText = do
-  let htmlText = markdownToTelegramHtml msgText
+sendMessage client chatId_ msgText =
+  mapM_ (sendChunk client chatId_) (filter (not . T.null) $ splitMessage msgText)
+
+-- | Send a single chunk, with HTML formatting and plain-text fallback.
+sendChunk :: TelegramClient -> Int64 -> Text -> IO ()
+sendChunk client chatId_ chunk = do
+  let htmlText = markdownToTelegramHtml chunk
       msgReq =
         SendMessageRequest
           { chatId = chatId_,
@@ -164,13 +171,47 @@ sendMessage client chatId_ msgText = do
           let plainReq =
                 SendMessageRequest
                   { chatId = msgReq.chatId,
-                    text = msgText,
+                    text = chunk,
                     parseMode = Nothing
                   }
            in sendMessageRaw client plainReq >>= \case
                 Right () -> pure ()
                 Left (s, b) -> throwIO $ TelegramHttpError s b
       | otherwise -> throwIO $ TelegramHttpError status body
+
+-- | Telegram's maximum message length. The API counts UTF-16 code units;
+-- 'T.length' counts code points which can undercount for supplementary
+-- characters (emoji etc.), so we use a smaller value for safety margin.
+telegramMaxLength :: Int
+telegramMaxLength = 4000
+
+-- | Split a message into chunks that fit within Telegram's limit.
+-- Splits on paragraph boundaries (double newlines) when possible,
+-- falls back to single newlines, then hard-cuts as a last resort.
+splitMessage :: Text -> [Text]
+splitMessage msg
+  | T.length msg <= telegramMaxLength = [msg]
+  | otherwise = go msg
+  where
+    go remaining
+      | T.null remaining = []
+      | T.length remaining <= telegramMaxLength = [remaining]
+      | otherwise =
+          let (chunk, rest) = splitAt' telegramMaxLength remaining
+           in chunk : go rest
+
+    -- Take up to maxLen characters, breaking at the best boundary found.
+    -- Whitespace between chunks (trailing newlines at the break point) is
+    -- intentionally dropped so chunks don't start/end with blank lines.
+    splitAt' maxLen txt =
+      let candidate = T.take maxLen txt
+          tryBreak sep = case T.breakOnEnd sep candidate of
+            (before, _)
+              | not (T.null before) && T.length before > maxLen `div` 4 ->
+                  Just (T.stripEnd before, T.drop (T.length before) txt)
+            _ -> Nothing
+       in fromMaybe (candidate, T.drop maxLen txt) $
+            tryBreak "\n\n" <|> tryBreak "\n"
 
 -- | Low-level send: returns Right () on success, Left (status, body) on HTTP error
 sendMessageRaw :: TelegramClient -> SendMessageRequest -> IO (Either (Int, ByteString) ())

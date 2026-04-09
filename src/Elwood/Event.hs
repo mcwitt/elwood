@@ -493,12 +493,19 @@ sendAttachmentSafe env chatId_ att = do
           ("error", T.pack (show e))
         ]
 
--- | Safely send notification, catching any errors
+-- | Safely send notification, catching any errors.
+-- On failure, logs the error and attempts to send a user-visible error
+-- notification to Telegram so the failure isn't completely silent.
 notifySafe :: AppEnv -> Int64 -> Text -> IO ()
 notifySafe env chatId_ msg = do
   Telegram.notify env.logger env.telegram chatId_ msg
-    `catch` \(e :: SomeException) ->
+    `catch` \(e :: SomeException) -> do
       logError env.logger "Failed to send notification" [("chat_id", T.pack (show chatId_)), ("error", T.pack (show e))]
+      -- Try to inform the user in Telegram; if this also fails, just log.
+      let errMsg = formatNotify Error $ "**Delivery failed:** `" <> sanitizeBackticks (T.pack (show e)) <> "`"
+      Telegram.notify env.logger env.telegram chatId_ errMsg
+        `catch` \(_ :: SomeException) ->
+          logError env.logger "Failed to send delivery-error notification" [("chat_id", T.pack (show chatId_))]
 
 -- | Convert session config to conversation ID
 --
