@@ -64,7 +64,7 @@ import Elwood.Event.Types
   )
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
-import Elwood.Notify (Severity (..), escapeUnderscores, formatNotify, sanitizeBackticks)
+import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks, wrapInCode)
 import Elwood.Prompt (assemblePrompt)
 import Elwood.Session (SessionLocks, sessionCancelFlag, withSessionLock)
 import Elwood.Telegram qualified as Telegram
@@ -376,8 +376,8 @@ handleEventBuffered env event targets = do
               modifyIORef' bufRef (BufferedText t atts :),
             onToolUse =
               if env'.toolUseMessages
-                then Just $ \names -> do
-                  let m = formatToolUseMessage names
+                then Just $ \iter names -> do
+                  let m = formatToolUseMessage iter names
                   modifyIORef' bufRef (BufferedText m [] :)
                 else Nothing,
             onRateLimit =
@@ -390,8 +390,8 @@ handleEventBuffered env event targets = do
             onResponse = \_ -> pure (),
             onDelegateToolUse =
               if env'.toolUseMessages
-                then Just $ \task names ->
-                  modifyIORef' bufRef (BufferedText (formatDelegateToolUseMessage task names) [] :)
+                then Just $ \task iter names ->
+                  modifyIORef' bufRef (BufferedText (formatDelegateToolUseMessage task iter names) [] :)
                 else Nothing
           }
   result <- withSessionLockIfNamed env' event $ handleEventCore env' event callbacks
@@ -530,32 +530,34 @@ mkRateLimitCallback env event attemptNum waitSecs =
     msg = formatNotify Warn $ "Rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s"
 
 -- | Format a tool use notification message
-formatToolUseMessage :: [Text] -> Text
-formatToolUseMessage [] = ""
-formatToolUseMessage (first : rest)
-  | length rest < 5 = "\128295 _Using " <> escapeUnderscores (T.intercalate ", " (first : rest)) <> "_"
-  | otherwise = "\128295 _Using " <> escapeUnderscores first <> " + " <> T.pack (show (length rest)) <> " others_"
+formatToolUseMessage :: Int -> [Text] -> Text
+formatToolUseMessage _ [] = ""
+formatToolUseMessage iter names = formatToolList ("\128295 [" <> T.pack (show iter) <> "] ") names
 
 -- | Create tool use notification callback based on event delivery targets
 mkToolUseCallback :: AppEnv -> Event -> Claude.ToolUseCallback
-mkToolUseCallback env event names =
-  deliverOrLog env event.deliveryTarget (formatToolUseMessage names) $
-    logInfo env.logger "Tool use" [("tools", T.intercalate ", " names)]
+mkToolUseCallback env event iter names =
+  deliverOrLog env event.deliveryTarget (formatToolUseMessage iter names) $
+    logInfo env.logger "Tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " names)]
 
 -- | Format a delegate sub-agent tool use notification message.
-formatDelegateToolUseMessage :: Text -> [Text] -> Text
-formatDelegateToolUseMessage _ [] = ""
-formatDelegateToolUseMessage label (first : rest) =
-  let tools
-        | length rest < 5 = escapeUnderscores (T.intercalate ", " (first : rest))
-        | otherwise = escapeUnderscores first <> " + " <> T.pack (show (length rest)) <> " others"
-   in "\128295 _\8627 \\[" <> escapeUnderscores label <> "] Using " <> tools <> "_"
+formatDelegateToolUseMessage :: Text -> Int -> [Text] -> Text
+formatDelegateToolUseMessage _ _ [] = ""
+formatDelegateToolUseMessage label iter names =
+  formatToolList ("\128295 [" <> T.pack (show iter) <> "] " <> label <> ": ") names
 
--- | Create delegate tool use notification callback factory based on event delivery targets
+-- | Create delegate tool use notification callback based on event delivery targets
 mkDelegateToolUseCallback :: AppEnv -> Event -> Text -> Claude.ToolUseCallback
-mkDelegateToolUseCallback env event task names =
-  deliverOrLog env event.deliveryTarget (formatDelegateToolUseMessage task names) $
-    logInfo env.logger "Delegate tool use" [("tools", T.intercalate ", " names)]
+mkDelegateToolUseCallback env event task iter names =
+  deliverOrLog env event.deliveryTarget (formatDelegateToolUseMessage task iter names) $
+    logInfo env.logger "Delegate tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " names)]
+
+-- | Format a list of tool names with a per-line prefix, or summarize if many.
+formatToolList :: Text -> [Text] -> Text
+formatToolList _ [] = ""
+formatToolList prefix (first : rest)
+  | length rest < 5 = T.intercalate "\n" (map (\n -> prefix <> wrapInCode n) (first : rest))
+  | otherwise = prefix <> wrapInCode first <> " + " <> T.pack (show (length rest)) <> " others"
 
 -- | Send typing indicator to a delivery target
 sendTypingToTargets :: AppEnv -> DeliveryTarget -> IO ()

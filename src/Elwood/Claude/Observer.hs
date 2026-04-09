@@ -26,8 +26,8 @@ type RateLimitCallback = Int -> Int -> IO ()
 -- | Callback for intermediate text content produced during tool-use turns
 type TextCallback = Text -> IO ()
 
--- | Callback for tool use notifications (receives list of tool names)
-type ToolUseCallback = [Text] -> IO ()
+-- | Callback for tool use notifications (receives iteration number and list of tool names)
+type ToolUseCallback = Int -> [Text] -> IO ()
 
 -- | Observer callbacks for metrics and telemetry.
 -- The agent loop fires these at key points without knowing the underlying
