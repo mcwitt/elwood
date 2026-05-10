@@ -7,11 +7,19 @@ module Elwood.MCP.Registry
 
     -- * Server Management
     startMCPServers,
+
+    -- * Schema augmentation
+    extractTimeout,
+    injectTimeoutProperty,
+    schemaDeclaresTimeout,
+    maxRequestTimeoutSeconds,
   )
 where
 
 import Control.Exception (SomeException, catch)
 import Data.Aeson (FromJSON (..), Result (..), Value (..), fromJSON, object, withObject, (.:), (.=))
+import Data.Aeson.Key (Key)
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -20,10 +28,20 @@ import Data.Vector qualified as V
 import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
 import Elwood.Config (MCPServerConfig (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
-import Elwood.MCP.Client (sendRequest, spawnServer, stopServer)
+import Elwood.MCP.Client (defaultRequestTimeoutSeconds, sendRequest, spawnServer, stopServer)
 import Elwood.MCP.Types
 import Elwood.Tools.Registry (ToolRegistry, registerTool)
 import Elwood.Tools.Types (Tool (..), ToolResult (..))
+
+-- | Maximum seconds the agent may request via the injected @timeout_seconds@
+-- argument on an MCP tool call. Caps any single MCP request so a slow or hung
+-- server can't block a turn indefinitely.
+maxRequestTimeoutSeconds :: Int
+maxRequestTimeoutSeconds = 300
+
+-- | Argument key the agent uses to override the per-call MCP request timeout.
+timeoutArgKey :: Key
+timeoutArgKey = "timeout_seconds"
 
 -- | Response from tools/list
 newtype ToolsListResponse = ToolsListResponse
@@ -37,7 +55,7 @@ instance FromJSON ToolsListResponse where
 -- | Query available tools from an MCP server
 discoverTools :: MCPServer -> IO (Either MCPError [MCPTool])
 discoverTools server = do
-  result <- sendRequest server "tools/list" Nothing
+  result <- sendRequest server defaultRequestTimeoutSeconds "tools/list" Nothing
   case result of
     Left err -> pure $ Left err
     Right value -> do
@@ -51,18 +69,26 @@ fromJSONValue v = case fromJSON v of
   Error _ -> Nothing
   Success a -> Just a
 
--- | Convert an MCP tool to an Elwood Tool
+-- | Convert an MCP tool to an Elwood Tool. If the upstream schema already
+-- owns a @timeout_seconds@ property, we leave it (and its value) alone;
+-- otherwise we inject one and intercept it as a per-request timeout override.
 toTool :: Text -> MCPServer -> MCPTool -> Tool
 toTool serverName server mcpTool =
-  Tool
-    { schema =
-        ToolSchema
-          { name = ToolName ("mcp_" <> serverName <> "_" <> mcpTool.name),
-            description = fromMaybe "(MCP tool)" mcpTool.description,
-            inputSchema = ensureTypeObject mcpTool.inputSchema
-          },
-      execute = executeMCPTool server mcpTool
-    }
+  let baseSchema = ensureTypeObject mcpTool.inputSchema
+      (schemaWithTimeout, extract)
+        | schemaDeclaresTimeout mcpTool.inputSchema =
+            (baseSchema, \v -> Right (defaultRequestTimeoutSeconds, v))
+        | otherwise =
+            (injectTimeoutProperty baseSchema, extractTimeout)
+   in Tool
+        { schema =
+            ToolSchema
+              { name = ToolName ("mcp_" <> serverName <> "_" <> mcpTool.name),
+                description = fromMaybe "(MCP tool)" mcpTool.description,
+                inputSchema = schemaWithTimeout
+              },
+          execute = executeMCPTool server mcpTool extract
+        }
 
 -- | Ensure the input schema has type: "object" at the top level
 ensureTypeObject :: Value -> Value
@@ -70,24 +96,79 @@ ensureTypeObject (Object obj) =
   Object $ KM.insert "type" (String "object") obj
 ensureTypeObject v = v
 
--- | Execute an MCP tool
-executeMCPTool :: MCPServer -> MCPTool -> Value -> IO ToolResult
-executeMCPTool server mcpTool input = do
-  let params_ =
-        object
-          [ "name" .= mcpTool.name,
-            "arguments" .= input
-          ]
+-- | True if the upstream tool's input schema already declares a property
+-- named @timeout_seconds@ — in which case we defer to the server's semantics
+-- instead of intercepting the value.
+schemaDeclaresTimeout :: Value -> Bool
+schemaDeclaresTimeout (Object obj) = case KM.lookup "properties" obj of
+  Just (Object props) -> KM.member timeoutArgKey props
+  _ -> False
+schemaDeclaresTimeout _ = False
 
-  result <-
-    sendRequest server "tools/call" (Just params_)
-      `catch` \(e :: SomeException) ->
-        pure $ Left $ MCPRequestError $ T.pack $ show e
+-- | Add a @timeout_seconds@ property to the tool's input schema so the agent
+-- can override the per-request MCP timeout.
+injectTimeoutProperty :: Value -> Value
+injectTimeoutProperty (Object obj) =
+  let props = case KM.lookup "properties" obj of
+        Just (Object p) -> p
+        _ -> KM.empty
+      props' = KM.insert timeoutArgKey timeoutSchema props
+   in Object $ KM.insert "properties" (Object props') obj
+injectTimeoutProperty v = v
 
-  case result of
-    Left (MCPToolError _code msg) -> pure $ ToolError msg
-    Left err -> pure $ ToolError $ T.pack $ show err
-    Right value -> pure $ ToolSuccess $ formatToolResult value
+-- | JSON Schema fragment describing the injected @timeout_seconds@ argument.
+timeoutSchema :: Value
+timeoutSchema =
+  object
+    [ "type" .= ("integer" :: Text),
+      "minimum" .= (1 :: Int),
+      "maximum" .= maxRequestTimeoutSeconds,
+      "description"
+        .= ( "Maximum seconds to wait for this MCP request before failing. \
+             \Defaults to "
+               <> T.pack (show defaultRequestTimeoutSeconds)
+               <> "s. Use a larger value for slow upstreams."
+           )
+    ]
+
+executeMCPTool ::
+  MCPServer ->
+  MCPTool ->
+  (Value -> Either Text (Int, Value)) ->
+  Value ->
+  IO ToolResult
+executeMCPTool server mcpTool extract input =
+  case extract input of
+    Left err -> pure $ ToolError err
+    Right (timeoutSecs, args) -> do
+      let params_ =
+            object
+              [ "name" .= mcpTool.name,
+                "arguments" .= args
+              ]
+
+      result <-
+        sendRequest server timeoutSecs "tools/call" (Just params_)
+          `catch` \(e :: SomeException) ->
+            pure $ Left $ MCPRequestError $ T.pack $ show e
+
+      case result of
+        Left (MCPToolError _code msg) -> pure $ ToolError msg
+        Left err -> pure $ ToolError $ T.pack $ show err
+        Right value -> pure $ ToolSuccess $ formatToolResult value
+
+-- | Pull the optional @timeout_seconds@ argument out of a tool input object,
+-- clamping it into [1, maxRequestTimeoutSeconds]. Returns the chosen timeout
+-- and the remaining arguments to forward to the MCP server.
+extractTimeout :: Value -> Either Text (Int, Value)
+extractTimeout (Object obj) =
+  case KM.lookup timeoutArgKey obj of
+    Nothing -> Right (defaultRequestTimeoutSeconds, Object obj)
+    Just (Number n) ->
+      let clamped = max 1 (min maxRequestTimeoutSeconds (round n))
+       in Right (clamped, Object (KM.delete timeoutArgKey obj))
+    Just _ -> Left $ "Invalid '" <> Key.toText timeoutArgKey <> "' parameter (must be an integer)"
+extractTimeout v = Right (defaultRequestTimeoutSeconds, v)
 
 -- | Format tool result for display
 formatToolResult :: Value -> Text
