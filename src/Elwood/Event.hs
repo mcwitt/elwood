@@ -154,9 +154,8 @@ data DeliveryCallbacks = DeliveryCallbacks
 handleEvent :: AppEnv -> Event -> IO (Either Text Text)
 handleEvent env event = do
   env' <- withLocalAttachmentQueue env
-  callbacks <- eagerCallbacks env' event
   withSessionLockIfNamed env' event $
-    handleEventCore env' event callbacks
+    handleEventCore env' event (eagerCallbacks env' event)
 
 -- | Look up the effective tool-use-messages value for a Telegram chat id,
 -- consulting the per-chat overrides and falling back to the global default.
@@ -184,17 +183,16 @@ filterTargetByToolUse env = \case
   LogOnly -> pure $ if env.toolUseMessages then Just LogOnly else Nothing
 
 -- | Construct eager (immediate-delivery) callbacks from an event's delivery targets
-eagerCallbacks :: AppEnv -> Event -> IO DeliveryCallbacks
+eagerCallbacks :: AppEnv -> Event -> DeliveryCallbacks
 eagerCallbacks env event =
-  pure
-    DeliveryCallbacks
-      { onText = Just (mkTextCallback env event),
-        onToolUse = Just (mkToolUseCallback env event),
-        onRateLimit = Just (mkRateLimitCallback env event),
-        onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
-        onResponse = deliverResponse env event,
-        onDelegateToolUse = Just (mkDelegateToolUseCallback env event)
-      }
+  DeliveryCallbacks
+    { onText = Just (mkTextCallback env event),
+      onToolUse = Just (mkToolUseCallback env event),
+      onRateLimit = Just (mkRateLimitCallback env event),
+      onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
+      onResponse = deliverResponse env event,
+      onDelegateToolUse = Just (mkDelegateToolUseCallback env event)
+    }
 
 -- | Core event handler parameterised by delivery callbacks
 handleEventCore :: AppEnv -> Event -> DeliveryCallbacks -> IO (Either Text Text)
