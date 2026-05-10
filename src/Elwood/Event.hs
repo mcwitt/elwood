@@ -32,11 +32,12 @@ module Elwood.Event
 
     -- * Utilities
     sendAttachmentSafe,
+    lookupToolUseMessages,
   )
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.STM (TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar)
+import Control.Concurrent.STM (STM, TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar)
 import Control.Exception (SomeException, catch)
 import Control.Monad (unless)
 import Data.Aeson (Value (..))
@@ -117,6 +118,10 @@ data AppEnv = AppEnv
     sessionLocks :: SessionLocks,
     -- | Send notification messages when the agent uses tools
     toolUseMessages :: Bool,
+    -- | Per-Telegram-chat overrides for 'toolUseMessages'.
+    -- Sparse: a missing chat falls back to the global default above.
+    -- Set at runtime by the @/tools@ slash command; not persisted across restarts.
+    toolUseMessagesOverrides :: TVar (Map Int64 Bool),
     -- | Delegate sub-agent preset (overrides + optional description)
     delegateAgent :: AgentPreset,
     -- | Named agent presets for delegate_task
@@ -149,23 +154,40 @@ data DeliveryCallbacks = DeliveryCallbacks
 handleEvent :: AppEnv -> Event -> IO (Either Text Text)
 handleEvent env event = do
   env' <- withLocalAttachmentQueue env
+  callbacks <- eagerCallbacks env' event
   withSessionLockIfNamed env' event $
-    handleEventCore env' event (eagerCallbacks env' event)
+    handleEventCore env' event callbacks
+
+-- | Look up the effective tool-use-messages value for a Telegram chat id,
+-- consulting the per-chat overrides and falling back to the global default.
+lookupToolUseMessages :: AppEnv -> Int64 -> STM Bool
+lookupToolUseMessages env cid =
+  Map.findWithDefault env.toolUseMessages cid <$> readTVar env.toolUseMessagesOverrides
+
+-- | Resolve whether to send tool-use notifications for this event.
+-- Telegram chats may override the global default via the @/tools@ command;
+-- other event sources always use the global default.
+effectiveToolUseMessages :: AppEnv -> Event -> IO Bool
+effectiveToolUseMessages env event = case event.source of
+  TelegramSource cid -> atomically (lookupToolUseMessages env cid)
+  _ -> pure env.toolUseMessages
 
 -- | Construct eager (immediate-delivery) callbacks from an event's delivery targets
-eagerCallbacks :: AppEnv -> Event -> DeliveryCallbacks
-eagerCallbacks env event =
-  DeliveryCallbacks
-    { onText = Just (mkTextCallback env event),
-      onToolUse = if env.toolUseMessages then Just (mkToolUseCallback env event) else Nothing,
-      onRateLimit = Just (mkRateLimitCallback env event),
-      onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
-      onResponse = deliverResponse env event,
-      onDelegateToolUse =
-        if env.toolUseMessages
-          then Just (mkDelegateToolUseCallback env event)
-          else Nothing
-    }
+eagerCallbacks :: AppEnv -> Event -> IO DeliveryCallbacks
+eagerCallbacks env event = do
+  showToolUse <- effectiveToolUseMessages env event
+  pure
+    DeliveryCallbacks
+      { onText = Just (mkTextCallback env event),
+        onToolUse = if showToolUse then Just (mkToolUseCallback env event) else Nothing,
+        onRateLimit = Just (mkRateLimitCallback env event),
+        onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
+        onResponse = deliverResponse env event,
+        onDelegateToolUse =
+          if showToolUse
+            then Just (mkDelegateToolUseCallback env event)
+            else Nothing
+      }
 
 -- | Core event handler parameterised by delivery callbacks
 handleEventCore :: AppEnv -> Event -> DeliveryCallbacks -> IO (Either Text Text)

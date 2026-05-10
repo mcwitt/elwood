@@ -142,6 +142,8 @@ runApp config = do
   -- Create async task store for delegate_task async mode (1 hour TTL)
   asyncStore <- Tools.newAsyncTaskStore 3600
 
+  toolUseMessagesOverrides_ <- newTVarIO Map.empty
+
   -- Create base app environment (shared by webhook and telegram handlers)
   let appEnv =
         AppEnv
@@ -161,6 +163,7 @@ runApp config = do
             pruneHorizons = pruneHorizons_,
             sessionLocks = sessionLocks_,
             toolUseMessages = config.toolUseMessages,
+            toolUseMessagesOverrides = toolUseMessagesOverrides_,
             delegateAgent = config.delegateAgent,
             delegateExtraAgents = config.delegateExtraAgents,
             delegateAllowedModels = config.delegateAllowedModels,
