@@ -63,7 +63,7 @@ import Elwood.Event.Types
     MediaType (..),
     SessionConfig (..),
   )
-import Elwood.Logging (Logger, logError, logInfo)
+import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks, wrapInCode)
 import Elwood.Prompt (assemblePrompt)
@@ -338,6 +338,40 @@ handleEventCore env event callbacks = do
         ]
 
       pure (Right responseText)
+    Claude.AgentExhausted info -> do
+      -- Persist the partial turn and surface its text to the user rather
+      -- than discard work that hit the iteration cap.
+      case mConversationId of
+        Nothing -> pure ()
+        Just cid -> env.conversations.appendMessages cid info.messages prof.cache
+
+      let suffix =
+            "\n\n"
+              <> formatNotify
+                Error
+                ( "**Agent loop:** `exceeded max iterations ("
+                    <> T.pack (show info.iterationsUsed)
+                    <> ", "
+                    <> T.pack (show info.toolsCalled)
+                    <> " tool calls)`"
+                )
+          delivered =
+            if T.null info.partialOutput
+              then suffix
+              else info.partialOutput <> suffix
+
+      callbacks.onResponse delivered
+
+      logWarn
+        lgr
+        "Event handled with iteration exhaustion"
+        [ ("source", formatSource src),
+          ("iterations_used", T.pack (show info.iterationsUsed)),
+          ("tools_called", T.pack (show info.toolsCalled)),
+          ("partial_output_length", T.pack (show (T.length info.partialOutput)))
+        ]
+
+      pure (Right delivered)
     Claude.AgentCancelled -> do
       logInfo lgr "Event cancelled by user" [("source", formatSource src)]
       -- Turn discarded — don't save anything or deliver a response

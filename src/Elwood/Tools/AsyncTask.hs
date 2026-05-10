@@ -31,7 +31,7 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (NominalDiffTime, UTCTime, diffUTCTime, getCurrentTime, nominalDiffTimeToSeconds)
-import Elwood.Claude.AgentLoop (AgentResult (..))
+import Elwood.Claude.AgentLoop (AgentResult (..), formatExhaustion)
 import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Tools.Types
 import GHC.Conc (STM, TVar, atomically, newTVarIO, readTVar, writeTVar)
@@ -338,6 +338,7 @@ listAllTasks store = do
       let status = case mResult of
             Nothing -> "running"
             Just (Right (AgentSuccess _ _)) -> "completed"
+            Just (Right (AgentExhausted _)) -> "exhausted"
             Just (Right AgentCancelled) -> "cancelled"
             Just (Right (AgentError _)) -> "failed"
             Just (Left _) -> "failed"
@@ -375,9 +376,10 @@ consumeAndFormat store tid r = do
 -- | Format a completed task result
 formatResult :: Either SomeException AgentResult -> IO ToolResult
 formatResult (Right (AgentSuccess text _)) = pure $ toolSuccess text
+formatResult (Right (AgentExhausted info)) = pure $ toolError (formatExhaustion info)
 formatResult (Right (AgentError err)) = pure $ toolError err
-formatResult (Right AgentCancelled) = pure $ toolError "Task was cancelled"
-formatResult (Left exc) = pure $ toolError $ "Task failed with exception: " <> T.pack (show exc)
+formatResult (Right AgentCancelled) = pure $ toolError $ taggedError Cancelled "Task was cancelled"
+formatResult (Left exc) = pure $ toolError $ taggedError Unexpected ("Task failed with exception: " <> T.pack (show exc))
 
 -- | Cancel all running async tasks. Returns the number of tasks cancelled.
 -- Uses 'Async.uninterruptibleCancel' so that an async exception arriving

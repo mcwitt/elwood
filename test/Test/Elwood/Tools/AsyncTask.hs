@@ -5,7 +5,7 @@ import Control.Concurrent.MVar (newEmptyMVar, takeMVar)
 import Data.Aeson (Value (..), object, (.=))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Elwood.Claude.AgentLoop (AgentResult (..))
+import Elwood.Claude.AgentLoop (AgentResult (..), ExhaustionInfo (..))
 import Elwood.Tools.AsyncTask (TaskId (..), cancelAllTasks, insertTask, mkAwaitTaskTool, mkCancelTaskTool, mkCheckTaskTool, newAsyncTaskStore)
 import Elwood.Tools.Types
 import Test.Tasty
@@ -86,6 +86,46 @@ checkTaskRoundTripTests =
         let tool = mkCheckTaskTool store
         result <- tool.execute (object ["task_id" .= ("err-id" :: Text)])
         result @?= ToolError "something went wrong",
+      testCase "poll exhausted task returns JSON tool_error with partial output" $ do
+        store <- newAsyncTaskStore 3600
+        let info =
+              ExhaustionInfo
+                { partialOutput = "draft results so far",
+                  iterationsUsed = 10,
+                  toolsCalled = 8,
+                  messages = []
+                }
+        a <- Async.async $ pure $ AgentExhausted info
+        _ <- Async.wait a
+        insertTask store (TaskId "ex-id") "exhausted task" a
+        let tool = mkCheckTaskTool store
+        result <- tool.execute (object ["task_id" .= ("ex-id" :: Text)])
+        case result of
+          ToolError t -> do
+            assertBool "should contain status tag" (T.isInfixOf "max_iterations_exceeded" t)
+            assertBool "should contain iterations_used" (T.isInfixOf "\"iterations_used\":10" t)
+            assertBool "should contain tools_called" (T.isInfixOf "\"tools_called\":8" t)
+            assertBool "should contain partial_output" (T.isInfixOf "draft results so far" t)
+          _ -> assertFailure $ "expected ToolError, got: " <> show result,
+      testCase "exhausted task shows 'exhausted' status in list" $ do
+        store <- newAsyncTaskStore 3600
+        let info =
+              ExhaustionInfo
+                { partialOutput = "",
+                  iterationsUsed = 5,
+                  toolsCalled = 0,
+                  messages = []
+                }
+        a <- Async.async $ pure $ AgentExhausted info
+        _ <- Async.wait a
+        insertTask store (TaskId "list-ex-id") "listed exhausted" a
+        let tool = mkCheckTaskTool store
+        result <- tool.execute (object [])
+        case result of
+          ToolSuccess t -> do
+            assertBool "should contain list-ex-id" (T.isInfixOf "list-ex-id" t)
+            assertBool "should contain 'exhausted' status" (T.isInfixOf "exhausted" t)
+          _ -> assertFailure $ "expected ToolSuccess, got: " <> show result,
       testCase "finished task is consumed on first check" $ do
         store <- newAsyncTaskStore 3600
         a <- Async.async $ pure $ AgentSuccess "one-time result" []
