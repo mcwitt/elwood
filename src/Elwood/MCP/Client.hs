@@ -7,6 +7,7 @@ module Elwood.MCP.Client
 
     -- * JSON-RPC Communication
     sendRequest,
+    defaultRequestTimeoutSeconds,
   )
 where
 
@@ -39,9 +40,9 @@ import System.Process
   )
 import System.Timeout (timeout)
 
--- | Response timeout in microseconds (30 seconds)
-responseTimeoutMicros :: Int
-responseTimeoutMicros = 30 * 1000000
+-- | Default response timeout in seconds when a caller doesn't specify one.
+defaultRequestTimeoutSeconds :: Int
+defaultRequestTimeoutSeconds = 30
 
 -- | Spawn and initialize an MCP server
 spawnServer :: Logger -> MCPServerConfig -> IO (Either MCPError MCPServer)
@@ -151,7 +152,7 @@ initializeMCPServer logger server = do
                 ]
           ]
 
-  initResult <- sendRequest server "initialize" (Just initParams)
+  initResult <- sendRequest server defaultRequestTimeoutSeconds "initialize" (Just initParams)
   case initResult of
     Left err -> pure $ Left err
     Right _ -> do
@@ -172,9 +173,10 @@ sendNotification logger server method_ params_ = do
   BS.hPut server.stdin jsonLine
   hFlush server.stdin
 
--- | Send a JSON-RPC request and wait for response (with timeout)
-sendRequest :: MCPServer -> Text -> Maybe Value -> IO (Either MCPError Value)
-sendRequest server method_ params_ = do
+-- | Send a JSON-RPC request and wait for response, timing out after the
+-- given number of seconds.
+sendRequest :: MCPServer -> Int -> Text -> Maybe Value -> IO (Either MCPError Value)
+sendRequest server timeoutSecs method_ params_ = do
   reqId <- atomicModifyIORef' server.requestId (\n -> (n + 1, n + 1))
 
   let request =
@@ -200,11 +202,11 @@ sendRequest server method_ params_ = do
       pure $ Left $ MCPRequestError $ "Failed to send request: " <> T.pack (show e)
     Right () -> do
       -- Wait for the reader thread to dispatch our response
-      result <- timeout responseTimeoutMicros (takeMVar mvar)
+      result <- timeout (timeoutSecs * 1_000_000) (takeMVar mvar)
       case result of
         Nothing -> do
           atomicModifyIORef' server.pendingRequests (\m -> (Map.delete reqId m, ()))
-          pure $ Left $ MCPRequestError "Response timeout (30s)"
+          pure $ Left $ MCPRequestError $ "Response timeout (" <> T.pack (show timeoutSecs) <> "s)"
         Just r -> pure r
 
 -- | Background thread that reads JSON-RPC responses from stdout and dispatches

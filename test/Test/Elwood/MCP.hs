@@ -9,7 +9,13 @@ import Data.Text qualified as T
 import Elwood.Config (MCPServerConfig (..))
 import Elwood.Logging (newLogger)
 import Elwood.Logging qualified as Log
-import Elwood.MCP.Client (sendRequest, spawnServer, stopServer)
+import Elwood.MCP.Client (defaultRequestTimeoutSeconds, sendRequest, spawnServer, stopServer)
+import Elwood.MCP.Registry
+  ( extractTimeout,
+    injectTimeoutProperty,
+    maxRequestTimeoutSeconds,
+    schemaDeclaresTimeout,
+  )
 import Elwood.MCP.Types
 import System.IO (hClose, hPutStr)
 import System.IO.Temp (withSystemTempFile)
@@ -24,7 +30,8 @@ tests =
       mcpToolTests,
       mcpErrorTests,
       mcpServerConfigTests,
-      concurrentRequestTests
+      concurrentRequestTests,
+      timeoutArgTests
     ]
 
 jsonRpcTests :: TestTree
@@ -223,7 +230,7 @@ concurrentRequestTests =
                   ( \i -> do
                       mv <- newEmptyMVar
                       _ <- forkIO $ do
-                        r <- sendRequest server "echo" (Just (object ["n" .= i]))
+                        r <- sendRequest server defaultRequestTimeoutSeconds "echo" (Just (object ["n" .= i]))
                         putMVar mv r
                       pure mv
                   )
@@ -236,4 +243,55 @@ concurrentRequestTests =
                     Right _ -> pure ()
                 )
                 (zip [(1 :: Int) ..] results)
+    ]
+
+-- | Tests for the per-call @timeout_seconds@ argument injected into every
+-- MCP-bridged tool (issue #50).
+timeoutArgTests :: TestTree
+timeoutArgTests =
+  testGroup
+    "timeout_seconds argument"
+    [ testCase "default timeout when arg missing" $
+        extractTimeout (object ["url" .= ("https://example.com" :: T.Text)])
+          @?= Right (defaultRequestTimeoutSeconds, object ["url" .= ("https://example.com" :: T.Text)]),
+      testCase "explicit timeout extracted and stripped from args" $
+        extractTimeout (object ["url" .= ("u" :: T.Text), "timeout_seconds" .= (90 :: Int)])
+          @?= Right (90, object ["url" .= ("u" :: T.Text)]),
+      testCase "timeout above max is clamped" $
+        extractTimeout (object ["timeout_seconds" .= (10000 :: Int)])
+          @?= Right (maxRequestTimeoutSeconds, object []),
+      testCase "timeout below 1 is clamped to 1" $
+        extractTimeout (object ["timeout_seconds" .= (0 :: Int)])
+          @?= Right (1, object []),
+      testCase "non-integer timeout returns error" $
+        extractTimeout (object ["timeout_seconds" .= ("ten" :: T.Text)])
+          @?= Left "Invalid 'timeout_seconds' parameter (must be an integer)",
+      testCase "schema injection adds property to empty schema" $ do
+        let augmented = injectTimeoutProperty (object ["type" .= ("object" :: T.Text)])
+        case augmented of
+          Object obj -> case KM.lookup "properties" obj of
+            Just (Object props) ->
+              KM.member "timeout_seconds" props @?= True
+            _ -> assertFailure "expected properties object"
+          _ -> assertFailure "expected augmented object",
+      testCase "schema injection preserves existing properties" $ do
+        let original =
+              object
+                [ "type" .= ("object" :: T.Text),
+                  "properties" .= object ["url" .= object ["type" .= ("string" :: T.Text)]]
+                ]
+        case injectTimeoutProperty original of
+          Object obj -> case KM.lookup "properties" obj of
+            Just (Object props) -> do
+              KM.member "url" props @?= True
+              KM.member "timeout_seconds" props @?= True
+            _ -> assertFailure "expected properties object"
+          _ -> assertFailure "expected augmented object",
+      testCase "schemaDeclaresTimeout detects upstream property" $ do
+        schemaDeclaresTimeout (object ["properties" .= object ["timeout_seconds" .= object []]])
+          @?= True
+        schemaDeclaresTimeout (object ["properties" .= object ["url" .= object []]])
+          @?= False
+        schemaDeclaresTimeout (object ["type" .= ("object" :: T.Text)])
+          @?= False
     ]
