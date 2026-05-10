@@ -49,7 +49,7 @@ tests =
     ]
 
 instance Arbitrary ThinkingEffort where
-  arbitrary = elements [EffortLow, EffortMedium, EffortHigh]
+  arbitrary = elements [EffortLow, EffortMedium, EffortHigh, EffortXhigh, EffortMax]
 
 instance Arbitrary ThinkingMode where
   arbitrary =

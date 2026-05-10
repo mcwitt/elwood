@@ -21,8 +21,17 @@ data ThinkingMode
   | Budget Int
   deriving stock (Show, Eq, Generic)
 
--- | Effort level for adaptive thinking
-data ThinkingEffort = EffortLow | EffortMedium | EffortHigh
+-- | Effort level for adaptive thinking.
+--
+-- Note: @EffortXhigh@ is Opus 4.7+ only (and is the recommended default for
+-- coding/agentic use cases on that model). @EffortMax@ is Opus-tier only
+-- (Opus 4.6+; not supported on Sonnet or Haiku).
+data ThinkingEffort
+  = EffortLow
+  | EffortMedium
+  | EffortHigh
+  | EffortXhigh
+  | EffortMax
   deriving stock (Show, Eq, Generic)
 
 instance FromJSON ThinkingEffort where
@@ -31,7 +40,9 @@ instance FromJSON ThinkingEffort where
       "low" -> pure EffortLow
       "medium" -> pure EffortMedium
       "high" -> pure EffortHigh
-      _ -> fail $ "Invalid effort '" <> T.unpack t <> "'. Allowed: low, medium, high"
+      "xhigh" -> pure EffortXhigh
+      "max" -> pure EffortMax
+      _ -> fail $ "Invalid effort '" <> T.unpack t <> "'. Allowed: low, medium, high, xhigh, max"
 
 -- | Parse a 'ThinkingMode' from a single-key object (attrTag-style YAML):
 --

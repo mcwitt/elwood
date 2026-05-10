@@ -411,6 +411,8 @@ instance ToJSON MessagesRequest where
       effortToText EffortLow = "low"
       effortToText EffortMedium = "medium"
       effortToText EffortHigh = "high"
+      effortToText EffortXhigh = "xhigh"
+      effortToText EffortMax = "max"
 
       -- "thinking" field (separate from output_config)
       thinkingField :: [Pair]

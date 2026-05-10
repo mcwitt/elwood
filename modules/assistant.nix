@@ -44,11 +44,18 @@ let
               "low"
               "medium"
               "high"
+              "xhigh"
+              "max"
             ]
           );
           default = null;
-          description = "Effort level for adaptive thinking. Null uses API default.";
-          example = "medium";
+          description = ''
+            Effort level for adaptive thinking. Null uses API default.
+            "xhigh" requires Opus 4.7 or later (recommended default for
+            coding/agentic use cases). "max" requires an Opus-tier model
+            (Opus 4.6+; not supported on Sonnet or Haiku).
+          '';
+          example = "xhigh";
         };
       };
       description = "Adaptive thinking with optional effort level.";

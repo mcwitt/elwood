@@ -52,7 +52,8 @@ agent:
   #     enable: true
   #     mode:
   #       adaptive:
-  #         effort: medium       # low | medium | high (omit for API default)
+  #         effort: medium       # low | medium | high | xhigh | max (omit for API default)
+  #                              # xhigh requires Opus 4.7+; max requires Opus-tier (4.6+)
   #
   #   thinking:
   #     enable: true
