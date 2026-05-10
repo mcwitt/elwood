@@ -5,7 +5,7 @@ module Elwood.Tools.Delegate
 where
 
 import Control.Concurrent.Async qualified as Async
-import Control.Exception (SomeException, catch)
+import Control.Exception (SomeException)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
@@ -25,6 +25,7 @@ import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Observer (ToolUseCallback)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolSchema (..), jsonSchemaFormat)
 import Elwood.Config (PruningConfig)
+import Elwood.Exception (catchSync)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
 import Elwood.Notify (truncateText)
@@ -167,10 +168,9 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                 userMsg = ClaudeMessage User [TextBlock di.task]
 
             let runWithCatch =
-                  runAgentTurn subConfig [] userMsg
-                    `catch` \(e :: SomeException) -> do
-                      logError logger "Delegate sub-agent error" [("error", T.pack (show e))]
-                      pure $ AgentError $ taggedError Unexpected $ "Sub-agent error: " <> T.pack (show e)
+                  runAgentTurn subConfig [] userMsg `catchSync` \(e :: SomeException) -> do
+                    logError logger "Delegate sub-agent error" [("error", T.pack (show e))]
+                    pure $ AgentError $ taggedError Unexpected $ "Sub-agent error: " <> T.pack (show e)
 
             case (di.async, asyncStore) of
               (True, Just store) -> do

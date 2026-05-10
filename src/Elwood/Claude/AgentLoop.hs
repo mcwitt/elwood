@@ -8,7 +8,7 @@ module Elwood.Claude.AgentLoop
 where
 
 import Control.Concurrent.Async (mapConcurrently)
-import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
+import Control.Exception (SomeException)
 import Data.Aeson (Value (..), encode, object, (.=))
 import Data.ByteString.Lazy qualified as LBS
 import Data.Set (Set)
@@ -35,6 +35,7 @@ import Elwood.Claude.Types
     stopReasonToText,
   )
 import Elwood.Config (PruningConfig (..))
+import Elwood.Exception (catchSync)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (PermissionConfig, ToolPolicy (..), getToolPolicy)
@@ -350,15 +351,10 @@ executeToolUses ::
   IO [ToolResult]
 executeToolUses lgr reg perms approve = mapConcurrently execSafe
   where
-    execSafe block = do
-      r <- try @SomeException (executeToolUse lgr reg perms approve block)
-      case r of
-        Right result -> pure result
-        Left e
-          | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
-          | otherwise -> do
-              logError lgr "Tool execution threw exception" [("error", T.pack (show e))]
-              pure $ ToolError $ "Tool execution failed: " <> T.take 500 (T.pack (show e))
+    execSafe block =
+      executeToolUse lgr reg perms approve block `catchSync` \(e :: SomeException) -> do
+        logError lgr "Tool execution threw exception" [("error", T.pack (show e))]
+        pure $ ToolError $ "Tool execution failed: " <> T.take 500 (T.pack (show e))
 
 -- | Extract text content from content blocks
 extractTextContent :: [ContentBlock] -> Text
