@@ -5,7 +5,7 @@ module Elwood.Tools.Delegate
 where
 
 import Control.Concurrent.Async qualified as Async
-import Control.Exception (SomeException, catch)
+import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
@@ -166,11 +166,19 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                     }
                 userMsg = ClaudeMessage User [TextBlock di.task]
 
-            let runWithCatch =
-                  runAgentTurn subConfig [] userMsg
-                    `catch` \(e :: SomeException) -> do
-                      logError logger "Delegate sub-agent error" [("error", T.pack (show e))]
-                      pure $ AgentError $ taggedError Unexpected $ "Sub-agent error: " <> T.pack (show e)
+            let runWithCatch = do
+                  -- Only catch synchronous exceptions. Async exceptions (e.g.
+                  -- 'System.Timeout.Timeout' from the outer 'timeout') must
+                  -- propagate so the caller's timeout machinery still fires;
+                  -- swallowing them would render the [timeout] tag unreachable.
+                  r <- try @SomeException (runAgentTurn subConfig [] userMsg)
+                  case r of
+                    Right res -> pure res
+                    Left e
+                      | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
+                      | otherwise -> do
+                          logError logger "Delegate sub-agent error" [("error", T.pack (show e))]
+                          pure $ AgentError $ taggedError Unexpected $ "Sub-agent error: " <> T.pack (show e)
 
             case (di.async, asyncStore) of
               (True, Just store) -> do
