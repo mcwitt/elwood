@@ -39,7 +39,7 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (STM, TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar)
 import Control.Exception (SomeException, catch)
-import Control.Monad (unless)
+import Control.Monad (filterM, unless)
 import Data.Aeson (Value (..))
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
@@ -164,29 +164,36 @@ lookupToolUseMessages :: AppEnv -> Int64 -> STM Bool
 lookupToolUseMessages env cid =
   Map.findWithDefault env.toolUseMessages cid <$> readTVar env.toolUseMessagesOverrides
 
--- | Resolve whether to send tool-use notifications for this event.
--- Telegram chats may override the global default via the @/tools@ command;
--- other event sources always use the global default.
-effectiveToolUseMessages :: AppEnv -> Event -> IO Bool
-effectiveToolUseMessages env event = case event.source of
-  TelegramSource cid -> atomically (lookupToolUseMessages env cid)
-  _ -> pure env.toolUseMessages
+-- | Restrict a delivery target to recipients that want tool-use notifications.
+--
+-- For Telegram targets, drops chats whose per-chat @/tools@ override (or the
+-- global default) is off and returns the remaining chats; returns 'Nothing' if
+-- no chat wants them. For 'LogOnly', returns 'Just LogOnly' iff the global
+-- default is on (since there is no chat to consult).
+--
+-- This is the single point that resolves @/tools@ for tool-use notifications,
+-- whether the event came from Telegram or from a webhook (cron).
+filterTargetByToolUse :: AppEnv -> DeliveryTarget -> IO (Maybe DeliveryTarget)
+filterTargetByToolUse env = \case
+  TelegramDelivery chatIds -> do
+    enabled <- atomically $ filterM (lookupToolUseMessages env) (NE.toList chatIds)
+    pure (TelegramDelivery <$> NE.nonEmpty enabled)
+  TelegramBroadcast -> do
+    enabled <- atomically $ filterM (lookupToolUseMessages env) (Map.keys env.telegramChatMap)
+    pure (TelegramDelivery <$> NE.nonEmpty enabled)
+  LogOnly -> pure $ if env.toolUseMessages then Just LogOnly else Nothing
 
 -- | Construct eager (immediate-delivery) callbacks from an event's delivery targets
 eagerCallbacks :: AppEnv -> Event -> IO DeliveryCallbacks
-eagerCallbacks env event = do
-  showToolUse <- effectiveToolUseMessages env event
+eagerCallbacks env event =
   pure
     DeliveryCallbacks
       { onText = Just (mkTextCallback env event),
-        onToolUse = if showToolUse then Just (mkToolUseCallback env event) else Nothing,
+        onToolUse = Just (mkToolUseCallback env event),
         onRateLimit = Just (mkRateLimitCallback env event),
         onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
         onResponse = deliverResponse env event,
-        onDelegateToolUse =
-          if showToolUse
-            then Just (mkDelegateToolUseCallback env event)
-            else Nothing
+        onDelegateToolUse = Just (mkDelegateToolUseCallback env event)
       }
 
 -- | Core event handler parameterised by delivery callbacks
@@ -362,6 +369,9 @@ flushPacingDelay = 500000
 data BufferedItem
   = -- | Intermediate text with any attachments queued before it
     BufferedText Text [Tools.Attachment]
+  | -- | Tool-use notification; recipients are filtered by per-chat @/tools@
+    -- overrides at flush time, not at buffer time.
+    BufferedToolUse Text
   | BufferedRateLimit Text
 
 -- | Result of a buffered event handler run
@@ -396,12 +406,9 @@ handleEventBuffered env event targets = do
                 writeTVar env'.attachmentQueue []
                 pure a
               modifyIORef' bufRef (BufferedText t atts :),
-            onToolUse =
-              if env'.toolUseMessages
-                then Just $ \iter names -> do
-                  let m = formatToolUseMessage iter names
-                  modifyIORef' bufRef (BufferedText m [] :)
-                else Nothing,
+            onToolUse = Just $ \iter names -> do
+              let m = formatToolUseMessage iter names
+              unless (T.null m) $ modifyIORef' bufRef (BufferedToolUse m :),
             onRateLimit =
               Just
                 ( \n s -> do
@@ -410,11 +417,9 @@ handleEventBuffered env event targets = do
                 ),
             onBeforeApiCall = Nothing,
             onResponse = \_ -> pure (),
-            onDelegateToolUse =
-              if env'.toolUseMessages
-                then Just $ \task iter names ->
-                  modifyIORef' bufRef (BufferedText (formatDelegateToolUseMessage task iter names) [] :)
-                else Nothing
+            onDelegateToolUse = Just $ \task iter names -> do
+              let m = formatDelegateToolUseMessage task iter names
+              unless (T.null m) $ modifyIORef' bufRef (BufferedToolUse m :)
           }
   result <- withSessionLockIfNamed env' event $ handleEventCore env' event callbacks
   case result of
@@ -443,6 +448,13 @@ flushBuffer env target items finalResponse = do
       deliverTextOnly env target t
       -- Deliver attachments that were queued before this text
       mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) atts
+    flushItem _ (BufferedToolUse t) =
+      filterTargetByToolUse env target >>= \case
+        Nothing -> pure ()
+        Just subTarget -> do
+          sendTypingToTargets env subTarget
+          threadDelay flushPacingDelay
+          deliverTextOnly env subTarget t
     flushItem _ (BufferedRateLimit m) = do
       deliverTextOnly env target m
 
@@ -556,11 +568,15 @@ formatToolUseMessage :: Int -> [Text] -> Text
 formatToolUseMessage _ [] = ""
 formatToolUseMessage _iter names = formatToolList "\128295 " names
 
--- | Create tool use notification callback based on event delivery targets
+-- | Create tool use notification callback based on event delivery targets.
+-- Filters per-chat by the @/tools@ override before delivering.
 mkToolUseCallback :: AppEnv -> Event -> Claude.ToolUseCallback
 mkToolUseCallback env event iter names =
-  deliverOrLog env event.deliveryTarget (formatToolUseMessage iter names) $
-    logInfo env.logger "Tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " names)]
+  filterTargetByToolUse env event.deliveryTarget >>= \case
+    Nothing -> pure ()
+    Just t ->
+      deliverOrLog env t (formatToolUseMessage iter names) $
+        logInfo env.logger "Tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " names)]
 
 -- | Format a delegate sub-agent tool use notification message.
 formatDelegateToolUseMessage :: Text -> Int -> [Text] -> Text
@@ -568,11 +584,15 @@ formatDelegateToolUseMessage _ _ [] = ""
 formatDelegateToolUseMessage label _iter names =
   formatToolList ("\128295 **" <> label <> "**: ") names
 
--- | Create delegate tool use notification callback based on event delivery targets
+-- | Create delegate tool use notification callback based on event delivery targets.
+-- Filters per-chat by the @/tools@ override before delivering.
 mkDelegateToolUseCallback :: AppEnv -> Event -> Text -> Claude.ToolUseCallback
 mkDelegateToolUseCallback env event task iter names =
-  deliverOrLog env event.deliveryTarget (formatDelegateToolUseMessage task iter names) $
-    logInfo env.logger "Delegate tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " names)]
+  filterTargetByToolUse env event.deliveryTarget >>= \case
+    Nothing -> pure ()
+    Just t ->
+      deliverOrLog env t (formatDelegateToolUseMessage task iter names) $
+        logInfo env.logger "Delegate tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " names)]
 
 -- | Format a list of tool names with a per-line prefix, or summarize if many.
 formatToolList :: Text -> [Text] -> Text
