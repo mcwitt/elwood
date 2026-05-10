@@ -117,6 +117,8 @@ data AppEnv = AppEnv
     sessionLocks :: SessionLocks,
     -- | Send notification messages when the agent uses tools
     toolUseMessages :: Bool,
+    -- | Per-chat overrides for 'toolUseMessages' (in-memory, resets on restart)
+    toolUseMessageOverrides :: TVar (Map Int64 Bool),
     -- | Delegate sub-agent preset (overrides + optional description)
     delegateAgent :: AgentPreset,
     -- | Named agent presets for delegate_task

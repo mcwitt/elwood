@@ -6,6 +6,7 @@ module Elwood.Telegram.Handler
   )
 where
 
+import Control.Concurrent.STM (atomically, modifyTVar', readTVarIO)
 import Control.Exception (SomeException, catch)
 import Data.Aeson (Value (..))
 import Data.ByteString qualified as BS
@@ -132,6 +133,7 @@ handleTelegramMessage env msg =
         Command "compact" "Compact conversation to save context" $ NoArgs handleCompact,
         Command "context" "Show token usage breakdown" $ NoArgs handleContext,
         Command "stop" "Stop the running agent" $ NoArgs handleStop,
+        Command "tools" "Toggle tool-use notifications" $ NoArgs handleTools,
         Command "run" "Execute a shell command" $ WithArg "command" handleRun
       ]
 
@@ -302,6 +304,15 @@ handleTelegramMessage env msg =
           pure (Just $ formatNotify Info "Stopping...")
         else
           pure (Just $ formatNotify Info "Nothing to stop")
+
+    handleTools :: IO (Maybe Text)
+    handleTools = do
+      overrides <- readTVarIO env.toolUseMessageOverrides
+      let current = Map.findWithDefault env.toolUseMessages chatIdVal overrides
+          new = not current
+      atomically $ modifyTVar' env.toolUseMessageOverrides (Map.insert chatIdVal new)
+      logInfo lgr "Tool messages toggled" [("chat_id", T.pack (show chatIdVal)), ("enabled", T.pack (show new))]
+      pure (Just $ formatNotify Info $ "Tool messages: " <> if new then "on" else "off")
 
     handleRun :: Text -> IO (Maybe Text)
     handleRun cmd = do

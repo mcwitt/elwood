@@ -4,7 +4,7 @@ module Elwood.App
 where
 
 import Control.Concurrent.Async (async, wait)
-import Control.Concurrent.STM (newTVarIO)
+import Control.Concurrent.STM (newTVarIO, readTVarIO)
 import Control.Exception (finally)
 import Data.Foldable (for_)
 import Data.Int (Int64)
@@ -73,6 +73,9 @@ runApp config = do
 
   -- Initialize attachment queue
   attachmentQueue_ <- newTVarIO []
+
+  -- Initialize per-chat tool-use message overrides (in-memory, resets on restart)
+  toolUseOverrides_ <- newTVarIO Map.empty
 
   -- Initialize prune horizons
   pruneHorizons_ <- newPruneHorizons
@@ -161,6 +164,7 @@ runApp config = do
             pruneHorizons = pruneHorizons_,
             sessionLocks = sessionLocks_,
             toolUseMessages = config.toolUseMessages,
+            toolUseMessageOverrides = toolUseOverrides_,
             delegateAgent = config.delegateAgent,
             delegateExtraAgents = config.delegateExtraAgents,
             delegateAllowedModels = config.delegateAllowedModels,
@@ -169,16 +173,19 @@ runApp config = do
           }
 
   -- Telegram message handler: inject per-chat approval and overrides
-  let msgHandler msg =
+  let msgHandler msg = do
         let cid = msg.chat.id_
             chatCfg = Map.lookup cid appEnv.telegramChatMap
             chatProfile = resolveProfile (toOverrides appEnv.agentProfile <> maybe mempty (.overrides) chatCfg)
+        overrides <- readTVarIO appEnv.toolUseMessageOverrides
+        let effectiveToolUse = Map.findWithDefault appEnv.toolUseMessages cid overrides
             envForChat =
               appEnv
                 { requestApproval = mkApprovalFn cid chatProfile.permissions.approvalTimeoutSeconds,
-                  agentProfile = chatProfile
+                  agentProfile = chatProfile,
+                  toolUseMessages = effectiveToolUse
                 }
-         in handleTelegramMessage envForChat msg
+        handleTelegramMessage envForChat msg
 
   -- Log webhook configuration
   let webhookCfg = config.webhook
