@@ -2,12 +2,14 @@ module Elwood.Claude.AgentLoop
   ( runAgentTurn,
     AgentConfig (..),
     AgentResult (..),
+    ExhaustionInfo (..),
+    formatExhaustion,
   )
 where
 
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
-import Data.Aeson (Value (..), encode)
+import Data.Aeson (Value (..), encode, object, (.=))
 import Data.ByteString.Lazy qualified as LBS
 import Data.Set (Set)
 import Data.Text (Text)
@@ -43,16 +45,28 @@ import Elwood.Tools.Registry
     lookupTool,
     toolSchemas,
   )
-import Elwood.Tools.Types (ApprovalFunction, ApprovalOutcome (..), Tool (..), ToolResult (..))
+import Elwood.Tools.Types (ApprovalFunction, ApprovalOutcome (..), FailureMode (..), Tool (..), ToolResult (..), failureTag)
 
 -- | Result of running an agent turn
 data AgentResult
   = -- | Success with response text and all messages (for persistence)
     AgentSuccess Text [ClaudeMessage]
+  | -- | Iteration cap hit before end_turn. Carries best-effort partial output
+    -- so the caller can salvage it rather than discard the turn.
+    AgentExhausted ExhaustionInfo
   | -- | Error that should be shown to user
     AgentError Text
   | -- | Cancelled by user via /stop. The turn is discarded.
     AgentCancelled
+  deriving stock (Show)
+
+-- | Partial result returned when the agent loop hits 'maxIterations'.
+data ExhaustionInfo = ExhaustionInfo
+  { partialOutput :: Text,
+    iterationsUsed :: Int,
+    toolsCalled :: Int,
+    messages :: [ClaudeMessage]
+  }
   deriving stock (Show)
 
 -- | Configuration for the agent loop (all environment/config params)
@@ -110,6 +124,14 @@ runAgentTurn cfg history userMessage = do
   result <- agentLoop cfg msgs 0
   pure $ case result of
     AgentSuccess text allMsgs -> AgentSuccess text (drop histLen allMsgs)
+    AgentExhausted info ->
+      AgentExhausted
+        ExhaustionInfo
+          { partialOutput = info.partialOutput,
+            iterationsUsed = info.iterationsUsed,
+            toolsCalled = info.toolsCalled,
+            messages = drop histLen info.messages
+          }
     AgentCancelled -> AgentCancelled
     err -> err
 
@@ -121,8 +143,21 @@ agentLoop ::
   IO AgentResult
 agentLoop cfg msgs iteration
   | iteration >= cfg.agentProfile.maxIterations.getPositive = do
-      logError cfg.logger "Agent loop exceeded max iterations" []
-      pure $ AgentError $ formatNotify Error "**Agent loop:** `exceeded max iterations`"
+      let info =
+            ExhaustionInfo
+              { partialOutput = lastAssistantText msgs,
+                iterationsUsed = iteration,
+                toolsCalled = countToolUses msgs,
+                messages = msgs
+              }
+      logError
+        cfg.logger
+        "Agent loop exceeded max iterations"
+        [ ("iterations", T.pack (show info.iterationsUsed)),
+          ("tools_called", T.pack (show info.toolsCalled)),
+          ("partial_output_length", T.pack (show (T.length info.partialOutput)))
+        ]
+      pure $ AgentExhausted info
   | otherwise = do
       -- Check cancellation before starting a new iteration
       cancelled <- cfg.isCancelled
@@ -336,6 +371,29 @@ extractToolUses = filter isToolUse
   where
     isToolUse (ToolUseBlock {}) = True
     isToolUse _ = False
+
+lastAssistantText :: [ClaudeMessage] -> Text
+lastAssistantText msgs =
+  case [extractTextContent c | ClaudeMessage Assistant c <- reverse msgs] of
+    (t : _) -> t
+    [] -> ""
+
+countToolUses :: [ClaudeMessage] -> Int
+countToolUses msgs =
+  sum [length (extractToolUses c) | ClaudeMessage _ c <- msgs]
+
+-- | JSON shape used as the delegate's tool_error body on exhaustion;
+-- documented in issue #49 so the orchestrator can branch on @status@.
+formatExhaustion :: ExhaustionInfo -> Text
+formatExhaustion info =
+  decodeUtf8 . LBS.toStrict $
+    encode $
+      object
+        [ "status" .= failureTag MaxIterations,
+          "iterations_used" .= info.iterationsUsed,
+          "tools_called" .= info.toolsCalled,
+          "partial_output" .= info.partialOutput
+        ]
 
 -- | Execute a single tool use with policy checking
 executeToolUse :: Logger -> ToolRegistry -> PermissionConfig -> ApprovalFunction -> ContentBlock -> IO ToolResult

@@ -15,6 +15,11 @@ module Elwood.Tools.Types
     -- * Result Helpers
     toolSuccess,
     toolError,
+    taggedError,
+
+    -- * Failure Modes
+    FailureMode (..),
+    failureTag,
   )
 where
 
@@ -84,3 +89,30 @@ toolSuccess = ToolSuccess
 -- | Create an error result
 toolError :: Text -> ToolResult
 toolError = ToolError
+
+-- | The way a tool-level operation can fail. Surfaced verbatim to the
+-- delegating agent so it can branch on the kind without parsing prose.
+data FailureMode
+  = -- | Sub-agent hit its @max_iterations@ cap before reaching end_turn.
+    MaxIterations
+  | -- | Wall-clock timeout (e.g. @timeout_seconds@ on a delegate task).
+    Timeout
+  | -- | User cancellation (e.g. @/stop@ or @cancel_task@).
+    Cancelled
+  | -- | Caught exception or other unclassified failure.
+    Unexpected
+  deriving stock (Show, Eq)
+
+-- | Wire-level tag for a failure mode. The 'MaxIterations' variant uses
+-- the longer form because it is also the JSON @status@ in delegate
+-- exhaustion bodies (see 'Elwood.Claude.AgentLoop.formatExhaustion').
+failureTag :: FailureMode -> Text
+failureTag MaxIterations = "max_iterations_exceeded"
+failureTag Timeout = "timeout"
+failureTag Cancelled = "cancelled"
+failureTag Unexpected = "error"
+
+-- | Prefix an error message with a parseable failure-mode tag so the
+-- orchestrator can branch on the kind without parsing prose.
+taggedError :: FailureMode -> Text -> Text
+taggedError mode msg = "[" <> failureTag mode <> "] " <> msg

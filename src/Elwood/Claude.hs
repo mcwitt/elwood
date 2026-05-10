@@ -10,6 +10,7 @@ module Elwood.Claude
     -- * Agent Loop
     AgentConfig (..),
     AgentResult (..),
+    ExhaustionInfo (..),
     AgentObserver (..),
     RateLimitCallback,
     TextCallback,

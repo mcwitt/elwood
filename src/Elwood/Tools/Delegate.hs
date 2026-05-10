@@ -20,7 +20,7 @@ import Data.Time (NominalDiffTime)
 import Data.UUID qualified as UUID
 import Data.UUID.V4 qualified as UUID
 import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), CacheOverrides (..), ToolSearchConfig (..), resolveProfile, toOverrides)
-import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
+import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), ExhaustionInfo (..), formatExhaustion, runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Observer (ToolUseCallback)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolSchema (..), jsonSchemaFormat)
@@ -170,7 +170,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                   runAgentTurn subConfig [] userMsg
                     `catch` \(e :: SomeException) -> do
                       logError logger "Delegate sub-agent error" [("error", T.pack (show e))]
-                      pure $ AgentError $ "Sub-agent error: " <> T.pack (show e)
+                      pure $ AgentError $ taggedError Unexpected $ "Sub-agent error: " <> T.pack (show e)
 
             case (di.async, asyncStore) of
               (True, Just store) -> do
@@ -187,7 +187,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                 a <-
                   Async.async $ do
                     mResult <- timeout taskTimeout runWithCatch
-                    pure $ fromMaybe (AgentError "Async task timed out") mResult
+                    pure $ fromMaybe (AgentError (taggedError Timeout "Async task timed out")) mResult
                 insertTask store taskId taskLabel a
                 logInfo
                   logger
@@ -204,16 +204,25 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                 case mResult of
                   Nothing -> do
                     logInfo logger "Delegate task timed out" []
-                    pure $ toolError "Delegate task timed out."
+                    pure $ toolError $ taggedError Timeout "Delegate task timed out."
                   Just (AgentSuccess responseText _) -> do
                     logInfo
                       logger
                       "Delegate task completed"
                       [("response_length", T.pack (show (T.length responseText)))]
                     pure $ toolSuccess responseText
+                  Just (AgentExhausted info) -> do
+                    logInfo
+                      logger
+                      "Delegate task hit iteration cap"
+                      [ ("iterations_used", T.pack (show info.iterationsUsed)),
+                        ("tools_called", T.pack (show info.toolsCalled)),
+                        ("partial_output_length", T.pack (show (T.length info.partialOutput)))
+                      ]
+                    pure $ toolError (formatExhaustion info)
                   Just AgentCancelled -> do
                     logInfo logger "Delegate task cancelled" []
-                    pure $ toolError "Task was cancelled"
+                    pure $ toolError $ taggedError Cancelled "Task was cancelled"
                   Just (AgentError err) -> do
                     logError logger "Delegate task failed" [("error", err)]
                     pure $ toolError err
