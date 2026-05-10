@@ -39,6 +39,7 @@ library
     Elwood.Config
     Elwood.Event
     Elwood.Event.Types
+    Elwood.Exception
     Elwood.Image
     Elwood.Logging
     Elwood.MCP

@@ -5,7 +5,7 @@ module Elwood.Tools.Delegate
 where
 
 import Control.Concurrent.Async qualified as Async
-import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
+import Control.Exception (SomeException)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KM
@@ -25,6 +25,7 @@ import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Observer (ToolUseCallback)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolSchema (..), jsonSchemaFormat)
 import Elwood.Config (PruningConfig)
+import Elwood.Exception (catchSync)
 import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver)
 import Elwood.Notify (truncateText)
@@ -166,19 +167,10 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                     }
                 userMsg = ClaudeMessage User [TextBlock di.task]
 
-            let runWithCatch = do
-                  -- Only catch synchronous exceptions. Async exceptions (e.g.
-                  -- 'System.Timeout.Timeout' from the outer 'timeout') must
-                  -- propagate so the caller's timeout machinery still fires;
-                  -- swallowing them would render the [timeout] tag unreachable.
-                  r <- try @SomeException (runAgentTurn subConfig [] userMsg)
-                  case r of
-                    Right res -> pure res
-                    Left e
-                      | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
-                      | otherwise -> do
-                          logError logger "Delegate sub-agent error" [("error", T.pack (show e))]
-                          pure $ AgentError $ taggedError Unexpected $ "Sub-agent error: " <> T.pack (show e)
+            let runWithCatch =
+                  runAgentTurn subConfig [] userMsg `catchSync` \(e :: SomeException) -> do
+                    logError logger "Delegate sub-agent error" [("error", T.pack (show e))]
+                    pure $ AgentError $ taggedError Unexpected $ "Sub-agent error: " <> T.pack (show e)
 
             case (di.async, asyncStore) of
               (True, Just store) -> do
