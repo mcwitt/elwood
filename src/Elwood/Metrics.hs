@@ -76,8 +76,12 @@ inputTokenTypeLabel ItToolResult = "tool_result"
 
 -- | Key for a counter metric
 data CounterKey
-  = -- | Token counter: metric_suffix, model, source
+  = -- | Token counter: metric_suffix, model, source. Used for input, output,
+    -- and cache_read. Cache writes use 'CkCacheWriteTokens' instead so the
+    -- TTL can be tracked.
     CkTokens Text Text Text
+  | -- | Cache-write token counter: model, source, ttl
+    CkCacheWriteTokens Text Text Claude.CacheTtl
   | -- | API requests: model, source, stop_reason
     CkApiRequests Text Text Text
   | -- | Tool calls: tool name
@@ -112,7 +116,8 @@ recordApiResponse store m source stopReason u = do
   incrementCounter store (CkTokens "input" m source) (fromIntegral u.inputTokens)
   incrementCounter store (CkTokens "output" m source) (fromIntegral u.outputTokens)
   incrementCounter store (CkTokens "cache_read" m source) (fromIntegral u.cacheReadInputTokens)
-  incrementCounter store (CkTokens "cache_creation" m source) (fromIntegral u.cacheCreationInputTokens)
+  incrementCounter store (CkCacheWriteTokens m source Claude.CacheTtl5Min) (fromIntegral u.cacheCreation5mTokens)
+  incrementCounter store (CkCacheWriteTokens m source Claude.CacheTtl1Hour) (fromIntegral u.cacheCreation1hTokens)
   incrementCounter store (CkApiRequests m source reasonText) 1
 
 -- | Record a tool call
@@ -272,7 +277,7 @@ renderCounters cs =
   renderTokenCounters "input" cs
     <> renderTokenCounters "output" cs
     <> renderTokenCounters "cache_read" cs
-    <> renderTokenCounters "cache_creation" cs
+    <> renderCacheWriteCounters cs
     <> renderEstimatedInputTokenCounters cs
     <> renderCostMetric cs
     <> renderApiRequestCounters cs
@@ -292,6 +297,21 @@ renderTokenCounters suffix cs =
             <> mconcat
               [ metricLine metricName [("model", m), ("source", source)] v
               | (m, source, v) <- matching
+              ]
+
+-- | Render cache-write token counters, labeled by TTL.
+renderCacheWriteCounters :: Map CounterKey Int64 -> B.Builder
+renderCacheWriteCounters cs =
+  let metricName = "elwood_cache_creation_tokens_total"
+      matching = [(m, source, ttl, v) | (CkCacheWriteTokens m source ttl, v) <- Map.toList cs]
+   in if null matching
+        then mempty
+        else
+          helpLine metricName "Total cache_creation tokens used, partitioned by cache TTL"
+            <> typeLine metricName "counter"
+            <> mconcat
+              [ metricLine metricName [("model", m), ("source", source), ("cache_ttl", Claude.cacheTtlLabel ttl)] v
+              | (m, source, ttl, v) <- matching
               ]
 
 -- | Render estimated input token counters by content type
@@ -469,24 +489,26 @@ estimateMessageTokens msgs =
 data ModelPricing = ModelPricing
   { inputPerMTok :: Double,
     outputPerMTok :: Double,
-    cacheWritePerMTok :: Double,
+    cache5mWritePerMTok :: Double,
+    cache1hWritePerMTok :: Double,
     cacheReadPerMTok :: Double
   }
 
 -- | Prefix-matched pricing table. First match wins, so more specific prefixes come first.
 pricingTable :: [(Text, ModelPricing)]
 pricingTable =
-  [ ("claude-opus-4-6", ModelPricing 5 25 6.25 0.50),
-    ("claude-opus-4-5", ModelPricing 5 25 6.25 0.50),
-    ("claude-opus-4-1", ModelPricing 15 75 18.75 1.50),
-    ("claude-opus-4", ModelPricing 15 75 18.75 1.50),
-    ("claude-sonnet-4", ModelPricing 3 15 3.75 0.30),
-    ("claude-sonnet-3", ModelPricing 3 15 3.75 0.30),
-    ("claude-haiku-4", ModelPricing 1 5 1.25 0.10),
-    ("claude-3-5-haiku", ModelPricing 1 5 1.25 0.10),
-    ("claude-3-5-sonnet", ModelPricing 3 15 3.75 0.30),
-    ("claude-3-opus", ModelPricing 15 75 18.75 1.50),
-    ("claude-3-haiku", ModelPricing 0.25 1.25 0.30 0.03)
+  [ ("claude-opus-4-7", ModelPricing 5 25 6.25 10 0.50),
+    ("claude-opus-4-6", ModelPricing 5 25 6.25 10 0.50),
+    ("claude-opus-4-5", ModelPricing 5 25 6.25 10 0.50),
+    ("claude-opus-4-1", ModelPricing 15 75 18.75 30 1.50),
+    ("claude-opus-4", ModelPricing 15 75 18.75 30 1.50),
+    ("claude-sonnet-4", ModelPricing 3 15 3.75 6 0.30),
+    ("claude-sonnet-3", ModelPricing 3 15 3.75 6 0.30),
+    ("claude-haiku-4", ModelPricing 1 5 1.25 2 0.10),
+    ("claude-3-5-haiku", ModelPricing 1 5 1.25 2 0.10),
+    ("claude-3-5-sonnet", ModelPricing 3 15 3.75 6 0.30),
+    ("claude-3-opus", ModelPricing 15 75 18.75 30 1.50),
+    ("claude-3-haiku", ModelPricing 0.25 1.25 0.30 0.50 0.03)
   ]
 
 -- | Look up pricing for a model ID by prefix match
@@ -496,23 +518,30 @@ lookupPricing model = snd <$> find (\(prefix, _) -> prefix `T.isPrefixOf` model)
 -- | Render cost metric derived from token counters and pricing table
 renderCostMetric :: Map CounterKey Int64 -> B.Builder
 renderCostMetric cs =
-  let -- Collect all distinct (model, source) pairs from token counters
-      pairs = nub [(m, source) | (CkTokens _ m source, _) <- Map.toList cs]
+  let -- Collect all distinct (model, source) pairs across token and cache-write counters
+      pairs =
+        nub $
+          [(m, source) | (CkTokens _ m source, _) <- Map.toList cs]
+            ++ [(m, source) | (CkCacheWriteTokens m source _, _) <- Map.toList cs]
       -- Compute cost lines for models with known pricing
       costLines =
         [ (m, source, microDollars)
         | (m, source) <- pairs,
           Just pricing <- [lookupPricing m],
           let get suffix = fromIntegral (Map.findWithDefault 0 (CkTokens suffix m source) cs) :: Double
+              getCacheWrite ttl =
+                fromIntegral (Map.findWithDefault 0 (CkCacheWriteTokens m source ttl) cs) :: Double
               input = get "input"
               output = get "output"
-              cacheWrite = get "cache_creation"
+              cacheWrite5m = getCacheWrite Claude.CacheTtl5Min
+              cacheWrite1h = getCacheWrite Claude.CacheTtl1Hour
               cacheRead = get "cache_read"
               -- tokens * rate_per_MTok = cost in microdollars
               microDollars =
                 input * pricing.inputPerMTok
                   + output * pricing.outputPerMTok
-                  + cacheWrite * pricing.cacheWritePerMTok
+                  + cacheWrite5m * pricing.cache5mWritePerMTok
+                  + cacheWrite1h * pricing.cache1hWritePerMTok
                   + cacheRead * pricing.cacheReadPerMTok
         ]
    in if null costLines

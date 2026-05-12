@@ -34,7 +34,16 @@ recordingTests =
     "Recording"
     [ testCase "recordApiResponse increments counters" $ do
         store <- newMetricsStore
-        let usage = Usage 100 50 10 20
+        -- Usage with only 5m caching (sub-object absent → all 10 attributed to 5m)
+        let usage =
+              Usage
+                { inputTokens = 100,
+                  outputTokens = 50,
+                  cacheCreationInputTokens = 10,
+                  cacheReadInputTokens = 20,
+                  cacheCreation5mTokens = 10,
+                  cacheCreation1hTokens = 0
+                }
         recordApiResponse store "claude-3" "telegram" EndTurn usage
         convStore <- newInMemoryConversationStore
         output <- renderMetrics store convStore newToolRegistry
@@ -42,8 +51,26 @@ recordingTests =
         assertBool "contains input tokens" ("elwood_input_tokens_total{model=\"claude-3\",source=\"telegram\"} 100" `isIn` s)
         assertBool "contains output tokens" ("elwood_output_tokens_total{model=\"claude-3\",source=\"telegram\"} 50" `isIn` s)
         assertBool "contains cache read tokens" ("elwood_cache_read_tokens_total{model=\"claude-3\",source=\"telegram\"} 20" `isIn` s)
-        assertBool "contains cache creation tokens" ("elwood_cache_creation_tokens_total{model=\"claude-3\",source=\"telegram\"} 10" `isIn` s)
+        assertBool "contains 5m cache_creation" ("elwood_cache_creation_tokens_total{model=\"claude-3\",source=\"telegram\",cache_ttl=\"5m\"} 10" `isIn` s)
+        assertBool "contains 1h cache_creation" ("elwood_cache_creation_tokens_total{model=\"claude-3\",source=\"telegram\",cache_ttl=\"1h\"} 0" `isIn` s)
         assertBool "contains api requests" ("elwood_api_requests_total{model=\"claude-3\",source=\"telegram\",stop_reason=\"end_turn\"} 1" `isIn` s),
+      testCase "recordApiResponse splits 5m and 1h cache writes" $ do
+        store <- newMetricsStore
+        let usage =
+              Usage
+                { inputTokens = 2048,
+                  outputTokens = 503,
+                  cacheCreationInputTokens = 248,
+                  cacheReadInputTokens = 1800,
+                  cacheCreation5mTokens = 148,
+                  cacheCreation1hTokens = 100
+                }
+        recordApiResponse store "claude-opus-4-7" "telegram" EndTurn usage
+        convStore <- newInMemoryConversationStore
+        output <- renderMetrics store convStore newToolRegistry
+        let s = LBS8.unpack output
+        assertBool "5m bucket" ("elwood_cache_creation_tokens_total{model=\"claude-opus-4-7\",source=\"telegram\",cache_ttl=\"5m\"} 148" `isIn` s)
+        assertBool "1h bucket" ("elwood_cache_creation_tokens_total{model=\"claude-opus-4-7\",source=\"telegram\",cache_ttl=\"1h\"} 100" `isIn` s),
       testCase "recordToolCall increments tool counter" $ do
         store <- newMetricsStore
         recordToolCall store "run_command"
@@ -65,8 +92,9 @@ recordingTests =
         assertBool "compaction count is 3" ("elwood_compactions_total 3" `isIn` s),
       testCase "multiple API responses accumulate" $ do
         store <- newMetricsStore
-        let usage1 = Usage 100 50 0 0
-            usage2 = Usage 200 100 0 0
+        let mkUsage i o = Usage i o 0 0 0 0
+            usage1 = mkUsage 100 50
+            usage2 = mkUsage 200 100
         recordApiResponse store "claude-3" "telegram" EndTurn usage1
         recordApiResponse store "claude-3" "telegram" EndTurn usage2
         convStore <- newInMemoryConversationStore

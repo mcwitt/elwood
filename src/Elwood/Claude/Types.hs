@@ -24,6 +24,7 @@ module Elwood.Claude.Types
     -- * Cache Control
     CacheTtl (..),
     cacheTtlSeconds,
+    cacheTtlLabel,
     epoch,
     extendCacheExpiry,
 
@@ -303,12 +304,17 @@ data CacheTtl
     CacheTtl5Min
   | -- | 1-hour extended cache
     CacheTtl1Hour
-  deriving stock (Show, Eq, Generic)
+  deriving stock (Show, Eq, Ord, Generic)
 
 -- | Convert a cache TTL to its duration in seconds
 cacheTtlSeconds :: CacheTtl -> NominalDiffTime
 cacheTtlSeconds CacheTtl5Min = 300
 cacheTtlSeconds CacheTtl1Hour = 3600
+
+-- | Short label for a cache TTL (matches the Anthropic API \"ttl\" string).
+cacheTtlLabel :: CacheTtl -> Text
+cacheTtlLabel CacheTtl5Min = "5m"
+cacheTtlLabel CacheTtl1Hour = "1h"
 
 instance FromJSON CacheTtl where
   parseJSON = withText "CacheTtl" $ \case
@@ -440,22 +446,38 @@ instance ToJSON MessagesRequest where
             fields = effortPairs ++ formatPairs
          in ["output_config" .= object fields | not (null fields)]
 
--- | Token usage information
+-- | Token usage information.
+--
+-- 'cacheCreation5mTokens' and 'cacheCreation1hTokens' partition
+-- 'cacheCreationInputTokens' by cache TTL. When the API response omits the
+-- @cache_creation@ sub-object (only 5m caching, or no caching), all
+-- cache-creation tokens are attributed to the 5m bucket.
 data Usage = Usage
   { inputTokens :: Int,
     outputTokens :: Int,
     cacheCreationInputTokens :: Int,
-    cacheReadInputTokens :: Int
+    cacheReadInputTokens :: Int,
+    cacheCreation5mTokens :: Int,
+    cacheCreation1hTokens :: Int
   }
   deriving stock (Show, Eq, Generic)
 
 instance FromJSON Usage where
-  parseJSON = withObject "Usage" $ \v ->
-    Usage
-      <$> v .: "input_tokens"
-      <*> v .: "output_tokens"
-      <*> v .:? "cache_creation_input_tokens" .!= 0
-      <*> v .:? "cache_read_input_tokens" .!= 0
+  parseJSON = withObject "Usage" $ \v -> do
+    input <- v .: "input_tokens"
+    output <- v .: "output_tokens"
+    cacheCreate <- v .:? "cache_creation_input_tokens" .!= 0
+    cacheRead <- v .:? "cache_read_input_tokens" .!= 0
+    -- The cache_creation sub-object only appears when 1h caching is used (or
+    -- mixed TTLs). When absent, attribute all cache-creation tokens to 5m.
+    sub <- v .:? "cache_creation"
+    (c5m, c1h) <- case sub of
+      Nothing -> pure (cacheCreate, 0)
+      Just o -> do
+        a <- o .:? "ephemeral_5m_input_tokens" .!= 0
+        b <- o .:? "ephemeral_1h_input_tokens" .!= 0
+        pure (a, b)
+    pure $ Usage input output cacheCreate cacheRead c5m c1h
 
 -- | Response from the Claude Messages API
 data MessagesResponse = MessagesResponse

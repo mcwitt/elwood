@@ -100,7 +100,7 @@ usageTests :: TestTree
 usageTests =
   testGroup
     "Usage"
-    [ testCase "parses with cache fields present" $ do
+    [ testCase "parses with cache fields present (no sub-object → all 5m)" $ do
         let json =
               Aeson.object
                 [ "input_tokens" Aeson..= (100 :: Int),
@@ -114,6 +114,8 @@ usageTests =
             usage.outputTokens @?= 50
             usage.cacheCreationInputTokens @?= 10
             usage.cacheReadInputTokens @?= 20
+            usage.cacheCreation5mTokens @?= 10
+            usage.cacheCreation1hTokens @?= 0
           Aeson.Error err -> assertFailure $ "Failed to parse Usage: " <> err,
       testCase "parses with cache fields absent (defaults to 0)" $ do
         let json =
@@ -127,6 +129,43 @@ usageTests =
             usage.outputTokens @?= 50
             usage.cacheCreationInputTokens @?= 0
             usage.cacheReadInputTokens @?= 0
+            usage.cacheCreation5mTokens @?= 0
+            usage.cacheCreation1hTokens @?= 0
+          Aeson.Error err -> assertFailure $ "Failed to parse Usage: " <> err,
+      testCase "parses cache_creation sub-object with both TTLs" $ do
+        let json =
+              Aeson.object
+                [ "input_tokens" Aeson..= (2048 :: Int),
+                  "output_tokens" Aeson..= (503 :: Int),
+                  "cache_creation_input_tokens" Aeson..= (248 :: Int),
+                  "cache_read_input_tokens" Aeson..= (1800 :: Int),
+                  "cache_creation"
+                    Aeson..= Aeson.object
+                      [ "ephemeral_5m_input_tokens" Aeson..= (148 :: Int),
+                        "ephemeral_1h_input_tokens" Aeson..= (100 :: Int)
+                      ]
+                ]
+        case Aeson.fromJSON json :: Aeson.Result Usage of
+          Aeson.Success usage -> do
+            usage.cacheCreationInputTokens @?= 248
+            usage.cacheCreation5mTokens @?= 148
+            usage.cacheCreation1hTokens @?= 100
+          Aeson.Error err -> assertFailure $ "Failed to parse Usage: " <> err,
+      testCase "parses cache_creation sub-object with only 1h field" $ do
+        let json =
+              Aeson.object
+                [ "input_tokens" Aeson..= (10 :: Int),
+                  "output_tokens" Aeson..= (5 :: Int),
+                  "cache_creation_input_tokens" Aeson..= (100 :: Int),
+                  "cache_read_input_tokens" Aeson..= (0 :: Int),
+                  "cache_creation"
+                    Aeson..= Aeson.object
+                      ["ephemeral_1h_input_tokens" Aeson..= (100 :: Int)]
+                ]
+        case Aeson.fromJSON json :: Aeson.Result Usage of
+          Aeson.Success usage -> do
+            usage.cacheCreation5mTokens @?= 0
+            usage.cacheCreation1hTokens @?= 100
           Aeson.Error err -> assertFailure $ "Failed to parse Usage: " <> err
     ]
 
