@@ -6,6 +6,9 @@ module Elwood.Telegram.Types
     ChatType (..),
     User (..),
     PhotoSize (..),
+    Document (..),
+    Voice (..),
+    Audio (..),
     TelegramFile (..),
     SendMessageRequest (..),
     GetUpdatesResponse (..),
@@ -68,7 +71,7 @@ data PhotoSize = PhotoSize
     -- | File size in bytes (optional)
     fileSize :: Maybe Int
   }
-  deriving stock (Show, Generic)
+  deriving stock (Show, Eq, Generic)
 
 instance FromJSON PhotoSize where
   parseJSON = withObject "PhotoSize" $ \v ->
@@ -77,6 +80,81 @@ instance FromJSON PhotoSize where
       <*> v .: "file_unique_id"
       <*> v .: "width"
       <*> v .: "height"
+      <*> v .:? "file_size"
+
+-- | A document attachment (files, PDFs, images sent "as file")
+data Document = Document
+  { -- | Identifier for this file
+    fileId :: Text,
+    -- | Unique file identifier (consistent across bots)
+    fileUniqueId :: Text,
+    -- | Original filename, if supplied by the sender
+    fileName :: Maybe Text,
+    -- | MIME type as declared by the sender, if any
+    mimeType :: Maybe Text,
+    -- | File size in bytes (optional)
+    fileSize :: Maybe Int
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON Document where
+  parseJSON = withObject "Document" $ \v ->
+    Document
+      <$> v .: "file_id"
+      <*> v .: "file_unique_id"
+      <*> v .:? "file_name"
+      <*> v .:? "mime_type"
+      <*> v .:? "file_size"
+
+-- | A voice note (Telegram OGG/OPUS)
+data Voice = Voice
+  { -- | Identifier for this file
+    fileId :: Text,
+    -- | Unique file identifier (consistent across bots)
+    fileUniqueId :: Text,
+    -- | Duration of the voice note in seconds
+    duration :: Int,
+    -- | MIME type as declared by the sender, if any
+    mimeType :: Maybe Text,
+    -- | File size in bytes (optional)
+    fileSize :: Maybe Int
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON Voice where
+  parseJSON = withObject "Voice" $ \v ->
+    Voice
+      <$> v .: "file_id"
+      <*> v .: "file_unique_id"
+      <*> v .: "duration"
+      <*> v .:? "mime_type"
+      <*> v .:? "file_size"
+
+-- | An audio file attachment
+data Audio = Audio
+  { -- | Identifier for this file
+    fileId :: Text,
+    -- | Unique file identifier (consistent across bots)
+    fileUniqueId :: Text,
+    -- | Duration of the audio in seconds
+    duration :: Int,
+    -- | Original filename, if supplied by the sender
+    fileName :: Maybe Text,
+    -- | MIME type as declared by the sender, if any
+    mimeType :: Maybe Text,
+    -- | File size in bytes (optional)
+    fileSize :: Maybe Int
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON Audio where
+  parseJSON = withObject "Audio" $ \v ->
+    Audio
+      <$> v .: "file_id"
+      <*> v .: "file_unique_id"
+      <*> v .: "duration"
+      <*> v .:? "file_name"
+      <*> v .:? "mime_type"
       <*> v .:? "file_size"
 
 -- | A Telegram message
@@ -92,7 +170,13 @@ data Message = Message
     -- | Photos attached to the message (multiple sizes)
     photo :: Maybe [PhotoSize],
     -- | Caption for media messages
-    caption :: Maybe Text
+    caption :: Maybe Text,
+    -- | Document attachment, if any
+    document :: Maybe Document,
+    -- | Voice note, if any
+    voice :: Maybe Voice,
+    -- | Audio file, if any
+    audio :: Maybe Audio
   }
   deriving stock (Show, Generic)
 
@@ -105,6 +189,9 @@ instance FromJSON Message where
       <*> v .:? "from"
       <*> v .:? "photo"
       <*> v .:? "caption"
+      <*> v .:? "document"
+      <*> v .:? "voice"
+      <*> v .:? "audio"
 
 -- | Type of a Telegram chat
 data ChatType = Private | Group | Supergroup | Channel

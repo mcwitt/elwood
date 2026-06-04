@@ -1,8 +1,11 @@
 module Test.Elwood.Telegram.Client (tests) where
 
+import Data.Aeson (eitherDecode)
+import Data.ByteString.Lazy (ByteString)
 import Data.Text qualified as T
 import Elwood.Telegram.Client (splitForTelegram, splitMessage, splitMessageAt, telegramApiLimit)
 import Elwood.Telegram.Markdown (markdownToTelegramHtml)
+import Elwood.Telegram.Types (Audio (..), Document (..), Message (..), Voice (..))
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -12,7 +15,8 @@ tests =
     "Telegram.Client"
     [ testGroup "splitMessage" splitMessageTests,
       testGroup "splitMessageAt" splitMessageAtTests,
-      testGroup "splitForTelegram" splitForTelegramTests
+      testGroup "splitForTelegram" splitForTelegramTests,
+      testGroup "media FromJSON" mediaFromJsonTests
     ]
 
 splitMessageTests :: [TestTree]
@@ -70,4 +74,41 @@ splitForTelegramTests =
           initialChunks = splitMessage msg
           telegramChunks = splitForTelegram msg
       length telegramChunks @?= length initialChunks
+  ]
+
+mediaFromJsonTests :: [TestTree]
+mediaFromJsonTests =
+  [ testCase "parses a document message" $ do
+      let json = "{\"message_id\":1,\"chat\":{\"id\":5,\"type\":\"private\"},\"caption\":\"file\",\"document\":{\"file_id\":\"D1\",\"file_unique_id\":\"U1\",\"file_name\":\"report.pdf\",\"mime_type\":\"application/pdf\",\"file_size\":2048}}" :: ByteString
+      case eitherDecode json of
+        Left e -> assertFailure e
+        Right (m :: Message) -> do
+          (m.document >>= (.fileName)) @?= Just "report.pdf"
+          (m.document >>= (.mimeType)) @?= Just "application/pdf"
+          fmap (.fileUniqueId) m.document @?= Just "U1",
+    testCase "parses a voice message" $ do
+      let json = "{\"message_id\":2,\"chat\":{\"id\":5,\"type\":\"private\"},\"voice\":{\"file_id\":\"V1\",\"file_unique_id\":\"U2\",\"duration\":5,\"mime_type\":\"audio/ogg\",\"file_size\":1024}}" :: ByteString
+      case eitherDecode json of
+        Left e -> assertFailure e
+        Right (m :: Message) -> do
+          fmap (.duration) m.voice @?= Just 5
+          (m.voice >>= (.mimeType)) @?= Just "audio/ogg",
+    testCase "parses an audio message" $ do
+      let json = "{\"message_id\":3,\"chat\":{\"id\":5,\"type\":\"private\"},\"audio\":{\"file_id\":\"A1\",\"file_unique_id\":\"U3\",\"duration\":120,\"file_name\":\"song.mp3\",\"mime_type\":\"audio/mpeg\"}}" :: ByteString
+      case eitherDecode json of
+        Left e -> assertFailure e
+        Right (m :: Message) -> do
+          (m.audio >>= (.fileName)) @?= Just "song.mp3"
+          (m.audio >>= (.fileSize)) @?= Nothing,
+    testCase "voice missing required duration fails to parse" $ do
+      let json = "{\"message_id\":5,\"chat\":{\"id\":5,\"type\":\"private\"},\"voice\":{\"file_id\":\"V\",\"file_unique_id\":\"U\"}}" :: ByteString
+      case eitherDecode json :: Either String Message of
+        Left _ -> pure ()
+        Right _ -> assertFailure "expected parse failure for voice missing duration",
+    testCase "plain text message has no media" $ do
+      let json = "{\"message_id\":4,\"chat\":{\"id\":5,\"type\":\"private\"},\"text\":\"hi\"}" :: ByteString
+      case eitherDecode json of
+        Left e -> assertFailure e
+        Right (m :: Message) -> do
+          (m.document, m.voice, m.audio) @?= (Nothing, Nothing, Nothing)
   ]
