@@ -3,6 +3,7 @@ module Elwood.AgentSettings
     ModelRef (..),
     ModelRefOverrides (..),
     resolveModelRef,
+    parseModelRefOverrides,
 
     -- * Partial (monoidal) type for layering overrides
     AgentOverrides (..),
@@ -185,11 +186,16 @@ toOverrides s =
 agentOverrideKeys :: [Key]
 agentOverrideKeys = ["model", "provider", "thinking", "max_iterations", "cache", "max_tokens", "system_prompt", "tool_search", "permissions"]
 
+-- | Parse a 'ModelRefOverrides' from an object's @provider@ and @model@ keys.
+parseModelRefOverrides :: Object -> Parser ModelRefOverrides
+parseModelRefOverrides v =
+  ModelRefOverrides . Last <$> v .:? "provider" <*> (Last <$> v .:? "model")
+
 -- | Parse agent overrides from an Aeson object (shared by 'AgentOverrides' and 'AgentPreset').
 parseAgentOverrides :: Object -> Parser AgentOverrides
 parseAgentOverrides v =
   AgentOverrides
-    <$> (ModelRefOverrides . Last <$> v .:? "provider" <*> (Last <$> v .:? "model"))
+    <$> parseModelRefOverrides v
     <*> v .:? "thinking"
     <*> (Last <$> v .:? "max_iterations")
     <*> v .:? "cache"

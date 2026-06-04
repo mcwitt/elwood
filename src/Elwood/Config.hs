@@ -45,6 +45,7 @@ import Elwood.AgentSettings
     AgentProfile (..),
     ModelRef (..),
     ModelRefOverrides (..),
+    parseModelRefOverrides,
     resolveModelRef,
     resolveProfile,
   )
@@ -435,7 +436,7 @@ instance FromJSON CompactionConfigFile where
     CompactionConfigFile . Last
       <$> v .:? "enable"
       <*> (Last <$> v .:? "token_threshold")
-      <*> (ModelRefOverrides . Last <$> v .:? "provider" <*> (Last <$> v .:? "model"))
+      <*> parseModelRefOverrides v
       <*> (Last <$> v .:? "prompt")
       <*> (Last <$> v .:? "strategy")
 
@@ -504,8 +505,12 @@ loadConfig path = do
       Just t -> pure (T.pack t)
 
   -- Load Anthropic API key from environment (optional: only required if the
-  -- built-in "anthropic" provider is actually referenced).
-  anthropicApiKey_ <- fmap T.pack <$> lookupEnv "ANTHROPIC_API_KEY"
+  -- built-in "anthropic" provider is actually referenced). An empty string is
+  -- treated as absent.
+  anthropicApiKey_ <-
+    lookupEnv "ANTHROPIC_API_KEY" >>= \case
+      Just k | not (null k) -> pure (Just (T.pack k))
+      _ -> pure Nothing
 
   -- Load webhook secret from environment (optional, overrides config file)
   webhookSecretEnv <- fmap T.pack <$> lookupEnv "WEBHOOK_SECRET"
@@ -531,14 +536,19 @@ loadConfig path = do
   -- Resolve a user-defined provider entry (api_key inline, else api_key_env).
   let resolveProviderEntry :: Text -> ProviderConfigFile -> IO ProviderConfig
       resolveProviderEntry n pcf = do
+        when (T.null (T.strip pcf.baseUrl)) $
+          fail $
+            "provider '" <> T.unpack n <> "': base_url must not be empty"
         when (isJust pcf.apiKey && isJust pcf.apiKeyEnv) $
           fail $
             "provider '" <> T.unpack n <> "': set either api_key or api_key_env, not both"
-        key <- case pcf.apiKey of
-          Just k -> pure (Just k)
-          Nothing -> case pcf.apiKeyEnv of
-            Just envVar -> fmap T.pack <$> lookupEnv (T.unpack envVar)
-            Nothing -> pure Nothing
+        key <- case (pcf.apiKey, pcf.apiKeyEnv) of
+          (Just k, _) -> pure (Just k)
+          (Nothing, Just envVar) ->
+            lookupEnv (T.unpack envVar) >>= \case
+              Just v | not (null v) -> pure (Just (T.pack v))
+              _ -> fail $ "provider '" <> T.unpack n <> "': api_key_env names environment variable '" <> T.unpack envVar <> "' which is not set"
+          (Nothing, Nothing) -> pure Nothing
         pure
           ProviderConfig
             { name = n,
@@ -554,6 +564,7 @@ loadConfig path = do
         ProviderConfig "anthropic" "https://api.anthropic.com" anthropicApiKey_ AnthropicFormat
       -- left-biased: a user-defined "anthropic" overrides the built-in
       providersMap = Map.union userProviders (Map.singleton "anthropic" builtinAnthropic)
+      anthropicUserDefined = "anthropic" `Map.member` userProviders
 
   -- Helper to resolve delivery targets from file objects
   let resolveDeliveryTarget :: DeliveryTargetFile -> DeliveryTarget
@@ -644,10 +655,8 @@ loadConfig path = do
       fail $
         "unknown provider: " <> T.unpack n
 
-  when (Set.member "anthropic" referenced) $
-    case Map.lookup "anthropic" providersMap of
-      Just p | isNothing p.apiKey -> fail "ANTHROPIC_API_KEY is required because the 'anthropic' provider is used"
-      _ -> pure ()
+  when (Set.member "anthropic" referenced && not anthropicUserDefined && isNothing anthropicApiKey_) $
+    fail "ANTHROPIC_API_KEY is required because the built-in 'anthropic' provider is used"
 
   pure
     Config

@@ -406,5 +406,29 @@ providerTests =
         withConfigExpectFailure
           "not both"
           "providers:\n  local:\n    base_url: http://h:9000\n    api_key: inline\n    api_key_env: SOME_VAR\nagent:\n  model: qwen\n  provider: local\ncompaction:\n  enable: false\n"
-          (setEnv "ANTHROPIC_API_KEY" "k")
+          (setEnv "ANTHROPIC_API_KEY" "k"),
+      testCase "empty base_url fails" $
+        withConfigExpectFailure
+          "base_url must not be empty"
+          "providers:\n  local:\n    base_url: \"\"\nagent:\n  model: qwen\n  provider: local\ncompaction:\n  enable: false\n"
+          (setEnv "ANTHROPIC_API_KEY" "k"),
+      testCase "api_key_env naming an unset variable fails" $
+        withConfigExpectFailure
+          "api_key_env"
+          "providers:\n  local:\n    base_url: http://h:9000\n    api_key_env: ELWOOD_TEST_DEFINITELY_UNSET\nagent:\n  model: qwen\n  provider: local\ncompaction:\n  enable: false\n"
+          (unsetEnv "ELWOOD_TEST_DEFINITELY_UNSET"),
+      testCase "user-defined keyless anthropic loads without ANTHROPIC_API_KEY"
+        $ withConfig
+          "providers:\n  anthropic:\n    base_url: http://local:8080\nagent:\n  model: claude-opus-4-8\ncompaction:\n  enable: false\n"
+          (unsetEnv "ANTHROPIC_API_KEY")
+        $ \cfg -> case Map.lookup "anthropic" cfg.providers of
+          Just p -> do
+            p.baseUrl @?= "http://local:8080"
+            p.apiKey @?= Nothing
+          Nothing -> assertFailure "missing anthropic provider",
+      testCase "empty ANTHROPIC_API_KEY is treated as missing" $
+        withConfigExpectFailure
+          "ANTHROPIC_API_KEY"
+          "agent:\n  model: claude-opus-4-8\n"
+          (setEnv "ANTHROPIC_API_KEY" "")
     ]
