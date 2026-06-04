@@ -16,6 +16,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as LBS
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.List (sortOn)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Ord (Down (..))
@@ -83,17 +84,28 @@ messageAttachments msg =
     fromAudio a = InboundAttachment a.fileId a.fileUniqueId KindAudio a.fileName a.mimeType a.fileSize
 
 -- | Build the workspace-relative inbox path for an attachment (pure):
--- "inbox/<msgId>-<fileUniqueId><ext>". Extension precedence:
--- Telegram file path > attachment mime type > per-kind default.
+-- "inbox/<msgId>-<fileUniqueId><ext>". The unique id is sanitized to
+-- filesystem-safe characters so a hostile value cannot escape the inbox dir.
+-- Extension precedence: Telegram file path > attachment mime type > per-kind default.
 inboxFileName :: Int -> InboundAttachment -> Maybe Text -> FilePath
 inboxFileName msgId att mFilePath =
-  "inbox" </> (show msgId <> "-" <> T.unpack att.fileUniqueId <> ext)
+  "inbox" </> (show msgId <> "-" <> sanitizeIdComponent att.fileUniqueId <> ext)
   where
     ext = case extFromPath mFilePath of
       Just e -> e
       Nothing -> case att.mimeType >>= extFromMime of
         Just e -> e
         Nothing -> defaultExt att.kind
+
+-- | Keep only filesystem-safe characters, mapping anything else to '_'. Telegram's
+-- file_unique_id is already base64url ([A-Za-z0-9_-]); this is a backstop against
+-- path traversal if that ever changes.
+sanitizeIdComponent :: Text -> String
+sanitizeIdComponent = map repl . T.unpack
+  where
+    repl c
+      | isAsciiUpper c || isAsciiLower c || isDigit c || c == '_' || c == '-' = c
+      | otherwise = '_'
 
 extFromPath :: Maybe Text -> Maybe String
 extFromPath mfp = do

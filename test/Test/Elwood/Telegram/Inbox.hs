@@ -69,7 +69,14 @@ messageAttachmentsTests =
       let v = Voice {fileId = "V", fileUniqueId = "UV", duration = 3, mimeType = Just "audio/ogg", fileSize = Just 5}
           a = Audio {fileId = "A", fileUniqueId = "UA", duration = 9, fileName = Nothing, mimeType = Just "audio/mpeg", fileSize = Just 7}
           atts = messageAttachments baseMessage {voice = Just v, audio = Just a}
-      map (.kind) atts @?= [KindVoice, KindAudio]
+      map (.kind) atts @?= [KindVoice, KindAudio],
+    testCase "all media kinds surface in order photo, document, voice, audio" $ do
+      let p = photoSize 1280 "big" (Just 9000)
+          d = Document {fileId = "D", fileUniqueId = "U", fileName = Just "r.pdf", mimeType = Just "application/pdf", fileSize = Just 10}
+          v = Voice {fileId = "V", fileUniqueId = "UV", duration = 3, mimeType = Just "audio/ogg", fileSize = Just 5}
+          a = Audio {fileId = "A", fileUniqueId = "UA", duration = 9, fileName = Nothing, mimeType = Just "audio/mpeg", fileSize = Just 7}
+          atts = messageAttachments baseMessage {photo = Just [p], document = Just d, voice = Just v, audio = Just a}
+      map (.kind) atts @?= [KindPhoto, KindDocument, KindVoice, KindAudio]
   ]
 
 photoAtt :: InboundAttachment
@@ -77,6 +84,16 @@ photoAtt = InboundAttachment {fileId = "fid", fileUniqueId = "AgADabc", kind = K
 
 docAtt :: InboundAttachment
 docAtt = InboundAttachment {fileId = "fid2", fileUniqueId = "BQADxyz", kind = KindDocument, fileName = Just "r.pdf", mimeType = Just "application/pdf", fileSize = Just 1}
+
+voiceAtt :: InboundAttachment
+voiceAtt = InboundAttachment {fileId = "v", fileUniqueId = "UV", kind = KindVoice, fileName = Nothing, mimeType = Nothing, fileSize = Just 1}
+
+audioAtt :: InboundAttachment
+audioAtt = InboundAttachment {fileId = "a", fileUniqueId = "UA", kind = KindAudio, fileName = Nothing, mimeType = Nothing, fileSize = Just 1}
+
+-- | Override the fileUniqueId field without triggering -Wambiguous-fields.
+withUniqueId :: Text -> InboundAttachment -> InboundAttachment
+withUniqueId uid att = InboundAttachment att.fileId uid att.kind att.fileName att.mimeType att.fileSize
 
 inboxFileNameTests :: [TestTree]
 inboxFileNameTests =
@@ -89,7 +106,13 @@ inboxFileNameTests =
     testCase "falls back to per-kind default when nothing else" $
       inboxFileName 7 photoAtt Nothing @?= "inbox/7-AgADabc.jpg",
     testCase "message id prefix keeps otherwise-identical files distinct" $
-      inboxFileName 5 photoAtt Nothing /= inboxFileName 6 photoAtt Nothing @?= True
+      inboxFileName 5 photoAtt Nothing /= inboxFileName 6 photoAtt Nothing @?= True,
+    testCase "voice falls back to .ogg default" $
+      inboxFileName 1 voiceAtt Nothing @?= "inbox/1-UV.ogg",
+    testCase "audio falls back to .mp3 default" $
+      inboxFileName 1 audioAtt Nothing @?= "inbox/1-UA.mp3",
+    testCase "hostile unique id cannot escape the inbox dir" $
+      inboxFileName 1 (withUniqueId "../../etc/passwd" photoAtt) Nothing @?= "inbox/1-______etc_passwd.jpg"
   ]
 
 writeInboxFileTests :: [TestTree]
