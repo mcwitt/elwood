@@ -124,6 +124,7 @@ let
         agentOvr:
         { }
         // lib.optionalAttrs (agentOvr.model != null) { model = agentOvr.model; }
+        // lib.optionalAttrs (agentOvr.provider != null) { provider = agentOvr.provider; }
         // (
           let
             thinkingAttrs = mkThinkingOverridesAttrs agentOvr.thinking;
@@ -218,6 +219,16 @@ let
         }
       ) agentCfg.mcpServers;
 
+      providersMap = lib.mapAttrs (
+        _: p:
+        {
+          base_url = p.baseUrl;
+        }
+        // lib.optionalAttrs (p.apiKey != null) { api_key = p.apiKey; }
+        // lib.optionalAttrs (p.apiKeyEnv != null) { api_key_env = p.apiKeyEnv; }
+        // lib.optionalAttrs (p.format != null) { format = p.format; }
+      ) agentCfg.providers;
+
       configContent = {
         state_dir = agentCfg.stateDir;
         workspace = agentCfg.workspace.path;
@@ -251,6 +262,9 @@ let
         }
         // lib.optionalAttrs (agentCfg.agent.toolSearch != null) {
           tool_search = agentCfg.agent.toolSearch;
+        }
+        // lib.optionalAttrs (agentCfg.agent.provider != null) {
+          provider = agentCfg.agent.provider;
         };
         max_image_dimension = agentCfg.maxImageDimension;
         tool_use_messages = agentCfg.toolUseMessages;
@@ -263,6 +277,9 @@ let
         }
         // lib.optionalAttrs (agentCfg.compaction.prompt != null) {
           prompt = agentCfg.compaction.prompt;
+        }
+        // lib.optionalAttrs (agentCfg.compaction.provider != null) {
+          provider = agentCfg.compaction.provider;
         };
 
         pruning = {
@@ -334,6 +351,9 @@ let
       }
       // lib.optionalAttrs (mcpServersList != { }) {
         mcp_servers = mcpServersList;
+      }
+      // lib.optionalAttrs (providersMap != { }) {
+        providers = providersMap;
       }
       // lib.optionalAttrs agentCfg.webhook.enable {
         webhook = {
@@ -541,6 +561,13 @@ let
       example = "claude-haiku-4-20250414";
     };
 
+    provider = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Provider override (name from the top-level `providers` map). Null inherits.";
+      example = "local";
+    };
+
     thinking = {
       enable = lib.mkOption {
         type = lib.types.nullOr lib.types.bool;
@@ -683,6 +710,31 @@ let
     };
   };
 
+  # Submodule for LLM provider endpoints
+  providerModule = lib.types.submodule {
+    options = {
+      baseUrl = lib.mkOption {
+        type = lib.types.str;
+        description = "Base URL of the provider endpoint (required), e.g. http://host:port.";
+      };
+      apiKey = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Inline API key (discouraged; prefer apiKeyEnv).";
+      };
+      apiKeyEnv = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Name of an environment variable holding the API key.";
+      };
+      format = lib.mkOption {
+        type = lib.types.nullOr (lib.types.enum [ "anthropic" ]);
+        default = null;
+        description = "Wire format. Currently only \"anthropic\".";
+      };
+    };
+  };
+
   # Submodule for telegram chat configuration
   telegramChatModule = lib.types.submodule {
     options = {
@@ -763,7 +815,7 @@ let
           type = lib.types.nullOr lib.types.path;
           default = null;
           description = ''
-            Path to environment file with secrets (TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY).
+            Path to environment file with secrets (TELEGRAM_BOT_TOKEN; ANTHROPIC_API_KEY only if the anthropic provider is used; any provider api_key_env vars).
           '';
         };
 
@@ -791,6 +843,12 @@ let
             type = lib.types.str;
             default = "claude-sonnet-4-20250514";
             description = "Claude model to use.";
+          };
+
+          provider = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Provider name from the `providers` map. Null uses the built-in `anthropic`.";
           };
 
           thinking = {
@@ -971,6 +1029,12 @@ let
             description = "Model to use for compaction/summarization.";
           };
 
+          provider = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Provider for the compaction model. Null uses the built-in `anthropic`.";
+          };
+
           prompt = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
@@ -1124,6 +1188,21 @@ let
           type = lib.types.attrsOf mcpServerModule;
           default = { };
           description = "MCP server configurations.";
+        };
+
+        providers = lib.mkOption {
+          type = lib.types.attrsOf providerModule;
+          default = { };
+          description = ''
+            Named LLM provider endpoints referenced by `provider` settings.
+            The built-in `anthropic` provider (https://api.anthropic.com, using
+            ANTHROPIC_API_KEY) need not be declared.
+          '';
+          example = lib.literalExpression ''
+            {
+              local.baseUrl = "http://satori:8080";
+            }
+          '';
         };
 
         user = lib.mkOption {

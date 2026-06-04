@@ -247,6 +247,7 @@ in
           ];
           agent = {
             model = "claude-test-model";
+            provider = "local";
             permissions = {
               safePatterns = [
                 "^ls\\b"
@@ -256,6 +257,11 @@ in
               defaultPolicy = "ask";
               approvalTimeoutSeconds = 600;
             };
+          };
+
+          providers.local = {
+            baseUrl = "http://satori:8080";
+            apiKeyEnv = "LOCAL_KEY";
           };
 
           # Heartbeat is now handled via systemd timer, not in config
@@ -293,6 +299,12 @@ in
 
       # Verify systemPrompt default is present
       assert "SOUL.md" in config, f"Default systemPrompt (SOUL.md) not in config: {config}"
+
+      # Verify provider serialization (snake_case keys, providers map present)
+      assert '"providers"' in config, f"providers map missing: {config}"
+      assert '"base_url"' in config, f"provider base_url missing (snake_case regression?): {config}"
+      assert '"api_key_env"' in config, f"provider api_key_env missing: {config}"
+      assert '"provider":"local"' in config, f"agent provider missing: {config}"
 
       print("Config validation passed!")
       print(config)
