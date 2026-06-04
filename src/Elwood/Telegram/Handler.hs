@@ -6,20 +6,16 @@ module Elwood.Telegram.Handler
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.STM (atomically, modifyTVar')
 import Control.Exception (SomeException, catch)
 import Data.Aeson (Value (..))
-import Data.ByteString qualified as BS
-import Data.ByteString.Base64 qualified as B64
-import Data.ByteString.Lazy qualified as LBS
 import Data.Int (Int64)
-import Data.List (find, sortOn)
+import Data.List (find)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isNothing, listToMaybe)
-import Data.Ord (Down (..))
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
 import Data.Time (diffUTCTime, getCurrentTime)
 import Elwood.AgentSettings (AgentProfile (..))
 import Elwood.Claude qualified as Claude
@@ -29,10 +25,7 @@ import Elwood.Command qualified as Cmd
 import Elwood.Config (TelegramChatConfig (..))
 import Elwood.Event
   ( AppEnv (..),
-    Base64Data (..),
     Event (..),
-    ImageData (..),
-    MediaType (..),
     handleEvent,
     lookupToolUseMessages,
     sessionToConversationId,
@@ -42,13 +35,13 @@ import Elwood.Event.Types
     EventSource (..),
     SessionConfig (..),
   )
-import Elwood.Image (ResizeResult (..), resizeImage)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (estimateJsonTokens, estimateTextTokens, recordApiResponse, recordCompaction)
 import Elwood.Notify (Severity (..), formatNotify)
 import Elwood.Positive (Positive (getPositive))
 import Elwood.Session (cancelSession, withSessionLock)
 import Elwood.Telegram qualified as Telegram
+import Elwood.Telegram.Inbox qualified as Inbox
 import Elwood.Tools.AsyncTask (cancelAllTasks)
 import Numeric (showFFloat)
 import System.Exit (ExitCode (..))
@@ -98,21 +91,16 @@ parseCommand txt =
 -- or 'Just errorMsg' on failure (for the polling loop to send).
 handleTelegramMessage :: AppEnv -> Telegram.Message -> IO (Maybe Text)
 handleTelegramMessage env msg =
-  case (msg.text, msg.photo) of
+  case msg.text of
     -- Slash commands: dispatch via command list
-    (Just txt, _)
+    Just txt
       | Just (cmdName, args) <- parseCommand txt ->
           case find (\c -> c.name == cmdName) commands of
             Just cmd -> runCommand cmd args
             Nothing -> pure Nothing -- unknown command, ignore
-            -- Ignore bare "/" or other non-parseable slash input
-    (Just txt, _) | T.isPrefixOf "/" (T.strip txt) -> pure Nothing
-    -- Handle text with optional photo
-    (Just txt, photos) -> handleMessageWithPhoto txt photos
-    -- Handle photo with caption only
-    (Nothing, Just photos@(_ : _)) -> handleMessageWithPhoto (fromMaybe "" msg.caption) (Just photos)
-    -- No text and no photos (or empty photo list)
-    (Nothing, _) -> pure Nothing
+      | T.isPrefixOf "/" (T.strip txt) -> pure Nothing -- ignore bare "/" or non-command slash input
+      -- Anything else (text, caption, and/or media) goes through the content path
+    _ -> handleContentMessage
   where
     lgr :: Logger
     lgr = env.logger
@@ -329,43 +317,34 @@ handleTelegramMessage env msg =
             ExitFailure code -> "[exit " <> T.pack (show code) <> "] "
       pure (Just $ formatNotify Info $ prefix <> "\n```\n$ " <> cmd <> "\n" <> result.output <> "\n```")
 
-    handleMessageWithPhoto :: Text -> Maybe [Telegram.PhotoSize] -> IO (Maybe Text)
-    handleMessageWithPhoto userText maybePhotos = do
+    handleContentMessage :: IO (Maybe Text)
+    handleContentMessage = do
+      let effectiveText = fromMaybe "" (msg.text <|> msg.caption)
+      result <- Inbox.processInbound lgr env.telegram env.workspace env.maxImageDimension msg
       logInfo
         lgr
         "Processing message"
         [ ("chat_id", T.pack (show chatIdVal)),
-          ("text_length", T.pack (show (T.length userText))),
-          ("has_photo", T.pack (show (maybe False (not . null) maybePhotos)))
+          ("text_length", T.pack (show (T.length effectiveText))),
+          ("saved_attachments", T.pack (show (length result.saved)))
         ]
-
-      -- Fetch image if present
-      imageData <- case maybePhotos of
-        Just photos@(_ : _) -> fetchImageData photos
-        _ -> pure Nothing
-
-      -- If no content, skip
-      if T.null userText && isNothing imageData
+      if T.null effectiveText && null result.saved
         then pure Nothing
         else do
-          -- Create Telegram event
           now <- getCurrentTime
           let evt =
                 Event
                   { source = TelegramSource chatIdVal,
                     timestamp = now,
                     payload = Null,
-                    prompt = userText,
-                    image = imageData,
-                    attachments = [],
+                    prompt = effectiveText,
+                    image = result.perception,
+                    attachments = result.saved,
                     session = chatSession,
                     deliveryTarget = TelegramDelivery (pure chatIdVal)
                   }
-
-          -- Handle the event - delivery to Telegram is done by the event system
-          result <- handleEvent env evt
-
-          case result of
+          handleResult <- handleEvent env evt
+          case handleResult of
             Right responseText -> do
               logInfo
                 lgr
@@ -373,87 +352,10 @@ handleTelegramMessage env msg =
                 [ ("chat_id", T.pack (show chatIdVal)),
                   ("response_length", T.pack (show (T.length responseText)))
                 ]
-              -- Return Nothing: the event system already delivered to Telegram
               pure Nothing
             Left errorMsg -> do
-              logInfo
+              logWarn
                 lgr
                 "Agent turn failed"
-                [ ("chat_id", T.pack (show chatIdVal)),
-                  ("error", errorMsg)
-                ]
-              -- Errors are still returned for the polling loop to send,
-              -- since the event system only delivers on success
+                [("chat_id", T.pack (show chatIdVal)), ("error", errorMsg)]
               pure (Just errorMsg)
-
-    -- Fetch the largest photo and return ImageData
-    fetchImageData :: [Telegram.PhotoSize] -> IO (Maybe ImageData)
-    fetchImageData photos = do
-      let tg = env.telegram
-      -- Get the largest photo (sort by file size descending, take first)
-      let largestPhoto = listToMaybe $ sortOn (Down . (.fileSize)) photos
-      case largestPhoto of
-        Nothing -> pure Nothing
-        Just ps -> do
-          logInfo
-            lgr
-            "Fetching photo"
-            [ ("file_id", ps.fileId),
-              ("width", T.pack (show ps.width)),
-              ("height", T.pack (show ps.height))
-            ]
-
-          -- Get file info from Telegram
-          maybeFile <- Telegram.getFile tg ps.fileId
-          case maybeFile of
-            Nothing -> do
-              logWarn lgr "Failed to get file info" [("file_id", ps.fileId)]
-              pure Nothing
-            Just file -> case file.filePath of
-              Nothing -> do
-                logWarn lgr "No file path in response" [("file_id", ps.fileId)]
-                pure Nothing
-              Just fp -> do
-                -- Download the file
-                rawImageData <-
-                  Telegram.downloadFile tg fp
-                    `catch` \(e :: SomeException) -> do
-                      logWarn lgr "Failed to download file" [("error", T.pack (show e))]
-                      pure LBS.empty
-
-                if LBS.null rawImageData
-                  then pure Nothing
-                  else do
-                    let strictBytes = LBS.toStrict rawImageData
-                        mt = guessMediaType fp
-                        (imageBytes, finalMt, resizeResult) = case env.maxImageDimension of
-                          Nothing -> (strictBytes, mt, Unchanged)
-                          Just maxDim -> resizeImage maxDim strictBytes mt
-                        b64 = Base64Data $ TE.decodeUtf8 $ B64.encode imageBytes
-                    case resizeResult of
-                      DecodeFailed err ->
-                        logWarn
-                          lgr
-                          "Image decode failed, sending original"
-                          [ ("error", T.pack err),
-                            ("media_type", mt.unMediaType),
-                            ("size_bytes", T.pack (show (BS.length strictBytes)))
-                          ]
-                      _ -> pure ()
-                    logInfo
-                      lgr
-                      "Photo downloaded and encoded"
-                      [ ("media_type", finalMt.unMediaType),
-                        ("original_bytes", T.pack (show (BS.length strictBytes))),
-                        ("final_bytes", T.pack (show (BS.length imageBytes)))
-                      ]
-                    pure $ Just ImageData {mediaType = finalMt, base64Data = b64}
-
-    -- Guess media type from file path
-    guessMediaType :: Text -> MediaType
-    guessMediaType path
-      | T.isSuffixOf ".jpg" path || T.isSuffixOf ".jpeg" path = MediaType "image/jpeg"
-      | T.isSuffixOf ".png" path = MediaType "image/png"
-      | T.isSuffixOf ".gif" path = MediaType "image/gif"
-      | T.isSuffixOf ".webp" path = MediaType "image/webp"
-      | otherwise = MediaType "image/jpeg" -- Default to JPEG for Telegram photos
