@@ -32,6 +32,7 @@ import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
 import Elwood.Metrics (newMetricsStore, setMCPServerCount)
 import Elwood.Positive (Positive)
+import Elwood.Provider (ApiFormat (..), ProviderConfig (..))
 import Elwood.Session (newSessionLocks)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Telegram.Handler (handleTelegramMessage)
@@ -56,7 +57,9 @@ runApp config = do
   logInfo logger "Telegram client initialized" []
 
   -- Initialize Claude client
-  claude <- Claude.newClient config.anthropicApiKey
+  claude <-
+    Claude.newClient
+      (Map.singleton "anthropic" (ProviderConfig "anthropic" "https://api.anthropic.com" (Just config.anthropicApiKey) AnthropicFormat))
   logInfo logger "Claude client initialized" [("model", config.agentProfile.model.model)]
 
   -- Initialize conversation store

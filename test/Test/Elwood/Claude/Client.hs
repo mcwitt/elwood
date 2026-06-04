@@ -6,12 +6,15 @@ where
 import Data.IORef (modifyIORef, newIORef, readIORef, writeIORef)
 import Elwood.Claude.Client
   ( RetryConfig (..),
+    buildRequest,
     calculateRetryDelay,
     defaultRetryConfig,
     isRetryableError,
     retryWithBackoff,
   )
 import Elwood.Claude.Types (ClaudeError (..))
+import Elwood.Provider (ApiFormat (..), ProviderConfig (..))
+import Network.HTTP.Client (host, path, port, requestHeaders)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 
@@ -21,8 +24,29 @@ tests =
     "Elwood.Claude.Client"
     [ testGroup "isRetryableError" isRetryableTests,
       testGroup "calculateRetryDelay" calculateDelayTests,
-      testGroup "retryWithBackoff" retryTests
+      testGroup "retryWithBackoff" retryTests,
+      testGroup "buildRequest" buildRequestTests
     ]
+
+-- | Tests for buildRequest
+buildRequestTests :: [TestTree]
+buildRequestTests =
+  [ testCase "keyed anthropic provider sets x-api-key and version" $ do
+      req <- buildRequest (ProviderConfig "anthropic" "https://api.anthropic.com" (Just "sekret") AnthropicFormat)
+      assertBool "host" (host req == "api.anthropic.com")
+      assertBool "path" (path req == "/v1/messages")
+      assertBool "has x-api-key" (("x-api-key", "sekret") `elem` requestHeaders req)
+      assertBool "has version" (("anthropic-version", "2023-06-01") `elem` requestHeaders req)
+      assertBool "has content-type" (("Content-Type", "application/json") `elem` requestHeaders req),
+    testCase "keyless local provider omits x-api-key" $ do
+      req <- buildRequest (ProviderConfig "local" "http://host:9000" Nothing AnthropicFormat)
+      assertBool "host" (host req == "host")
+      assertBool "port" (port req == 9000)
+      assertBool "no x-api-key" ("x-api-key" `notElem` map fst (requestHeaders req)),
+    testCase "trailing slash in base_url does not double up" $ do
+      req <- buildRequest (ProviderConfig "local" "http://host:9000/" Nothing AnthropicFormat)
+      assertBool "path" (path req == "/v1/messages")
+  ]
 
 -- | Tests for isRetryableError
 isRetryableTests :: [TestTree]
@@ -47,7 +71,11 @@ isRetryableTests =
     testCase "API error is not retryable" $
       assertBool "should not be retryable" $
         not $
-          isRetryableError (ClaudeApiError "invalid_request" "bad input")
+          isRetryableError (ClaudeApiError "invalid_request" "bad input"),
+    testCase "unknown provider is not retryable" $
+      assertBool "should not be retryable" $
+        not $
+          isRetryableError (ClaudeUnknownProvider "nope")
   ]
 
 -- | Tests for calculateRetryDelay

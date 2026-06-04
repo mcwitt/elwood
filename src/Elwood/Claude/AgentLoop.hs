@@ -235,7 +235,7 @@ agentLoopIteration cfg msgs iteration = do
   -- Fire before-call callback (e.g., typing indicator)
   sequence_ cfg.onBeforeApiCall
 
-  result <- sendMessagesWithRetry cfg.client retryConfig request
+  result <- sendMessagesWithRetry cfg.client retryConfig cfg.agentProfile.model.provider request
 
   case result of
     Left err -> do
@@ -465,6 +465,8 @@ formatError (ClaudeHttpError status body) =
   formatNotify Error $ "**HTTP " <> T.pack (show status) <> ":** `" <> sanitizeBackticks (T.take 200 body) <> "`"
 formatError (ClaudeParseError err) =
   formatNotify Error $ "**Parse error:** `" <> sanitizeBackticks (T.pack err) <> "`"
+formatError (ClaudeUnknownProvider name) =
+  formatNotify Error $ "**Unknown provider:** `" <> sanitizeBackticks name <> "`"
 
 -- | Format retry-after information
 retryMsg :: Maybe Int -> Text

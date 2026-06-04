@@ -512,6 +512,8 @@ data ClaudeError
     ClaudeRateLimited (Maybe Int)
   | -- | API is overloaded (with optional retry-after seconds)
     ClaudeOverloaded (Maybe Int)
+  | -- | Referenced provider name is not defined
+    ClaudeUnknownProvider Text
   deriving stock (Show, Eq)
 
 instance Exception ClaudeError

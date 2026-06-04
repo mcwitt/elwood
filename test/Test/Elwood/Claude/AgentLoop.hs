@@ -2,12 +2,14 @@ module Test.Elwood.Claude.AgentLoop (tests) where
 
 import Colog.Core (LogAction (..))
 import Control.Exception (SomeException, try)
+import Data.Map.Strict qualified as Map
 import Elwood.AgentSettings (AgentProfile (..), ModelRef (..), ToolSearchConfig (..))
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient (..))
 import Elwood.Claude.Observer (AgentObserver (..))
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..))
 import Elwood.Permissions (resolvePermissions)
+import Elwood.Provider (ApiFormat (..), ProviderConfig (..))
 import Elwood.Tools.Registry (newToolRegistry)
 import Elwood.Tools.Types (noApprovalChannel)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
@@ -45,8 +47,7 @@ mkTestConfig isCancelled = do
   let client =
         ClaudeClient
           { manager = mgr,
-            apiKey = "test-key",
-            baseUrl = "http://localhost:1" -- unreachable, will error
+            providers = Map.singleton "anthropic" (ProviderConfig "anthropic" "http://localhost:1" (Just "test-key") AnthropicFormat)
           }
       profile =
         AgentProfile

@@ -185,7 +185,7 @@ summarizeMessages client config onApiResponse msgs = do
             outputFormat = Nothing
           }
 
-  result <- sendMessages client request
+  result <- sendMessages client config.model.provider request
 
   case result of
     Left err -> pure $ Left $ T.pack (show err)

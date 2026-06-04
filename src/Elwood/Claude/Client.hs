@@ -7,6 +7,7 @@ module Elwood.Claude.Client
     defaultRetryConfig,
 
     -- * Exported for testing
+    buildRequest,
     isRetryableError,
     calculateRetryDelay,
     retryWithBackoff,
@@ -20,23 +21,23 @@ import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy (ByteString)
 import Data.ByteString.Lazy qualified as LBS
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Elwood.Claude.Types
+import Elwood.Provider (ApiFormat (..), ProviderConfig (..))
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Header (hRetryAfter)
 import Network.HTTP.Types.Status (statusCode)
 import Text.Read (readMaybe)
 
--- | Claude API client
+-- | Claude API client: shared HTTP manager + the configured provider endpoints.
 data ClaudeClient = ClaudeClient
-  { -- | HTTP connection manager
-    manager :: Manager,
-    -- | Anthropic API key
-    apiKey :: Text,
-    -- | Base URL for API calls
-    baseUrl :: String
+  { manager :: Manager,
+    providers :: Map Text ProviderConfig
   }
 
 -- | Retry configuration for API calls
@@ -61,39 +62,35 @@ defaultRetryConfig =
       onRetry = Nothing
     }
 
--- | Create a new Claude client
-newClient :: Text -> IO ClaudeClient
-newClient key = do
+-- | Create a new client from the resolved provider map.
+newClient :: Map Text ProviderConfig -> IO ClaudeClient
+newClient provs = do
   let settings = tlsManagerSettings {managerResponseTimeout = responseTimeoutMicro (10 * 60 * 1000000)}
   mgr <- newManager settings
-  pure
-    ClaudeClient
-      { manager = mgr,
-        apiKey = key,
-        baseUrl = "https://api.anthropic.com"
-      }
+  pure ClaudeClient {manager = mgr, providers = provs}
 
--- | Send a messages request to Claude (single attempt, no retry)
-sendMessages :: ClaudeClient -> MessagesRequest -> IO (Either ClaudeError MessagesResponse)
-sendMessages client req = do
-  httpReq <- buildRequest client
-  let body = encode req
-      betaHeaders = case req.cacheControl of
-        Just CacheTtl1Hour -> [("anthropic-beta", "extended-cache-ttl-2025-04-11")]
-        _ -> []
-      httpReq' =
-        httpReq
-          { method = "POST",
-            requestBody = RequestBodyLBS body,
-            requestHeaders = requestHeaders httpReq ++ betaHeaders
-          }
-
-  response <- httpLbs httpReq' client.manager
-  let status = statusCode $ responseStatus response
-      respBody = responseBody response
-      retryAfter = parseRetryAfter response
-
-  pure $ parseResponse status respBody retryAfter
+-- | Send a messages request to a named provider (single attempt, no retry).
+sendMessages :: ClaudeClient -> Text -> MessagesRequest -> IO (Either ClaudeError MessagesResponse)
+sendMessages client providerName req =
+  case Map.lookup providerName client.providers of
+    Nothing -> pure (Left (ClaudeUnknownProvider providerName))
+    Just provider -> do
+      httpReq <- buildRequest provider
+      let body = encode req
+          betaHeaders = case req.cacheControl of
+            Just CacheTtl1Hour -> [("anthropic-beta", "extended-cache-ttl-2025-04-11")]
+            _ -> []
+          httpReq' =
+            httpReq
+              { method = "POST",
+                requestBody = RequestBodyLBS body,
+                requestHeaders = requestHeaders httpReq ++ betaHeaders
+              }
+      response <- httpLbs httpReq' client.manager
+      let status = statusCode $ responseStatus response
+          respBody = responseBody response
+          retryAfter = parseRetryAfter response
+      pure $ parseResponse status respBody retryAfter
 
 -- | Check if an error is retryable (rate limits and overload)
 isRetryableError :: ClaudeError -> Bool
@@ -145,10 +142,11 @@ retryWithBackoff config action delayFn = go 0
 sendMessagesWithRetry ::
   ClaudeClient ->
   RetryConfig ->
+  Text ->
   MessagesRequest ->
   IO (Either ClaudeError MessagesResponse)
-sendMessagesWithRetry client config req =
-  retryWithBackoff config (sendMessages client req) delaySeconds
+sendMessagesWithRetry client config providerName req =
+  retryWithBackoff config (sendMessages client providerName req) delaySeconds
   where
     delaySeconds s = threadDelay (s * 1000000)
 
@@ -158,18 +156,16 @@ parseRetryAfter response =
   lookup hRetryAfter (responseHeaders response)
     >>= readMaybe . BS8.unpack
 
--- | Build the HTTP request with proper headers
-buildRequest :: ClaudeClient -> IO Request
-buildRequest client = do
-  req <- parseRequest $ client.baseUrl <> "/v1/messages"
-  pure
-    req
-      { requestHeaders =
-          [ ("Content-Type", "application/json"),
-            ("x-api-key", TE.encodeUtf8 client.apiKey),
-            ("anthropic-version", "2023-06-01")
-          ]
-      }
+-- | Build the HTTP request for a provider (URL + auth headers by format).
+buildRequest :: ProviderConfig -> IO Request
+buildRequest provider = do
+  req <- parseRequest $ T.unpack (T.dropWhileEnd (== '/') provider.baseUrl) <> "/v1/messages"
+  let headers = case provider.format of
+        AnthropicFormat ->
+          ("Content-Type", "application/json")
+            : ("anthropic-version", "2023-06-01")
+            : [("x-api-key", TE.encodeUtf8 k) | Just k <- [provider.apiKey]]
+  pure req {requestHeaders = headers}
 
 -- | Parse the API response, handling errors appropriately
 parseResponse :: Int -> ByteString -> Maybe Int -> Either ClaudeError MessagesResponse
