@@ -357,6 +357,7 @@ handleTelegramMessage env msg =
                     payload = Null,
                     prompt = userText,
                     image = imageData,
+                    attachments = [],
                     session = chatSession,
                     deliveryTarget = TelegramDelivery (pure chatIdVal)
                   }

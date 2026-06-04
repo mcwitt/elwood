@@ -9,6 +9,7 @@ module Elwood.Event
     ImageData (..),
     MediaType (..),
     Base64Data (..),
+    SavedAttachment (..),
 
     -- * Event Environment
     AppEnv (..),
@@ -33,6 +34,7 @@ module Elwood.Event
     -- * Utilities
     sendAttachmentSafe,
     lookupToolUseMessages,
+    attachPromptNote,
   )
 where
 
@@ -61,6 +63,7 @@ import Elwood.Event.Types
     EventSource (..),
     ImageData (..),
     MediaType (..),
+    SavedAttachment (..),
     SessionConfig (..),
   )
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
@@ -82,8 +85,10 @@ data Event = Event
     payload :: Value,
     -- | Rendered prompt for the agent
     prompt :: Text,
-    -- | Optional image data
+    -- | Optional image data (largest inbound photo, for perception)
     image :: Maybe ImageData,
+    -- | Attachments archived to disk for this event ([] when none)
+    attachments :: [SavedAttachment],
     -- | Session configuration
     session :: SessionConfig,
     -- | Where to deliver responses
@@ -242,12 +247,14 @@ handleEventCore env event callbacks = do
   -- Assemble system prompt from workspace files (re-read each request)
   systemPrompt <- assemblePrompt env.workspace prof.systemPrompt
 
-  -- Build user message with optional image
-  let contentBlocks = case event.image of
+  -- Build user message with optional image; append a note describing any
+  -- attachments archived to the workspace inbox.
+  let promptWithNote = attachPromptNote event.prompt event.attachments
+      contentBlocks = case event.image of
         Just img ->
-          [Claude.ImageBlock img.mediaType.unMediaType img.base64Data.unBase64Data, Claude.TextBlock event.prompt]
+          [Claude.ImageBlock img.mediaType.unMediaType img.base64Data.unBase64Data, Claude.TextBlock promptWithNote]
         Nothing ->
-          [Claude.TextBlock event.prompt]
+          [Claude.TextBlock promptWithNote]
       userMsg = Claude.ClaudeMessage Claude.User contentBlocks
 
   -- Convert tool search config to Maybe (Set ToolName) for the agent loop
@@ -651,3 +658,45 @@ mkBeforeApiCallCallback env event =
 formatSource :: EventSource -> Text
 formatSource (WebhookSource n) = "webhook:" <> n
 formatSource (TelegramSource chatId_) = "telegram:" <> T.pack (show chatId_)
+
+-- | Append a human-readable note about archived attachments to a prompt.
+-- Returns the prompt unchanged when there are no attachments.
+attachPromptNote :: Text -> [SavedAttachment] -> Text
+attachPromptNote prompt [] = prompt
+attachPromptNote prompt atts
+  | T.null prompt = note
+  | otherwise = prompt <> "\n\n" <> note
+  where
+    n = length atts
+    header =
+      "[System: archived "
+        <> T.pack (show n)
+        <> " inbound "
+        <> (if n == 1 then "attachment" else "attachments")
+        <> " to the workspace inbox:"
+    note = T.intercalate "\n" (header : map renderAttachmentLine atts) <> "]"
+
+-- | Render one archived-attachment bullet line.
+renderAttachmentLine :: SavedAttachment -> Text
+renderAttachmentLine a =
+  "- `"
+    <> T.pack a.path
+    <> "`"
+    <> maybe "" (\name -> " (original: " <> name <> ")") a.originalName
+    <> " — "
+    <> a.mediaType
+    <> ", "
+    <> formatByteSize a.sizeBytes
+    <> " "
+    <> ( if a.perceivable
+           then "(also attached above for viewing)"
+           else "(saved-only; not viewable inline)"
+       )
+
+-- | Format a byte count with integer B/KB/MB units (deterministic).
+-- Files >= 1 GB render as large MB counts; not expected given Telegram limits.
+formatByteSize :: Int -> Text
+formatByteSize b
+  | b < 1024 = T.pack (show b) <> " B"
+  | b < 1024 * 1024 = T.pack (show (b `div` 1024)) <> " KB"
+  | otherwise = T.pack (show (b `div` (1024 * 1024))) <> " MB"

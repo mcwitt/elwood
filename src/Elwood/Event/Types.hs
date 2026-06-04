@@ -14,6 +14,9 @@ module Elwood.Event.Types
     ImageData (..),
     MediaType (..),
     Base64Data (..),
+
+    -- * Archived Attachments
+    SavedAttachment (..),
   )
 where
 
@@ -49,6 +52,21 @@ newtype Base64Data = Base64Data {unBase64Data :: Text}
 data ImageData = ImageData
   { mediaType :: MediaType,
     base64Data :: Base64Data
+  }
+  deriving stock (Show, Eq)
+
+-- | An inbound attachment archived to the workspace inbox.
+data SavedAttachment = SavedAttachment
+  { -- | Workspace-relative path, e.g. "inbox/482-AgADabc.jpg"
+    path :: FilePath,
+    -- | MIME type, e.g. "image/jpeg", "application/pdf"
+    mediaType :: Text,
+    -- | Size of the archived original in bytes
+    sizeBytes :: Int,
+    -- | True iff also sent to the model as an image block
+    perceivable :: Bool,
+    -- | Original filename (documents), if any
+    originalName :: Maybe Text
   }
   deriving stock (Show, Eq)
 

@@ -155,6 +155,7 @@ processWebhookEvent lgr webhookCfg env payloadVal promptText now =
                   payload = payloadVal,
                   prompt = promptText,
                   image = Nothing,
+                  attachments = [],
                   session = webhookCfg.session,
                   deliveryTarget = webhookCfg.deliveryTarget
                 }
@@ -172,6 +173,7 @@ processWebhookEvent lgr webhookCfg env payloadVal promptText now =
                   payload = payloadVal,
                   prompt = promptText,
                   image = Nothing,
+                  attachments = [],
                   session = webhookCfg.session,
                   deliveryTarget = LogOnly
                 }
