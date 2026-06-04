@@ -25,15 +25,16 @@ where
 -- Note: PermissionConfig and PermissionConfigFile are re-exported from Elwood.Permissions
 
 import Control.Applicative ((<|>))
-import Control.Monad (when)
+import Control.Monad (forM_, unless, when)
 import Data.Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Int (Int64)
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Monoid (Last (..))
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Yaml qualified as Yaml
@@ -50,6 +51,7 @@ import Elwood.AgentSettings
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), PermissionConfigFile (..))
 import Elwood.Positive (Positive)
+import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ProviderConfigFile (..))
 import Elwood.Webhook.Types
   ( DeliveryTargetFile (..),
     WebhookConfig (..),
@@ -108,8 +110,8 @@ data Config = Config
     workspace :: FilePath,
     -- | Telegram bot token (loaded from environment)
     telegramToken :: Text,
-    -- | Anthropic API key (loaded from environment)
-    anthropicApiKey :: Text,
+    -- | Resolved LLM provider endpoints, keyed by name
+    providers :: Map Text ProviderConfig,
     -- | Telegram chat configurations (ID + session)
     telegramChats :: [TelegramChatConfig],
     -- | Resolved agent profile (model, thinking, permissions, etc.)
@@ -238,6 +240,7 @@ data ConfigFile = ConfigFile
     compaction :: Maybe CompactionConfigFile,
     pruning :: Maybe PruningConfigFile,
     mcpServers :: Maybe (Map Text MCPServerConfigFile),
+    providers :: Maybe (Map Text ProviderConfigFile),
     webhook :: Maybe WebhookServerConfigFile,
     toolUseMessages :: Maybe Bool,
     delegate :: Maybe DelegateConfigFile,
@@ -411,7 +414,7 @@ instance FromJSON ChannelsConfigFile where
 
 instance FromJSON ConfigFile where
   parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace", "channels", "agent", "compaction", "pruning", "mcp_servers", "webhook", "tool_use_messages", "delegate", "max_image_dimension"] v
+    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace", "channels", "agent", "compaction", "pruning", "mcp_servers", "providers", "webhook", "tool_use_messages", "delegate", "max_image_dimension"] v
     ConfigFile
       <$> v .:? "state_dir"
       <*> v .:? "workspace"
@@ -420,6 +423,7 @@ instance FromJSON ConfigFile where
       <*> v .:? "compaction"
       <*> v .:? "pruning"
       <*> v .:? "mcp_servers"
+      <*> v .:? "providers"
       <*> v .:? "webhook"
       <*> v .:? "tool_use_messages"
       <*> v .:? "delegate"
@@ -499,11 +503,9 @@ loadConfig path = do
       Nothing -> fail "TELEGRAM_BOT_TOKEN environment variable is required"
       Just t -> pure (T.pack t)
 
-  -- Load Anthropic API key from environment (required)
-  anthropicApiKey_ <-
-    lookupEnv "ANTHROPIC_API_KEY" >>= \case
-      Nothing -> fail "ANTHROPIC_API_KEY environment variable is required"
-      Just k -> pure (T.pack k)
+  -- Load Anthropic API key from environment (optional: only required if the
+  -- built-in "anthropic" provider is actually referenced).
+  anthropicApiKey_ <- fmap T.pack <$> lookupEnv "ANTHROPIC_API_KEY"
 
   -- Load webhook secret from environment (optional, overrides config file)
   webhookSecretEnv <- fmap T.pack <$> lookupEnv "WEBHOOK_SECRET"
@@ -525,6 +527,33 @@ loadConfig path = do
               }
           | (n, mcf) <- Map.toList serverMap
           ]
+
+  -- Resolve a user-defined provider entry (api_key inline, else api_key_env).
+  let resolveProviderEntry :: Text -> ProviderConfigFile -> IO ProviderConfig
+      resolveProviderEntry n pcf = do
+        when (isJust pcf.apiKey && isJust pcf.apiKeyEnv) $
+          fail $
+            "provider '" <> T.unpack n <> "': set either api_key or api_key_env, not both"
+        key <- case pcf.apiKey of
+          Just k -> pure (Just k)
+          Nothing -> case pcf.apiKeyEnv of
+            Just envVar -> fmap T.pack <$> lookupEnv (T.unpack envVar)
+            Nothing -> pure Nothing
+        pure
+          ProviderConfig
+            { name = n,
+              baseUrl = pcf.baseUrl,
+              apiKey = key,
+              format = fromMaybe AnthropicFormat pcf.format
+            }
+
+  userProviders <-
+    maybe (pure Map.empty) (Map.traverseWithKey resolveProviderEntry) configFile.providers
+
+  let builtinAnthropic =
+        ProviderConfig "anthropic" "https://api.anthropic.com" anthropicApiKey_ AnthropicFormat
+      -- left-biased: a user-defined "anthropic" overrides the built-in
+      providersMap = Map.union userProviders (Map.singleton "anthropic" builtinAnthropic)
 
   -- Helper to resolve delivery targets from file objects
   let resolveDeliveryTarget :: DeliveryTargetFile -> DeliveryTarget
@@ -593,12 +622,39 @@ loadConfig path = do
 
   let delCfg = fromMaybe (DelegateConfigFile (AgentPreset Nothing mempty) Map.empty Nothing) configFile.delegate
 
+  -- Collect explicitly-set provider names from every override site. An override
+  -- that does not set a provider inherits the base profile (already counted),
+  -- so only explicitly-set names need collecting here.
+  let webhookEndpointOverrides = maybe [] (\w -> maybe [] (map (.overrides)) w.endpoints) configFile.webhook
+      delegateOverrides = delCfg.agent.overrides : map (.overrides) (Map.elems delCfg.extraAgents)
+      chatOverrides = map (.overrides) telegramChatFiles
+      explicitProviders =
+        [ p
+        | ovr <- chatOverrides ++ webhookEndpointOverrides ++ delegateOverrides,
+          Just p <- [getLast ovr.model.provider]
+        ]
+      referenced =
+        Set.fromList $
+          profile.model.provider
+            : maybe [] (\c -> [c.model.provider]) compact
+            ++ explicitProviders
+
+  forM_ (Set.toList referenced) $ \n ->
+    unless (Map.member n providersMap) $
+      fail $
+        "unknown provider: " <> T.unpack n
+
+  when (Set.member "anthropic" referenced) $
+    case Map.lookup "anthropic" providersMap of
+      Just p | isNothing p.apiKey -> fail "ANTHROPIC_API_KEY is required because the 'anthropic' provider is used"
+      _ -> pure ()
+
   pure
     Config
       { stateDir = fromMaybe "/var/lib/assistant" configFile.stateDir,
         workspace = workspace_,
         telegramToken = telegramToken_,
-        anthropicApiKey = anthropicApiKey_,
+        providers = providersMap,
         telegramChats = telegramChats_,
         agentProfile = profile,
         compaction = compact,

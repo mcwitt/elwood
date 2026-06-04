@@ -1,6 +1,9 @@
 module Test.Elwood.Config (tests) where
 
+import Control.Exception (SomeException, bracket_, try)
 import Data.Aeson (Result (..), Value (..), fromJSON, object, (.=))
+import Data.List (isInfixOf)
+import Data.Map.Strict qualified as Map
 import Data.Monoid (Last (..))
 import Elwood.AgentSettings (AgentPreset (..), AgentProfile (..), ModelRef (..), ToolSearchConfig (..))
 import Elwood.Config
@@ -21,12 +24,16 @@ import Elwood.Config
     resolvePruning,
   )
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
+import Elwood.Provider (ProviderConfig (..))
 import Elwood.Thinking (ThinkingEffort (..), ThinkingMode (..), ThinkingOverrides (..))
 import Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..))
 import Paths_elwood (getDataFileName)
 import System.Environment (setEnv, unsetEnv)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty
 import Test.Tasty.HUnit
+import Test.Tasty.Runners (NumThreads (..))
 
 tests :: TestTree
 tests =
@@ -37,7 +44,9 @@ tests =
       thinkingOverridesTests,
       pruningResolutionTests,
       pruningFromJsonTests,
-      exampleConfigTests
+      -- These groups mutate the process-global environment (setEnv/unsetEnv);
+      -- run them single-threaded to avoid races on ANTHROPIC_API_KEY.
+      localOption (NumThreads 1) (testGroup "env-dependent" [exampleConfigTests, providerTests])
     ]
 
 compactionConfigTests :: TestTree
@@ -345,4 +354,57 @@ exampleConfigTests =
         config.delegateAgent @?= AgentPreset Nothing mempty
         null config.delegateExtraAgents @?= True
         null config.delegateAllowedModels @?= True
+    ]
+
+-- | Write a temp config file, run env setup, load it, and assert on the result.
+withConfig :: String -> IO () -> (Config -> IO ()) -> IO ()
+withConfig yaml envSetup k =
+  withSystemTempDirectory "elwood-cfg" $ \dir -> do
+    let path = dir </> "config.yaml"
+    writeFile path yaml
+    bracket_
+      (setEnv "TELEGRAM_BOT_TOKEN" "test-token" >> envSetup)
+      (unsetEnv "TELEGRAM_BOT_TOKEN")
+      (loadConfig path >>= k)
+
+-- | Write a temp config file, run env setup, and assert that loadConfig fails
+-- with an exception whose 'show' contains the given substring.
+withConfigExpectFailure :: String -> String -> IO () -> IO ()
+withConfigExpectFailure expectedSubstr yaml envSetup =
+  withSystemTempDirectory "elwood-cfg" $ \dir -> do
+    let path = dir </> "config.yaml"
+    writeFile path yaml
+    bracket_
+      (setEnv "TELEGRAM_BOT_TOKEN" "test-token" >> envSetup)
+      (unsetEnv "TELEGRAM_BOT_TOKEN")
+      ( do
+          result <- try (loadConfig path) :: IO (Either SomeException Config)
+          case result of
+            Left e -> assertBool ("expected substring " <> show expectedSubstr <> " in: " <> show e) (expectedSubstr `isInfixOf` show e)
+            Right _ -> assertFailure "expected loadConfig to fail"
+      )
+
+providerTests :: TestTree
+providerTests =
+  testGroup
+    "providers"
+    [ testCase "built-in anthropic exists and uses ANTHROPIC_API_KEY" $
+        withConfig "agent:\n  model: claude-opus-4-8\n" (setEnv "ANTHROPIC_API_KEY" "k1") $ \cfg -> do
+          case Map.lookup "anthropic" cfg.providers of
+            Just p -> p.apiKey @?= Just "k1"
+            Nothing -> assertFailure "missing anthropic provider",
+      testCase "fully-local config needs no ANTHROPIC_API_KEY"
+        $ withConfig
+          "providers:\n  local:\n    base_url: http://h:9000\nagent:\n  model: qwen\n  provider: local\ncompaction:\n  enable: false\n"
+          (unsetEnv "ANTHROPIC_API_KEY")
+        $ \cfg -> assertBool "local provider present" (Map.member "local" cfg.providers),
+      testCase "unknown provider reference fails" $
+        withConfigExpectFailure "unknown provider" "agent:\n  model: x\n  provider: nope\n" (setEnv "ANTHROPIC_API_KEY" "k"),
+      testCase "anthropic referenced without key fails" $
+        withConfigExpectFailure "ANTHROPIC_API_KEY" "agent:\n  model: claude-opus-4-8\n" (unsetEnv "ANTHROPIC_API_KEY"),
+      testCase "provider with both api_key and api_key_env fails" $
+        withConfigExpectFailure
+          "not both"
+          "providers:\n  local:\n    base_url: http://h:9000\n    api_key: inline\n    api_key_env: SOME_VAR\nagent:\n  model: qwen\n  provider: local\ncompaction:\n  enable: false\n"
+          (setEnv "ANTHROPIC_API_KEY" "k")
     ]
