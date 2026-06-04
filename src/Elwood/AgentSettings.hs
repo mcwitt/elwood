@@ -1,5 +1,10 @@
 module Elwood.AgentSettings
-  ( -- * Partial (monoidal) type for layering overrides
+  ( -- * Model reference
+    ModelRef (..),
+    ModelRefOverrides (..),
+    resolveModelRef,
+
+    -- * Partial (monoidal) type for layering overrides
     AgentOverrides (..),
 
     -- * Cache configuration
@@ -51,6 +56,35 @@ instance FromJSON ToolSearchConfig where
   parseJSON (Bool True) = pure (ToolSearchEnabled [])
   parseJSON (Array arr) = pure $ ToolSearchEnabled [t | String t <- V.toList arr]
   parseJSON _ = fail "tool_search must be false, true, or an array of tool names"
+
+-- | A model reference: which provider, and which model on it.
+-- Resolved form (total).
+data ModelRef = ModelRef
+  { provider :: Text,
+    model :: Text
+  }
+  deriving stock (Show, Eq, Generic)
+
+-- | Partial / layerable model reference. 'provider' and 'model' layer
+-- independently (right-biased), so "change the model, keep the provider"
+-- works; but they are bound as one record so no config site accepts one
+-- without the other.
+data ModelRefOverrides = ModelRefOverrides
+  { provider :: Last Text,
+    model :: Last Text
+  }
+  deriving stock (Show, Eq, Generic)
+  deriving (Semigroup, Monoid) via Generically ModelRefOverrides
+
+-- | Resolve a model reference against a default model. 'provider' defaults to
+-- "anthropic". The default model is a parameter because callers differ
+-- (agent => sonnet, compaction => haiku).
+resolveModelRef :: Text -> ModelRefOverrides -> ModelRef
+resolveModelRef defaultModel o =
+  ModelRef
+    { provider = fromMaybe "anthropic" (getLast o.provider),
+      model = fromMaybe defaultModel (getLast o.model)
+    }
 
 -- | Partial cache configuration for layering overrides.
 -- Right-biased field-level merge (like 'PermissionConfigFile').

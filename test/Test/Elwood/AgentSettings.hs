@@ -10,8 +10,11 @@ import Elwood.AgentSettings
   ( AgentOverrides (..),
     AgentProfile (..),
     CacheOverrides (..),
+    ModelRef (..),
+    ModelRefOverrides (..),
     ToolSearchConfig (..),
     agentDefaults,
+    resolveModelRef,
     resolveProfile,
     toOverrides,
   )
@@ -45,7 +48,8 @@ tests =
       monoidLawTests,
       overrideTests,
       resolveTests,
-      permissionsMergeTests
+      permissionsMergeTests,
+      modelRefTests
     ]
 
 instance Arbitrary ThinkingEffort where
@@ -263,4 +267,25 @@ permissionsMergeTests =
                 pc
         let roundtripped = resolveProfile (toOverrides profile)
         roundtripped.permissions @?= pc
+    ]
+
+modelRefTests :: TestTree
+modelRefTests =
+  testGroup
+    "ModelRef"
+    [ testCase "defaults provider to anthropic and model to the given default" $
+        resolveModelRef "default-model" mempty @?= ModelRef "anthropic" "default-model",
+      testCase "uses explicit provider and model" $
+        resolveModelRef "d" (ModelRefOverrides (Last (Just "local")) (Last (Just "qwen")))
+          @?= ModelRef "local" "qwen",
+      testCase "model-only override inherits provider" $
+        let merged =
+              ModelRefOverrides (Last (Just "local")) (Last (Just "qwen"))
+                <> ModelRefOverrides (Last Nothing) (Last (Just "gemma"))
+         in resolveModelRef "d" merged @?= ModelRef "local" "gemma",
+      testCase "provider-only override inherits model" $
+        let merged =
+              ModelRefOverrides (Last (Just "local")) (Last (Just "qwen"))
+                <> ModelRefOverrides (Last (Just "anthropic")) (Last Nothing)
+         in resolveModelRef "d" merged @?= ModelRef "anthropic" "qwen"
     ]
