@@ -56,6 +56,7 @@ library
     Elwood.Telegram
     Elwood.Telegram.Client
     Elwood.Telegram.Handler
+    Elwood.Telegram.Inbox
     Elwood.Telegram.Markdown
     Elwood.Telegram.Polling
     Elwood.Telegram.Types
@@ -148,6 +149,7 @@ test-suite elwood-test
     Test.Elwood.Permissions
     Test.Elwood.Session
     Test.Elwood.Telegram.Client
+    Test.Elwood.Telegram.Inbox
     Test.Elwood.Telegram.Markdown
     Test.Elwood.Tools.AsyncTask
     Test.Elwood.Tools.Delegate

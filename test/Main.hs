@@ -16,6 +16,7 @@ import Test.Elwood.Metrics qualified
 import Test.Elwood.Permissions qualified
 import Test.Elwood.Session qualified
 import Test.Elwood.Telegram.Client qualified
+import Test.Elwood.Telegram.Inbox qualified
 import Test.Elwood.Telegram.Markdown qualified
 import Test.Elwood.Tools.AsyncTask qualified
 import Test.Elwood.Tools.Delegate qualified
@@ -49,6 +50,7 @@ tests =
       Test.Elwood.Tools.Delegate.tests,
       Test.Elwood.Tools.Registry.tests,
       Test.Elwood.Telegram.Client.tests,
+      Test.Elwood.Telegram.Inbox.tests,
       Test.Elwood.Telegram.Markdown.tests,
       Test.Elwood.Session.tests
     ]
