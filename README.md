@@ -21,6 +21,7 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Extended thinking** — Configurable reasoning budget for complex tasks
 - **Task delegation** — Spawn sub-agents with isolated context for tool-heavy tasks
 - **Context compaction** — Automatic summarization for long conversations
+- **Configurable providers** — Mix Claude with local models (llama-swap / llama.cpp) via a `providers` map; per-instance `provider:` routing
 - **Server-side tool search** — On-demand tool discovery via Anthropic's tool search with deferred loading
 - **Typing indicator** — Shows "typing..." in Telegram while the agent works
 - **Cost tracking** — Approximate API cost metric via model-aware pricing
@@ -131,9 +132,56 @@ Set required environment variables:
 
 ```bash
 export TELEGRAM_BOT_TOKEN="your-bot-token"
-export ANTHROPIC_API_KEY="your-api-key"
+export ANTHROPIC_API_KEY="your-api-key"  # required if using the anthropic provider
 export WEBHOOK_SECRET="your-webhook-secret"   # optional, overrides config file
 ```
+
+## Local models / providers
+
+A top-level `providers` map lets each model instance (main agent, compaction,
+delegate sub-agents, per-chat and webhook-endpoint overrides) target a different
+LLM endpoint. The built-in `anthropic` provider (`https://api.anthropic.com`,
+keyed by `ANTHROPIC_API_KEY`) is always available; `ANTHROPIC_API_KEY` is
+required only when the `anthropic` provider is actually used.
+
+The wire format Elwood speaks is the Anthropic Messages API (`POST /v1/messages`).
+[llama-swap](https://github.com/mostlygeek/llama-swap) fronts llama.cpp models and
+proxies the same API, so local models work with **no translation layer**.
+
+Example — route compaction to a local llama-swap instance while keeping the main
+agent on Claude:
+
+```yaml
+providers:
+  local:
+    base_url: "http://satori:8080"  # llama-swap endpoint
+
+agent:
+  model: claude-sonnet-4-20250514   # uses built-in anthropic provider
+
+compaction:
+  model: gemma-4-12B                # model name as configured in llama-swap
+  provider: local
+```
+
+`provider:` is available alongside `model:` at every model instance (main
+`agent:`, `compaction:`, `delegate.agent:`, `delegate.extra_agents.*`, per-chat
+overrides, and per-webhook-endpoint overrides). Omitting `provider:` defaults to
+`anthropic`.
+
+**Operator notes for local model instances:**
+
+- Start each `llama-server` command with `--jinja` to enable tool use over the
+  Anthropic endpoint. Elwood is tool-driven, so instances without `--jinja`
+  cannot call tools.
+- Set `thinking.enable: false` — local servers do not return the `signature`
+  field that Elwood's response parser requires on thinking blocks.
+- Set `cache.enable: false` — `cache_control` is an Anthropic-API-specific
+  feature and is meaningless to llama.cpp.
+- Do not enable `tool_search` — it injects a server-side BM25 tool that local
+  servers cannot handle.
+- Cost metrics (`elwood_cost_dollars`, `agent-daily-cost`) will read approximately
+  zero for local model instances; no Anthropic pricing applies.
 
 ## Workspace Files
 

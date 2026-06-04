@@ -20,6 +20,7 @@ channels:
       session: main       # persistent conversation (omit for isolated/ephemeral)
     # agent:                             # per-chat agent overrides (default: use global settings)
     #   model: claude-haiku-4-20250414
+    #   #provider: anthropic            # provider name (default: anthropic)
     #   thinking:
     #     enable: true
     #     mode:
@@ -38,11 +39,23 @@ channels:
     #     tool_policies:
     #       run_command: allow
 
+# LLM providers. Each model instance selects one via `provider:` (default:
+# "anthropic"). The built-in "anthropic" provider (https://api.anthropic.com,
+# using ANTHROPIC_API_KEY) is always available and need not be listed here.
+# ANTHROPIC_API_KEY is required only if the anthropic provider is actually used.
+#providers:
+#  local:                          # name referenced by `provider:` settings
+#    base_url: "http://host:8080"  # required; e.g. a llama-swap endpoint
+#    #api_key_env: LOCAL_API_KEY   # optional; read the key from this env var
+#    #api_key: "inline-key"        # optional; inline (discouraged)
+#    #format: anthropic            # optional; only "anthropic" is supported
+
 # Agent settings (model, thinking, permissions, system prompt, tool search, etc.)
 agent:
   # Claude model to use
   # Default: claude-sonnet-4-20250514
   model: claude-sonnet-4-20250514
+  #provider: anthropic            # provider name (default: anthropic)
 
   # Extended thinking configuration
   # Controls Claude's internal reasoning before responding.
@@ -138,6 +151,7 @@ agent:
 #   agent:                        # overrides parent agent settings (omit to inherit)
 #     description: General-purpose sub-agent   # optional, surfaced in tool description
 #     model: claude-haiku-4-20250414
+#     #provider: anthropic        # provider name (default: anthropic)
 #     thinking:
 #       enable: false
 #     max_iterations: 10          # default: 10
@@ -156,12 +170,14 @@ agent:
 #     fast:
 #       description: Quick Haiku responses     # optional, surfaced in agent param description
 #       model: claude-haiku-4-20250414
+#       #provider: anthropic      # provider name (default: anthropic)
 #       thinking:
 #         enable: false
 #       max_tokens: 4096
 #     deep:
 #       description: Extended thinking for complex analysis
 #       model: claude-sonnet-4-20250514
+#       #provider: anthropic      # provider name (default: anthropic)
 #       thinking:
 #         enable: true
 #         mode:
@@ -189,6 +205,7 @@ compaction:
   # enable: true                      # default: true — set to false to disable compaction entirely
   token_threshold: 50000             # default: 50000
   model: claude-3-5-haiku-20241022  # default: claude-3-5-haiku-20241022
+  #provider: anthropic              # provider name (default: anthropic)
   # Strategy for splitting messages into compact vs keep regions.
   # { keep_turns: N } — keep last N turns verbatim, compact the rest (default: 10)
   # { keep_fraction: F } — keep ceiling(F * total_turns) recent turns verbatim, compact the rest
@@ -263,6 +280,7 @@ webhook:
       # session: "123456789"    # session name for persistent conversation (default: null = isolated)
       # agent:                            # per-endpoint agent overrides (default: use global settings)
       #   model: claude-haiku-4-20250414
+      #   #provider: anthropic           # provider name (default: anthropic)
       #   thinking:
       #     enable: true
       #     mode:
@@ -287,5 +305,6 @@ webhook:
 
 # Environment variables (not set in this file):
 #   TELEGRAM_BOT_TOKEN   - Telegram bot token (required)
-#   ANTHROPIC_API_KEY    - Anthropic API key (required)
+#   ANTHROPIC_API_KEY    - Anthropic API key (required if the anthropic provider is used)
 #   WEBHOOK_SECRET       - Webhook secret (optional, overrides secret above)
+#   Any api_key_env vars referenced in providers: entries
