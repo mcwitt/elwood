@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Elwood.Telegram.Markdown (warmupMarkdown)
 import Test.Elwood.AgentSettings qualified
 import Test.Elwood.Attachment qualified
 import Test.Elwood.Claude.AgentLoop qualified
@@ -26,7 +27,9 @@ import Test.Elwood.Webhook qualified
 import Test.Tasty
 
 main :: IO ()
-main = defaultMain tests
+main = do
+  warmupMarkdown
+  defaultMain tests
 
 tests :: TestTree
 tests =

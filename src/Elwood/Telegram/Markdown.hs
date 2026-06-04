@@ -8,6 +8,7 @@
 -- lists become text with bullet\/number prefixes, tables become @\<pre\>@ blocks).
 module Elwood.Telegram.Markdown
   ( markdownToTelegramHtml,
+    warmupMarkdown,
   )
 where
 
@@ -22,6 +23,7 @@ import CMarkGFM
     extTable,
     optSmart,
   )
+import Control.Exception (evaluate)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
@@ -40,6 +42,13 @@ markdownToTelegramHtml md =
 
 extensions :: [CMarkExtension]
 extensions = [extStrikethrough, extTable]
+
+-- | Force cmark-gfm's lazy, non-thread-safe extension registration to happen
+-- once on the current thread. Call before any concurrent conversions.
+warmupMarkdown :: IO ()
+warmupMarkdown = do
+  _ <- evaluate (T.length (markdownToTelegramHtml "~~s~~ `c`\n\n| a | b |\n|---|---|\n| 1 | 2 |"))
+  pure ()
 
 -- | Render a cmark Node to a Telegram HTML Builder.
 renderNode :: Node -> Builder

@@ -35,6 +35,7 @@ import Elwood.Positive (Positive)
 import Elwood.Session (newSessionLocks)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Telegram.Handler (handleTelegramMessage)
+import Elwood.Telegram.Markdown (warmupMarkdown)
 import Elwood.Tools qualified as Tools
 import Elwood.Webhook qualified as Webhook
 import System.Directory (createDirectoryIfMissing)
@@ -47,6 +48,9 @@ runApp config = do
 
   logInfo logger "Elwood starting up" []
   logInfo logger "Configuration loaded" [("state_dir", T.pack config.stateDir)]
+
+  -- Register cmark-gfm extensions once before any per-message threads spawn
+  warmupMarkdown
 
   -- Ensure state directory exists
   createDirectoryIfMissing True config.stateDir
