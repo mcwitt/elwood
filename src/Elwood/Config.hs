@@ -42,6 +42,9 @@ import Elwood.AgentSettings
   ( AgentOverrides (..),
     AgentPreset (..),
     AgentProfile (..),
+    ModelRef (..),
+    ModelRefOverrides (..),
+    resolveModelRef,
     resolveProfile,
   )
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
@@ -137,7 +140,7 @@ data CompactionConfig = CompactionConfig
   { -- | Compact when estimated tokens exceed this
     tokenThreshold :: Positive,
     -- | Model to use for summarization (e.g., "claude-3-5-haiku-20241022")
-    model :: Text,
+    model :: ModelRef,
     -- | Custom compaction prompt (Nothing = use built-in structured default)
     prompt :: Maybe Text,
     -- | Strategy for splitting messages into compact vs keep regions
@@ -256,7 +259,7 @@ data DelegateConfigFile = DelegateConfigFile
 data CompactionConfigFile = CompactionConfigFile
   { enable :: Last Bool,
     tokenThreshold :: Last Positive,
-    model :: Last Text,
+    model :: ModelRefOverrides,
     prompt :: Last Text,
     strategy :: Last CompactionStrategy
   }
@@ -275,7 +278,7 @@ resolveCompaction ccf
       Just
         CompactionConfig
           { tokenThreshold = fromMaybe 50000 (getLast ccf.tokenThreshold),
-            model = fromMaybe "claude-3-5-haiku-20241022" (getLast ccf.model),
+            model = resolveModelRef "claude-3-5-haiku-20241022" ccf.model,
             prompt = getLast ccf.prompt,
             strategy = fromMaybe (CKeepTurns 10) (getLast ccf.strategy)
           }
@@ -424,11 +427,11 @@ instance FromJSON ConfigFile where
 
 instance FromJSON CompactionConfigFile where
   parseJSON = withObject "CompactionConfigFile" $ \v -> do
-    rejectUnknownKeys "CompactionConfigFile" ["enable", "token_threshold", "model", "prompt", "strategy"] v
+    rejectUnknownKeys "CompactionConfigFile" ["enable", "token_threshold", "model", "provider", "prompt", "strategy"] v
     CompactionConfigFile . Last
       <$> v .:? "enable"
       <*> (Last <$> v .:? "token_threshold")
-      <*> (Last <$> v .:? "model")
+      <*> (ModelRefOverrides . Last <$> v .:? "provider" <*> (Last <$> v .:? "model"))
       <*> (Last <$> v .:? "prompt")
       <*> (Last <$> v .:? "strategy")
 

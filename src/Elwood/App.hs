@@ -12,7 +12,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
-import Elwood.AgentSettings (AgentProfile (..), ToolSearchConfig (..), resolveProfile, toOverrides)
+import Elwood.AgentSettings (AgentProfile (..), ModelRef (..), ToolSearchConfig (..), resolveProfile, toOverrides)
 import Elwood.Approval
   ( ApprovalCoordinator,
     ApprovalResult (..),
@@ -57,7 +57,7 @@ runApp config = do
 
   -- Initialize Claude client
   claude <- Claude.newClient config.anthropicApiKey
-  logInfo logger "Claude client initialized" [("model", config.agentProfile.model)]
+  logInfo logger "Claude client initialized" [("model", config.agentProfile.model.model)]
 
   -- Initialize conversation store
   convs <- Claude.newConversationStore config.stateDir

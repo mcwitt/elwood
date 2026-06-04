@@ -52,7 +52,7 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime, getCurrentTime)
-import Elwood.AgentSettings (AgentPreset, AgentProfile (..), ToolSearchConfig (..))
+import Elwood.AgentSettings (AgentPreset, AgentProfile (..), ModelRef (..), ToolSearchConfig (..))
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Compaction (compactIfNeeded)
 import Elwood.Claude.Pruning (PruneHorizons, getAndUpdateHorizon)
@@ -219,7 +219,7 @@ handleEventCore env event callbacks = do
   let prof = env.agentProfile
 
   -- Get existing conversation, run compaction if needed (empty for Isolated)
-  let observer = metricsObserver env.metrics prof.model (metricsSource src)
+  let observer = metricsObserver env.metrics prof.model.model (metricsSource src)
   now <- getCurrentTime
   (history, pruneHorizon) <- case mConversationId of
     Nothing -> pure ([], 0)

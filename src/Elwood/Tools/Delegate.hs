@@ -19,7 +19,7 @@ import Data.Text qualified as T
 import Data.Time (NominalDiffTime)
 import Data.UUID qualified as UUID
 import Data.UUID.V4 qualified as UUID
-import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), CacheOverrides (..), ToolSearchConfig (..), resolveProfile, toOverrides)
+import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), CacheOverrides (..), ModelRef (..), ModelRefOverrides (..), ToolSearchConfig (..), resolveProfile, toOverrides)
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), ExhaustionInfo (..), formatExhaustion, runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Observer (ToolUseCallback)
@@ -44,9 +44,9 @@ labelMaxLen = 30
 
 -- | Default overrides for delegate sub-agents.
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
--- Other fields (model, thinking, system_prompt, tool_search, permissions) inherit from parent.
+-- Other fields (model, provider, thinking, system_prompt, tool_search, permissions) inherit from parent.
 delegateDefaults :: AgentOverrides
-delegateDefaults = AgentOverrides (Last Nothing) Nothing (Last (Just 10)) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+delegateDefaults = AgentOverrides mempty Nothing (Last (Just 10)) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
 
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
@@ -126,7 +126,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
               logger
               "Delegating task to sub-agent"
               [ ("task_length", T.pack (show (T.length di.task))),
-                ("model", subProfile.model),
+                ("model", subProfile.model.model),
                 ("max_iterations", T.pack (show subProfile.maxIterations.getPositive))
               ]
 
@@ -154,7 +154,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                       requestApproval = approve,
                       systemPrompt = subSystemPrompt,
                       agentProfile = subProfile,
-                      observer = metricsObserver metrics subProfile.model "delegate",
+                      observer = metricsObserver metrics subProfile.model.model "delegate",
                       onRateLimit = Nothing,
                       onText = Nothing,
                       onToolUse = fmap (\f -> f notifyLabel) delegateOnToolUse,
@@ -395,6 +395,6 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
             else Right (Just (fromIntegral i :: NominalDiffTime))
     Just _ -> Left "Invalid 'timeout_seconds' parameter (must be an integer)"
     Nothing -> Right Nothing
-  let ovr = AgentOverrides {model = Last modelParam, thinking = thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, permissions = Nothing}
+  let ovr = AgentOverrides {model = ModelRefOverrides (Last Nothing) (Last modelParam), thinking = thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, permissions = Nothing}
   Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam, async = asyncParam, label = labelParam, timeoutSeconds = timeoutParam}
 parseDelegateInput _ _ _ = Left "Expected object input"

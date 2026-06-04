@@ -104,7 +104,7 @@ instance FromJSON CacheOverrides where
 --
 -- 'Last' fields are right-biased replace; 'Maybe' fields deep-merge via their 'Semigroup'.
 data AgentOverrides = AgentOverrides
-  { model :: Last Text,
+  { model :: ModelRefOverrides,
     thinking :: Maybe ThinkingOverrides,
     maxIterations :: Last Positive,
     cache :: Maybe CacheOverrides,
@@ -118,7 +118,7 @@ data AgentOverrides = AgentOverrides
 
 -- | Resolved agent profile — all fields concrete. Used at runtime.
 data AgentProfile = AgentProfile
-  { model :: Text,
+  { model :: ModelRef,
     thinking :: Maybe ThinkingMode,
     maxIterations :: Positive,
     cache :: Maybe CacheTtl,
@@ -133,7 +133,7 @@ data AgentProfile = AgentProfile
 agentDefaults :: AgentOverrides
 agentDefaults =
   AgentOverrides
-    { model = Last (Just "claude-sonnet-4-20250514"),
+    { model = ModelRefOverrides (Last (Just "anthropic")) (Last (Just "claude-sonnet-4-20250514")),
       thinking = Just (ThinkingOverrides (Last (Just False)) (Last Nothing)),
       maxIterations = Last (Just 20),
       cache = Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl5Min))),
@@ -153,7 +153,7 @@ resolveProfile o =
         Nothing -> Just CacheTtl5Min
       resolvedThinking = resolveThinking (fromMaybe mempty o.thinking)
    in AgentProfile
-        { model = fromMaybe "claude-sonnet-4-20250514" (getLast o.model),
+        { model = resolveModelRef "claude-sonnet-4-20250514" o.model,
           thinking = resolvedThinking,
           maxIterations = fromMaybe 20 (getLast o.maxIterations),
           cache = resolvedCache,
@@ -167,7 +167,7 @@ resolveProfile o =
 toOverrides :: AgentProfile -> AgentOverrides
 toOverrides s =
   AgentOverrides
-    { model = Last (Just s.model),
+    { model = ModelRefOverrides (Last (Just s.model.provider)) (Last (Just s.model.model)),
       thinking = Just $ case s.thinking of
         Nothing -> ThinkingOverrides (Last (Just False)) (Last Nothing)
         Just m -> ThinkingOverrides (Last (Just True)) (Last (Just m)),
@@ -183,13 +183,13 @@ toOverrides s =
 
 -- | Keys accepted in agent override objects.
 agentOverrideKeys :: [Key]
-agentOverrideKeys = ["model", "thinking", "max_iterations", "cache", "max_tokens", "system_prompt", "tool_search", "permissions"]
+agentOverrideKeys = ["model", "provider", "thinking", "max_iterations", "cache", "max_tokens", "system_prompt", "tool_search", "permissions"]
 
 -- | Parse agent overrides from an Aeson object (shared by 'AgentOverrides' and 'AgentPreset').
 parseAgentOverrides :: Object -> Parser AgentOverrides
 parseAgentOverrides v =
-  AgentOverrides . Last
-    <$> v .:? "model"
+  AgentOverrides
+    <$> (ModelRefOverrides . Last <$> v .:? "provider" <*> (Last <$> v .:? "model"))
     <*> v .:? "thinking"
     <*> (Last <$> v .:? "max_iterations")
     <*> v .:? "cache"

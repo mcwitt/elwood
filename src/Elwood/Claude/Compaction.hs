@@ -21,6 +21,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Elwood.AgentSettings (ModelRef (..))
 import Elwood.Claude.Client (ClaudeClient, sendMessages)
 import Elwood.Claude.Types
 import Elwood.Config (CompactionConfig (..), CompactionStrategy (..))
@@ -173,7 +174,7 @@ summarizeMessages client config onApiResponse msgs = do
           }
       request =
         MessagesRequest
-          { model = config.model,
+          { model = config.model.model,
             maxTokens = 2048,
             system = Just "You are a helpful assistant that summarizes conversations concisely.",
             messages = [summaryRequest],

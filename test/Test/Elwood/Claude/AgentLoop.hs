@@ -2,7 +2,7 @@ module Test.Elwood.Claude.AgentLoop (tests) where
 
 import Colog.Core (LogAction (..))
 import Control.Exception (SomeException, try)
-import Elwood.AgentSettings (AgentProfile (..), ToolSearchConfig (..))
+import Elwood.AgentSettings (AgentProfile (..), ModelRef (..), ToolSearchConfig (..))
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient (..))
 import Elwood.Claude.Observer (AgentObserver (..))
@@ -50,7 +50,7 @@ mkTestConfig isCancelled = do
           }
       profile =
         AgentProfile
-          { model = "test-model",
+          { model = ModelRef "anthropic" "test-model",
             thinking = Nothing,
             maxIterations = 5,
             cache = Nothing,

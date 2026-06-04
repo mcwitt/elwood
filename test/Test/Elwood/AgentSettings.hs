@@ -103,17 +103,20 @@ instance Arbitrary PermissionConfigFile where
       <*> (Last <$> arbitrary)
       <*> (Last <$> arbitrary)
 
+instance Arbitrary ModelRefOverrides where
+  arbitrary = ModelRefOverrides . Last <$> arbitrary <*> (Last <$> arbitrary)
+
 instance Arbitrary AgentOverrides where
   arbitrary =
-    AgentOverrides . Last
-      <$> arbitrary
-      <*> arbitrary
-      <*> (Last <$> arbitrary)
-      <*> arbitrary
-      <*> (Last <$> arbitrary)
-      <*> (Last <$> arbitrary)
-      <*> (Last <$> arbitrary)
-      <*> arbitrary
+    AgentOverrides
+      <$> arbitrary -- model :: ModelRefOverrides
+      <*> arbitrary -- thinking
+      <*> (Last <$> arbitrary) -- maxIterations
+      <*> arbitrary -- cache
+      <*> (Last <$> arbitrary) -- maxTokens
+      <*> (Last <$> arbitrary) -- systemPrompt
+      <*> (Last <$> arbitrary) -- toolSearch
+      <*> arbitrary -- permissions
 
 semigroupLawTests :: TestTree
 semigroupLawTests =
@@ -138,13 +141,13 @@ overrideTests =
   testGroup
     "Override semantics"
     [ testCase "right-biased: later Just wins" $ do
-        let a = AgentOverrides (Last (Just "model-a")) Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
-            b = AgentOverrides (Last (Just "model-b")) Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
-        (a <> b).model @?= Last (Just "model-b"),
+        let a = AgentOverrides (ModelRefOverrides (Last Nothing) (Last (Just "model-a"))) Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+            b = AgentOverrides (ModelRefOverrides (Last Nothing) (Last (Just "model-b"))) Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        (a <> b).model @?= ModelRefOverrides (Last Nothing) (Last (Just "model-b")),
       testCase "right-biased: Nothing preserves left" $ do
         let a =
               AgentOverrides
-                (Last (Just "model-a"))
+                (ModelRefOverrides (Last Nothing) (Last (Just "model-a")))
                 (Just (ThinkingOverrides (Last (Just False)) (Last Nothing)))
                 (Last (Just 10))
                 (Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl5Min))))
@@ -157,7 +160,7 @@ overrideTests =
       testCase "toOverrides roundtrips through resolveProfile" $ do
         let s =
               AgentProfile
-                "model-x"
+                (ModelRef "anthropic" "model-x")
                 (Just (Budget 4096))
                 15
                 (Just CacheTtl1Hour)
@@ -169,7 +172,7 @@ overrideTests =
       testCase "toOverrides roundtrips cache=Nothing (disabled)" $ do
         let s =
               AgentProfile
-                "model-x"
+                (ModelRef "anthropic" "model-x")
                 Nothing
                 15
                 Nothing
@@ -179,8 +182,8 @@ overrideTests =
                 defaultPermissionConfig
         resolveProfile (toOverrides s) @?= s,
       testCase "cache overrides merge field-level" $ do
-        let a = AgentOverrides (Last Nothing) Nothing (Last Nothing) (Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl5Min)))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
-            b = AgentOverrides (Last Nothing) Nothing (Last Nothing) (Just (CacheOverrides (Last Nothing) (Last (Just CacheTtl1Hour)))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let a = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl5Min)))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+            b = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last Nothing) (Last (Just CacheTtl1Hour)))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
         (a <> b).cache @?= Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl1Hour)))
     ]
 
@@ -190,7 +193,7 @@ resolveTests =
     "resolveProfile"
     [ testCase "mempty resolves to hardcoded defaults" $ do
         let s = resolveProfile mempty
-        s.model @?= "claude-sonnet-4-20250514"
+        s.model @?= ModelRef "anthropic" "claude-sonnet-4-20250514"
         s.thinking @?= Nothing
         s.maxIterations @?= 20
         s.maxTokens @?= 16384
@@ -200,30 +203,30 @@ resolveTests =
       testCase "agentDefaults resolves to same defaults" $ do
         resolveProfile agentDefaults @?= resolveProfile mempty,
       testCase "cache disabled resolves to Nothing" $ do
-        let o = AgentOverrides (Last Nothing) Nothing (Last Nothing) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.cache @?= Nothing,
       testCase "cache enabled with ttl resolves to Just ttl" $ do
-        let o = AgentOverrides (Last Nothing) Nothing (Last Nothing) (Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl1Hour)))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl1Hour)))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.cache @?= Just CacheTtl1Hour,
       testCase "overrides are applied" $ do
-        let o = agentDefaults <> AgentOverrides (Last (Just "custom-model")) Nothing (Last (Just 50)) Nothing (Last (Just 8192)) (Last Nothing) (Last Nothing) Nothing
+        let o = agentDefaults <> AgentOverrides (ModelRefOverrides (Last Nothing) (Last (Just "custom-model"))) Nothing (Last (Just 50)) Nothing (Last (Just 8192)) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
-        s.model @?= "custom-model"
+        s.model @?= ModelRef "anthropic" "custom-model"
         s.thinking @?= Nothing
         s.maxIterations @?= 50
         s.maxTokens @?= 8192,
       testCase "thinking enable=true resolves to Just mode" $ do
-        let o = AgentOverrides (Last Nothing) (Just (ThinkingOverrides (Last (Just True)) (Last (Just (Adaptive (Just EffortMedium)))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just True)) (Last (Just (Adaptive (Just EffortMedium)))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.thinking @?= Just (Adaptive (Just EffortMedium)),
       testCase "thinking enable=true without mode defaults to Adaptive Nothing" $ do
-        let o = AgentOverrides (Last Nothing) (Just (ThinkingOverrides (Last (Just True)) (Last Nothing))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just True)) (Last Nothing))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.thinking @?= Just (Adaptive Nothing),
       testCase "thinking enable=false resolves to Nothing" $ do
-        let o = AgentOverrides (Last Nothing) (Just (ThinkingOverrides (Last (Just False)) (Last (Just (Budget 4096))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just False)) (Last (Just (Budget 4096))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.thinking @?= Nothing
     ]
@@ -233,8 +236,8 @@ permissionsMergeTests =
   testGroup
     "Permissions merge"
     [ testCase "permissions use field-level merge" $ do
-        let a = AgentOverrides (Last Nothing) Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Just (PermissionConfigFile (Last Nothing) (Last Nothing) (Last (Just (Map.singleton "run_command" PolicyDeny))) (Last Nothing) (Last Nothing)))
-            b = AgentOverrides (Last Nothing) Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Just (PermissionConfigFile (Last (Just ["^ls\\b"])) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing)))
+        let a = AgentOverrides mempty Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Just (PermissionConfigFile (Last Nothing) (Last Nothing) (Last (Just (Map.singleton "run_command" PolicyDeny))) (Last Nothing) (Last Nothing)))
+            b = AgentOverrides mempty Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Just (PermissionConfigFile (Last (Just ["^ls\\b"])) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing)))
         -- b's safePatterns should merge with a's toolPolicies (not replace)
         let merged = a <> b
         case merged.permissions of
@@ -257,7 +260,7 @@ permissionsMergeTests =
                 }
             profile =
               AgentProfile
-                "model"
+                (ModelRef "anthropic" "model")
                 Nothing
                 20
                 (Just CacheTtl5Min)

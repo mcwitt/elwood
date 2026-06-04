@@ -15,7 +15,7 @@ import Data.Set (Set)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
-import Elwood.AgentSettings (AgentProfile (..))
+import Elwood.AgentSettings (AgentProfile (..), ModelRef (..))
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Observer (AgentObserver (..), RateLimitCallback, TextCallback, ToolUseCallback)
 import Elwood.Claude.Pruning (pruneThinkingBlocks, pruneToolInputs, pruneToolResults)
@@ -177,7 +177,7 @@ agentLoopIteration ::
 agentLoopIteration cfg msgs iteration = do
   let lgr = cfg.logger
       reg = cfg.registry
-      mdl = cfg.agentProfile.model
+      mdl = cfg.agentProfile.model.model
       thk = cfg.agentProfile.thinking
 
   -- Always send all tool schemas (tool search handles filtering server-side)

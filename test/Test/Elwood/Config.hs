@@ -2,7 +2,7 @@ module Test.Elwood.Config (tests) where
 
 import Data.Aeson (Result (..), Value (..), fromJSON, object, (.=))
 import Data.Monoid (Last (..))
-import Elwood.AgentSettings (AgentPreset (..), AgentProfile (..), ToolSearchConfig (..))
+import Elwood.AgentSettings (AgentPreset (..), AgentProfile (..), ModelRef (..), ToolSearchConfig (..))
 import Elwood.Config
   ( CompactionConfig (..),
     CompactionStrategy (..),
@@ -48,12 +48,12 @@ compactionConfigTests =
         let cc =
               CompactionConfig
                 { tokenThreshold = 50000,
-                  model = "claude-3-5-haiku-20241022",
+                  model = ModelRef "anthropic" "claude-3-5-haiku-20241022",
                   prompt = Nothing,
                   strategy = CKeepTurns 10
                 }
         cc.tokenThreshold @?= 50000
-        cc.model @?= "claude-3-5-haiku-20241022"
+        cc.model @?= ModelRef "anthropic" "claude-3-5-haiku-20241022"
         cc.strategy @?= CKeepTurns 10
     ]
 
@@ -326,7 +326,7 @@ exampleConfigTests =
         unsetEnv "TELEGRAM_BOT_TOKEN"
         unsetEnv "ANTHROPIC_API_KEY"
         -- Verify agent profile fields
-        config.agentProfile.model @?= "claude-sonnet-4-20250514"
+        config.agentProfile.model @?= ModelRef "anthropic" "claude-sonnet-4-20250514"
         config.agentProfile.thinking @?= Nothing
         config.agentProfile.toolSearch @?= ToolSearchDisabled
         length config.telegramChats @?= 1
