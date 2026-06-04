@@ -1,5 +1,6 @@
 module Test.Elwood.Config (tests) where
 
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (SomeException, bracket_, try)
 import Data.Aeson (Result (..), Value (..), fromJSON, object, (.=))
 import Data.List (isInfixOf)
@@ -31,9 +32,9 @@ import Paths_elwood (getDataFileName)
 import System.Environment (setEnv, unsetEnv)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty
 import Test.Tasty.HUnit
-import Test.Tasty.Runners (NumThreads (..))
 
 tests :: TestTree
 tests =
@@ -44,9 +45,9 @@ tests =
       thinkingOverridesTests,
       pruningResolutionTests,
       pruningFromJsonTests,
-      -- These groups mutate the process-global environment (setEnv/unsetEnv);
-      -- run them single-threaded to avoid races on ANTHROPIC_API_KEY.
-      localOption (NumThreads 1) (testGroup "env-dependent" [exampleConfigTests, providerTests])
+      -- exampleConfigTests/providerTests mutate the process-global environment;
+      -- envLock serializes those critical sections (see withConfig/withEnvLock).
+      testGroup "env-dependent" [exampleConfigTests, providerTests]
     ]
 
 compactionConfigTests :: TestTree
@@ -325,7 +326,7 @@ exampleConfigTests :: TestTree
 exampleConfigTests =
   testGroup
     "config.yaml.example"
-    [ testCase "loads successfully" $ do
+    [ testCase "loads successfully" $ withEnvLock $ do
         -- Set required env vars with dummy values
         setEnv "TELEGRAM_BOT_TOKEN" "test-token"
         setEnv "ANTHROPIC_API_KEY" "test-key"
@@ -356,33 +357,45 @@ exampleConfigTests =
         null config.delegateAllowedModels @?= True
     ]
 
+-- | Serializes tests that mutate the process-global environment so they do not
+-- race when tasty runs the suite in parallel.
+{-# NOINLINE envLock #-}
+envLock :: MVar ()
+envLock = unsafePerformIO (newMVar ())
+
+-- | Run an action while holding 'envLock'.
+withEnvLock :: IO a -> IO a
+withEnvLock = withMVar envLock . const
+
 -- | Write a temp config file, run env setup, load it, and assert on the result.
 withConfig :: String -> IO () -> (Config -> IO ()) -> IO ()
 withConfig yaml envSetup k =
-  withSystemTempDirectory "elwood-cfg" $ \dir -> do
-    let path = dir </> "config.yaml"
-    writeFile path yaml
-    bracket_
-      (setEnv "TELEGRAM_BOT_TOKEN" "test-token" >> envSetup)
-      (unsetEnv "TELEGRAM_BOT_TOKEN")
-      (loadConfig path >>= k)
+  withEnvLock $
+    withSystemTempDirectory "elwood-cfg" $ \dir -> do
+      let path = dir </> "config.yaml"
+      writeFile path yaml
+      bracket_
+        (setEnv "TELEGRAM_BOT_TOKEN" "test-token" >> envSetup)
+        (unsetEnv "TELEGRAM_BOT_TOKEN")
+        (loadConfig path >>= k)
 
 -- | Write a temp config file, run env setup, and assert that loadConfig fails
 -- with an exception whose 'show' contains the given substring.
 withConfigExpectFailure :: String -> String -> IO () -> IO ()
 withConfigExpectFailure expectedSubstr yaml envSetup =
-  withSystemTempDirectory "elwood-cfg" $ \dir -> do
-    let path = dir </> "config.yaml"
-    writeFile path yaml
-    bracket_
-      (setEnv "TELEGRAM_BOT_TOKEN" "test-token" >> envSetup)
-      (unsetEnv "TELEGRAM_BOT_TOKEN")
-      ( do
-          result <- try (loadConfig path) :: IO (Either SomeException Config)
-          case result of
-            Left e -> assertBool ("expected substring " <> show expectedSubstr <> " in: " <> show e) (expectedSubstr `isInfixOf` show e)
-            Right _ -> assertFailure "expected loadConfig to fail"
-      )
+  withEnvLock $
+    withSystemTempDirectory "elwood-cfg" $ \dir -> do
+      let path = dir </> "config.yaml"
+      writeFile path yaml
+      bracket_
+        (setEnv "TELEGRAM_BOT_TOKEN" "test-token" >> envSetup)
+        (unsetEnv "TELEGRAM_BOT_TOKEN")
+        ( do
+            result <- try (loadConfig path) :: IO (Either SomeException Config)
+            case result of
+              Left e -> assertBool ("expected substring " <> show expectedSubstr <> " in: " <> show e) (expectedSubstr `isInfixOf` show e)
+              Right _ -> assertFailure "expected loadConfig to fail"
+        )
 
 providerTests :: TestTree
 providerTests =
