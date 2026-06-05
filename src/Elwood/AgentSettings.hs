@@ -20,6 +20,9 @@ module Elwood.AgentSettings
     -- * Tool search configuration
     ToolSearchConfig (..),
 
+    -- * Tool availability filter
+    ToolFilter (..),
+
     -- * Defaults and resolution
     agentDefaults,
     resolveProfile,
@@ -31,10 +34,12 @@ import Data.Aeson (FromJSON (..), Key, Object, Value (..), withObject, (.:?))
 import Data.Aeson.Types (Parser)
 import Data.Maybe (fromMaybe)
 import Data.Monoid (Last (..))
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Vector qualified as V
 import Elwood.Aeson (rejectUnknownKeys)
-import Elwood.Claude.Types (CacheTtl (..))
+import Elwood.Claude.Types (CacheTtl (..), ToolName (..))
 import Elwood.Permissions (PermissionConfig, PermissionConfigFile, resolvePermissions, toPermissionConfigFile)
 import Elwood.Positive (Positive)
 import Elwood.Prompt (PromptInput (..))
@@ -57,6 +62,25 @@ instance FromJSON ToolSearchConfig where
   parseJSON (Bool True) = pure (ToolSearchEnabled [])
   parseJSON (Array arr) = pure $ ToolSearchEnabled [t | String t <- V.toList arr]
   parseJSON _ = fail "tool_search must be false, true, or an array of tool names"
+
+-- | Which tools are available (advertised to the model and executable) for an
+-- agent. Orthogonal to 'ToolSearchConfig', which only controls deferral.
+--
+-- Supported YAML formats:
+--   absent / @all@   → 'AllTools'
+--   @[a, b, ...]@    → @'OnlyTools' {a, b, ...}@   (@[]@ ⇒ no tools)
+--
+-- The @all@ keyword exists for layering: a higher override layer can re-open a
+-- restrictive preset by setting @tools: all@.
+data ToolFilter
+  = AllTools
+  | OnlyTools (Set ToolName)
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON ToolFilter where
+  parseJSON (String "all") = pure AllTools
+  parseJSON (Array arr) = pure $ OnlyTools (Set.fromList [ToolName t | String t <- V.toList arr])
+  parseJSON _ = fail "tools must be \"all\" or an array of tool names"
 
 -- | A model reference: which provider, and which model on it.
 -- Resolved form (total).

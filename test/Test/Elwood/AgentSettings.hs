@@ -2,8 +2,11 @@
 
 module Test.Elwood.AgentSettings (tests) where
 
+import Data.Aeson (eitherDecode)
+import Data.Either (isLeft)
 import Data.Map.Strict qualified as Map
 import Data.Monoid (Last (..))
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.AgentSettings
@@ -12,6 +15,7 @@ import Elwood.AgentSettings
     CacheOverrides (..),
     ModelRef (..),
     ModelRefOverrides (..),
+    ToolFilter (..),
     ToolSearchConfig (..),
     agentDefaults,
     resolveModelRef,
@@ -49,7 +53,8 @@ tests =
       overrideTests,
       resolveTests,
       permissionsMergeTests,
-      modelRefTests
+      modelRefTests,
+      toolFilterParseTests
     ]
 
 instance Arbitrary ThinkingEffort where
@@ -291,4 +296,20 @@ modelRefTests =
               ModelRefOverrides (Last (Just "local")) (Last (Just "qwen"))
                 <> ModelRefOverrides (Last (Just "anthropic")) (Last Nothing)
          in resolveModelRef "d" merged @?= ModelRef "anthropic" "qwen"
+    ]
+
+toolFilterParseTests :: TestTree
+toolFilterParseTests =
+  testGroup
+    "ToolFilter parsing"
+    [ testCase "\"all\" parses to AllTools" $
+        (eitherDecode "\"all\"" :: Either String ToolFilter) @?= Right AllTools,
+      testCase "array parses to OnlyTools" $
+        (eitherDecode "[\"run_command\",\"read_file\"]" :: Either String ToolFilter)
+          @?= Right (OnlyTools (Set.fromList [ToolName "run_command", ToolName "read_file"])),
+      testCase "empty array parses to empty OnlyTools" $
+        (eitherDecode "[]" :: Either String ToolFilter)
+          @?= Right (OnlyTools Set.empty),
+      testCase "a number is rejected" $
+        assertBool "should fail" (isLeft (eitherDecode "5" :: Either String ToolFilter))
     ]
