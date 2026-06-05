@@ -210,7 +210,7 @@ labelValidationTests =
 toolsValidationTests :: TestTree
 toolsValidationTests =
   testGroup
-    "tools param validation"
+    "tools validation"
     [ testCase "non-string/array tools returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("x" :: Text), "tools" .= (5 :: Int)])
