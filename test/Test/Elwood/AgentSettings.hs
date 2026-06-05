@@ -311,5 +311,8 @@ toolFilterParseTests =
         (eitherDecode "[]" :: Either String ToolFilter)
           @?= Right (OnlyTools Set.empty),
       testCase "a number is rejected" $
-        assertBool "should fail" (isLeft (eitherDecode "5" :: Either String ToolFilter))
+        assertBool "should fail" (isLeft (eitherDecode "5" :: Either String ToolFilter)),
+      testCase "non-string array elements are dropped" $
+        (eitherDecode "[\"run_command\", 42]" :: Either String ToolFilter)
+          @?= Right (OnlyTools (Set.fromList [ToolName "run_command"]))
     ]
