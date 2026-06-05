@@ -136,6 +136,7 @@ data AgentOverrides = AgentOverrides
     maxTokens :: Last Positive,
     systemPrompt :: Last [PromptInput],
     toolSearch :: Last ToolSearchConfig,
+    toolFilter :: Last ToolFilter,
     permissions :: Maybe PermissionConfigFile
   }
   deriving stock (Show, Eq, Generic)
@@ -150,6 +151,7 @@ data AgentProfile = AgentProfile
     maxTokens :: Positive,
     systemPrompt :: [PromptInput],
     toolSearch :: ToolSearchConfig,
+    toolFilter :: ToolFilter,
     permissions :: PermissionConfig
   }
   deriving stock (Show, Eq, Generic)
@@ -165,6 +167,7 @@ agentDefaults =
       maxTokens = Last (Just 16384),
       systemPrompt = Last (Just [WorkspaceFile "SOUL.md"]),
       toolSearch = Last (Just ToolSearchDisabled),
+      toolFilter = Last (Just AllTools),
       permissions = Just mempty
     }
 
@@ -185,6 +188,7 @@ resolveProfile o =
           maxTokens = fromMaybe 16384 (getLast o.maxTokens),
           systemPrompt = fromMaybe [WorkspaceFile "SOUL.md"] (getLast o.systemPrompt),
           toolSearch = fromMaybe ToolSearchDisabled (getLast o.toolSearch),
+          toolFilter = fromMaybe AllTools (getLast o.toolFilter),
           permissions = resolvePermissions (fromMaybe mempty o.permissions)
         }
 
@@ -203,12 +207,13 @@ toOverrides s =
       maxTokens = Last (Just s.maxTokens),
       systemPrompt = Last (Just s.systemPrompt),
       toolSearch = Last (Just s.toolSearch),
+      toolFilter = Last (Just s.toolFilter),
       permissions = Just (toPermissionConfigFile s.permissions)
     }
 
 -- | Keys accepted in agent override objects.
 agentOverrideKeys :: [Key]
-agentOverrideKeys = ["model", "provider", "thinking", "max_iterations", "cache", "max_tokens", "system_prompt", "tool_search", "permissions"]
+agentOverrideKeys = ["model", "provider", "thinking", "max_iterations", "cache", "max_tokens", "system_prompt", "tool_search", "tools", "permissions"]
 
 -- | Parse a 'ModelRefOverrides' from an object's @provider@ and @model@ keys.
 parseModelRefOverrides :: Object -> Parser ModelRefOverrides
@@ -226,6 +231,7 @@ parseAgentOverrides v =
     <*> (Last <$> v .:? "max_tokens")
     <*> (Last <$> v .:? "system_prompt")
     <*> (Last <$> v .:? "tool_search")
+    <*> (Last <$> v .:? "tools")
     <*> v .:? "permissions"
 
 instance FromJSON AgentOverrides where

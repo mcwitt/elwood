@@ -93,6 +93,9 @@ instance Arbitrary ToolSearchConfig where
         ToolSearchEnabled <$> arbitrary
       ]
 
+instance Arbitrary ToolFilter where
+  arbitrary = oneof [pure AllTools, OnlyTools . Set.fromList <$> arbitrary]
+
 instance Arbitrary ToolName where
   arbitrary = ToolName <$> arbitrary
 
@@ -121,6 +124,7 @@ instance Arbitrary AgentOverrides where
       <*> (Last <$> arbitrary) -- maxTokens
       <*> (Last <$> arbitrary) -- systemPrompt
       <*> (Last <$> arbitrary) -- toolSearch
+      <*> (Last <$> arbitrary) -- toolFilter
       <*> arbitrary -- permissions
 
 semigroupLawTests :: TestTree
@@ -146,8 +150,8 @@ overrideTests =
   testGroup
     "Override semantics"
     [ testCase "right-biased: later Just wins" $ do
-        let a = AgentOverrides (ModelRefOverrides (Last Nothing) (Last (Just "model-a"))) Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
-            b = AgentOverrides (ModelRefOverrides (Last Nothing) (Last (Just "model-b"))) Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let a = AgentOverrides (ModelRefOverrides (Last Nothing) (Last (Just "model-a"))) Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+            b = AgentOverrides (ModelRefOverrides (Last Nothing) (Last (Just "model-b"))) Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
         (a <> b).model @?= ModelRefOverrides (Last Nothing) (Last (Just "model-b")),
       testCase "right-biased: Nothing preserves left" $ do
         let a =
@@ -159,6 +163,7 @@ overrideTests =
                 (Last (Just 8192))
                 (Last (Just [WorkspaceFile "SOUL.md"]))
                 (Last (Just ToolSearchDisabled))
+                (Last Nothing)
                 (Just mempty)
             b = mempty
         (a <> b) @?= a,
@@ -172,6 +177,7 @@ overrideTests =
                 32768
                 [InlineText "test"]
                 (ToolSearchEnabled ["run_command"])
+                AllTools
                 defaultPermissionConfig
         resolveProfile (toOverrides s) @?= s,
       testCase "toOverrides roundtrips cache=Nothing (disabled)" $ do
@@ -184,11 +190,12 @@ overrideTests =
                 32768
                 [InlineText "test"]
                 ToolSearchDisabled
+                AllTools
                 defaultPermissionConfig
         resolveProfile (toOverrides s) @?= s,
       testCase "cache overrides merge field-level" $ do
-        let a = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl5Min)))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
-            b = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last Nothing) (Last (Just CacheTtl1Hour)))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let a = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl5Min)))) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+            b = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last Nothing) (Last (Just CacheTtl1Hour)))) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
         (a <> b).cache @?= Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl1Hour)))
     ]
 
@@ -208,32 +215,44 @@ resolveTests =
       testCase "agentDefaults resolves to same defaults" $ do
         resolveProfile agentDefaults @?= resolveProfile mempty,
       testCase "cache disabled resolves to Nothing" $ do
-        let o = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.cache @?= Nothing,
       testCase "cache enabled with ttl resolves to Just ttl" $ do
-        let o = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl1Hour)))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty Nothing (Last Nothing) (Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl1Hour)))) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.cache @?= Just CacheTtl1Hour,
       testCase "overrides are applied" $ do
-        let o = agentDefaults <> AgentOverrides (ModelRefOverrides (Last Nothing) (Last (Just "custom-model"))) Nothing (Last (Just 50)) Nothing (Last (Just 8192)) (Last Nothing) (Last Nothing) Nothing
+        let o = agentDefaults <> AgentOverrides (ModelRefOverrides (Last Nothing) (Last (Just "custom-model"))) Nothing (Last (Just 50)) Nothing (Last (Just 8192)) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.model @?= ModelRef "anthropic" "custom-model"
         s.thinking @?= Nothing
         s.maxIterations @?= 50
         s.maxTokens @?= 8192,
       testCase "thinking enable=true resolves to Just mode" $ do
-        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just True)) (Last (Just (Adaptive (Just EffortMedium)))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just True)) (Last (Just (Adaptive (Just EffortMedium)))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.thinking @?= Just (Adaptive (Just EffortMedium)),
       testCase "thinking enable=true without mode defaults to Adaptive Nothing" $ do
-        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just True)) (Last Nothing))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just True)) (Last Nothing))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.thinking @?= Just (Adaptive Nothing),
       testCase "thinking enable=false resolves to Nothing" $ do
-        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just False)) (Last (Just (Budget 4096))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just False)) (Last (Just (Budget 4096))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
-        s.thinking @?= Nothing
+        s.thinking @?= Nothing,
+      testCase "toolFilter defaults to AllTools" $ do
+        let s = resolveProfile mempty
+        s.toolFilter @?= AllTools,
+      testCase "tools: all override re-opens a restricted preset" $ do
+        let restricted = AgentOverrides {model = mempty, thinking = Nothing, maxIterations = Last Nothing, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last Nothing, toolSearch = Last Nothing, toolFilter = Last (Just (OnlyTools (Set.fromList [ToolName "run_command"]))), permissions = Nothing}
+            reopened = AgentOverrides {model = mempty, thinking = Nothing, maxIterations = Last Nothing, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last Nothing, toolSearch = Last Nothing, toolFilter = Last (Just AllTools), permissions = Nothing}
+            s = resolveProfile (restricted <> reopened)
+        s.toolFilter @?= AllTools,
+      testCase "toolFilter OnlyTools roundtrips through toOverrides" $ do
+        let base = resolveProfile mempty
+            s = AgentProfile {model = base.model, thinking = base.thinking, maxIterations = base.maxIterations, cache = base.cache, maxTokens = base.maxTokens, systemPrompt = base.systemPrompt, toolSearch = base.toolSearch, toolFilter = OnlyTools (Set.fromList [ToolName "a", ToolName "b"]), permissions = base.permissions}
+        resolveProfile (toOverrides s) @?= s
     ]
 
 permissionsMergeTests :: TestTree
@@ -241,8 +260,8 @@ permissionsMergeTests =
   testGroup
     "Permissions merge"
     [ testCase "permissions use field-level merge" $ do
-        let a = AgentOverrides mempty Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Just (PermissionConfigFile (Last Nothing) (Last Nothing) (Last (Just (Map.singleton "run_command" PolicyDeny))) (Last Nothing) (Last Nothing)))
-            b = AgentOverrides mempty Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Just (PermissionConfigFile (Last (Just ["^ls\\b"])) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing)))
+        let a = AgentOverrides mempty Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) (Just (PermissionConfigFile (Last Nothing) (Last Nothing) (Last (Just (Map.singleton "run_command" PolicyDeny))) (Last Nothing) (Last Nothing)))
+            b = AgentOverrides mempty Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) (Just (PermissionConfigFile (Last (Just ["^ls\\b"])) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing)))
         -- b's safePatterns should merge with a's toolPolicies (not replace)
         let merged = a <> b
         case merged.permissions of
@@ -272,6 +291,7 @@ permissionsMergeTests =
                 16384
                 [WorkspaceFile "SOUL.md"]
                 ToolSearchDisabled
+                AllTools
                 pc
         let roundtripped = resolveProfile (toOverrides profile)
         roundtripped.permissions @?= pc

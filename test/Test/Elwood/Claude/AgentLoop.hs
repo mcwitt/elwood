@@ -3,7 +3,7 @@ module Test.Elwood.Claude.AgentLoop (tests) where
 import Colog.Core (LogAction (..))
 import Control.Exception (SomeException, try)
 import Data.Map.Strict qualified as Map
-import Elwood.AgentSettings (AgentProfile (..), ModelRef (..), ToolSearchConfig (..))
+import Elwood.AgentSettings (AgentProfile (..), ModelRef (..), ToolFilter (..), ToolSearchConfig (..))
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient (..))
 import Elwood.Claude.Observer (AgentObserver (..))
@@ -58,6 +58,7 @@ mkTestConfig isCancelled = do
             maxTokens = 1024,
             systemPrompt = [],
             toolSearch = ToolSearchDisabled,
+            toolFilter = AllTools,
             permissions = resolvePermissions mempty
           }
       observer =

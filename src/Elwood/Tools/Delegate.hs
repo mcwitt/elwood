@@ -46,7 +46,7 @@ labelMaxLen = 30
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
 -- Other fields (model, provider, thinking, system_prompt, tool_search, permissions) inherit from parent.
 delegateDefaults :: AgentOverrides
-delegateDefaults = AgentOverrides mempty Nothing (Last (Just 10)) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+delegateDefaults = AgentOverrides mempty Nothing (Last (Just 10)) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
 
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
@@ -395,6 +395,6 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
             else Right (Just (fromIntegral i :: NominalDiffTime))
     Just _ -> Left "Invalid 'timeout_seconds' parameter (must be an integer)"
     Nothing -> Right Nothing
-  let ovr = AgentOverrides {model = ModelRefOverrides (Last Nothing) (Last modelParam), thinking = thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, permissions = Nothing}
+  let ovr = AgentOverrides {model = ModelRefOverrides (Last Nothing) (Last modelParam), thinking = thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, toolFilter = Last Nothing, permissions = Nothing}
   Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam, async = asyncParam, label = labelParam, timeoutSeconds = timeoutParam}
 parseDelegateInput _ _ _ = Left "Expected object input"
