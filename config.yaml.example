@@ -123,7 +123,7 @@ agent:
   # Tool availability: all | [tool1, ...]
   # Restricts WHICH tool schemas are sent to the model (orthogonal to
   # tool_search, which only marks sent schemas deferred). Use this to keep small
-  # / local models under their context window — tool_search's deferral is a
+  # or local models under their context window — tool_search's deferral is a
   # no-op on backends that don't implement Anthropic's deferred-loading
   # extension (e.g. llama-swap), so every schema lands in context eagerly.
   #   all / omitted   - every registered tool is available (default)
@@ -174,7 +174,7 @@ agent:
 #       - type: text
 #         content: "You are a focused sub-agent."
 #     tool_search: false
-#     tools: all                  # restrict sub-agent tools; `all` or [tool, ...]
+#     tools: all                  # tool availability: `all` or [tool, ...] list
 #     permissions:                # merged with parent permissions
 #       tool_policies:
 #         run_command: deny
@@ -198,7 +198,7 @@ agent:
 #       max_tokens: 32768
 #     local:
 #       description: Local model via llama-swap (small context)
-#       model: gemma-3-12b
+#       model: gemma-4-12B
 #       provider: local           # see providers: above
 #       tools: [run_command]      # only ship run_command — avoids context overflow
 #       tool_search: false        # deferral is a no-op on non-Anthropic backends

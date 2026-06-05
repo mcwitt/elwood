@@ -930,7 +930,7 @@ let
           tools = lib.mkOption {
             type = lib.types.nullOr (lib.types.either lib.types.str (lib.types.listOf lib.types.str));
             default = null;
-            description = "Tool availability allowlist. Null means inherit. \"all\" allows every tool; a list restricts to the named tools.";
+            description = "Tool availability allowlist. Null uses the default (all tools). \"all\" allows every tool; a list restricts to the named tools.";
           };
 
           permissions = {
