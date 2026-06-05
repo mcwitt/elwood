@@ -15,6 +15,8 @@ module Elwood.Tools
     lookupTool,
     allTools,
     toolSchemas,
+    filterRegistry,
+    applyToolFilter,
 
     -- * Tool Constructors
     mkRunCommandTool,

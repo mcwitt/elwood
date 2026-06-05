@@ -6,11 +6,15 @@ module Elwood.Tools.Registry
     lookupTool,
     allTools,
     toolSchemas,
+    filterRegistry,
+    applyToolFilter,
   )
 where
 
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
+import Elwood.AgentSettings (ToolFilter (..))
 import Elwood.Claude.Types (ToolName, ToolSchema (..))
 import Elwood.Tools.Types (Tool (..))
 
@@ -37,3 +41,14 @@ allTools (ToolRegistry reg) = Map.elems reg
 -- | Generate tool schemas for the API request (all tools)
 toolSchemas :: ToolRegistry -> [ToolSchema]
 toolSchemas registry = map (.schema) (allTools registry)
+
+-- | Keep only the tools whose name satisfies the predicate.
+filterRegistry :: (ToolName -> Bool) -> ToolRegistry -> ToolRegistry
+filterRegistry keep (ToolRegistry reg) =
+  ToolRegistry (Map.filterWithKey (\n _ -> keep n) reg)
+
+-- | Apply a 'ToolFilter' to a registry: 'AllTools' is identity; 'OnlyTools'
+-- keeps exactly the named subset (unknown names select nothing).
+applyToolFilter :: ToolFilter -> ToolRegistry -> ToolRegistry
+applyToolFilter AllTools = id
+applyToolFilter (OnlyTools keep) = filterRegistry (`Set.member` keep)

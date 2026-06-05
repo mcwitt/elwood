@@ -1,7 +1,9 @@
 module Test.Elwood.Tools.Registry (tests) where
 
 import Data.Aeson (object, (.=))
+import Data.Set qualified as Set
 import Data.Text (Text)
+import Elwood.AgentSettings (ToolFilter (..))
 import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
 import Elwood.Tools.Registry
 import Elwood.Tools.Types (Tool (..), ToolResult (..))
@@ -26,7 +28,8 @@ tests :: TestTree
 tests =
   testGroup
     "Tools.Registry"
-    [ registryBasicsTests
+    [ registryBasicsTests,
+      filterTests
     ]
 
 registryBasicsTests :: TestTree
@@ -53,4 +56,25 @@ registryBasicsTests =
               registerTool (mkTestTool "a") $
                 registerTool (mkTestTool "b") newToolRegistry
         length (toolSchemas reg) @?= 2
+    ]
+
+filterTests :: TestTree
+filterTests =
+  testGroup
+    "Registry filtering"
+    [ testCase "filterRegistry keeps only matching tools" $ do
+        let reg = registerTool (mkTestTool "a") $ registerTool (mkTestTool "b") $ registerTool (mkTestTool "c") newToolRegistry
+            kept = filterRegistry (== "a") reg
+        map (.schema.name) (allTools kept) @?= ["a"],
+      testCase "applyToolFilter AllTools is identity" $ do
+        let reg = registerTool (mkTestTool "a") $ registerTool (mkTestTool "b") newToolRegistry
+        length (allTools (applyToolFilter AllTools reg)) @?= 2,
+      testCase "applyToolFilter OnlyTools keeps the named subset" $ do
+        let reg = registerTool (mkTestTool "a") $ registerTool (mkTestTool "b") $ registerTool (mkTestTool "c") newToolRegistry
+            kept = applyToolFilter (OnlyTools (Set.fromList ["a", "c"])) reg
+        Set.fromList (map (.schema.name) (allTools kept)) @?= Set.fromList ["a", "c"],
+      testCase "applyToolFilter drops names with no registered tool" $ do
+        let reg = registerTool (mkTestTool "a") newToolRegistry
+            kept = applyToolFilter (OnlyTools (Set.fromList ["a", "ghost"])) reg
+        map (.schema.name) (allTools kept) @?= ["a"]
     ]
