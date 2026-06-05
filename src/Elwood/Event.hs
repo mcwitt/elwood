@@ -296,6 +296,9 @@ handleEventCore env event callbacks = do
           Tools.registerTool awaitTaskTool $
             Tools.registerTool checkTaskTool $
               Tools.registerTool delegateTool registryWithPerms
+      -- toolFilter governs the complete registry including meta-tools
+      -- (delegate_task, check_task, ...); an OnlyTools allowlist must name them
+      -- explicitly to retain them.
       filteredRegistry = Tools.applyToolFilter prof.toolFilter registryWithDelegate
 
   -- Build cancellation check for this session (always False for isolated sessions)
