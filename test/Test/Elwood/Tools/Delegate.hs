@@ -2,6 +2,7 @@ module Test.Elwood.Tools.Delegate (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -12,6 +13,12 @@ import Elwood.Tools.Delegate (mkDelegateTaskTool)
 import Elwood.Tools.Types
 import Test.Tasty
 import Test.Tasty.HUnit
+
+hasProperty :: Text -> Value -> Bool
+hasProperty k (Object o) = case KM.lookup "properties" o of
+  Just (Object props) -> KM.member (Key.fromText k) props
+  _ -> False
+hasProperty _ _ = False
 
 tests :: TestTree
 tests =
@@ -27,6 +34,7 @@ tests =
       asyncValidationTests,
       timeoutValidationTests,
       labelValidationTests,
+      toolsValidationTests,
       descriptionTests
     ]
 
@@ -39,7 +47,10 @@ schemaTests =
         tool.schema.name @?= ToolName "delegate_task",
       testCase "description is non-empty" $ do
         let tool = mkStubDelegateTool
-        assertBool "description should not be empty" (tool.schema.description /= ("" :: Text))
+        assertBool "description should not be empty" (tool.schema.description /= ("" :: Text)),
+      testCase "schema advertises a tools property" $ do
+        let tool = mkStubDelegateTool
+        assertBool "tools property present" (hasProperty "tools" tool.schema.inputSchema)
     ]
 
 inputParsingTests :: TestTree
@@ -194,6 +205,16 @@ labelValidationTests =
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "label" .= ("  " :: Text)])
         result @?= ToolError "label must not be empty"
+    ]
+
+toolsValidationTests :: TestTree
+toolsValidationTests =
+  testGroup
+    "tools param validation"
+    [ testCase "non-string/array tools returns error" $ do
+        let tool = mkStubDelegateTool
+        result <- tool.execute (object ["task" .= ("x" :: Text), "tools" .= (5 :: Int)])
+        result @?= ToolError "Invalid 'tools' parameter (must be \"all\" or an array of strings)"
     ]
 
 descriptionTests :: TestTree

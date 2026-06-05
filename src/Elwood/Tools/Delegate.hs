@@ -19,7 +19,8 @@ import Data.Text qualified as T
 import Data.Time (NominalDiffTime)
 import Data.UUID qualified as UUID
 import Data.UUID.V4 qualified as UUID
-import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), CacheOverrides (..), ModelRef (..), ModelRefOverrides (..), ToolSearchConfig (..), resolveProfile, toOverrides)
+import Data.Vector qualified as V
+import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), CacheOverrides (..), ModelRef (..), ModelRefOverrides (..), ToolFilter (..), ToolSearchConfig (..), resolveProfile, toOverrides)
 import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), ExhaustionInfo (..), formatExhaustion, runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Observer (ToolUseCallback)
@@ -288,6 +289,16 @@ delegateSchema allowedModels presets =
                 .= object
                   [ "type" .= ("string" :: Text),
                     "description" .= ("Short human-readable label for this task, e.g. \"fetch weather data\". Used in status messages and tool-use notifications. Truncated to " <> T.pack (show labelMaxLen) <> " characters." :: Text)
+                  ],
+              "tools"
+                .= object
+                  [ "description" .= ("Restrict the sub-agent to these tool names (array of strings), or the string \"all\" for every tool. Omit to inherit. Useful for local/small models that load every tool schema eagerly." :: Text),
+                    "oneOf"
+                      .= ( [ object ["type" .= ("string" :: Text), "enum" .= (["all"] :: [Text])],
+                             object ["type" .= ("array" :: Text), "items" .= object ["type" .= ("string" :: Text)]]
+                           ] ::
+                             [Value]
+                         )
                   ]
             ]
               ++ modelProp
@@ -395,6 +406,11 @@ parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
             else Right (Just (fromIntegral i :: NominalDiffTime))
     Just _ -> Left "Invalid 'timeout_seconds' parameter (must be an integer)"
     Nothing -> Right Nothing
-  let ovr = AgentOverrides {model = ModelRefOverrides (Last Nothing) (Last modelParam), thinking = thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, toolFilter = Last Nothing, permissions = Nothing}
+  toolsParam <- case KM.lookup "tools" obj of
+    Just (Aeson.String "all") -> Right (Last (Just AllTools))
+    Just (Aeson.Array arr) -> Right (Last (Just (OnlyTools (Set.fromList [ToolName t | Aeson.String t <- V.toList arr]))))
+    Just _ -> Left "Invalid 'tools' parameter (must be \"all\" or an array of strings)"
+    Nothing -> Right (Last Nothing)
+  let ovr = AgentOverrides {model = ModelRefOverrides (Last Nothing) (Last modelParam), thinking = thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, toolFilter = toolsParam, permissions = Nothing}
   Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam, async = asyncParam, label = labelParam, timeoutSeconds = timeoutParam}
 parseDelegateInput _ _ _ = Left "Expected object input"
