@@ -296,6 +296,7 @@ handleEventCore env event callbacks = do
           Tools.registerTool awaitTaskTool $
             Tools.registerTool checkTaskTool $
               Tools.registerTool delegateTool registryWithPerms
+      filteredRegistry = Tools.applyToolFilter prof.toolFilter registryWithDelegate
 
   -- Build cancellation check for this session (always False for isolated sessions)
   isCancelled_ <- case mConversationId of
@@ -309,7 +310,7 @@ handleEventCore env event callbacks = do
         Claude.AgentConfig
           { logger = lgr,
             client = env.claude,
-            registry = registryWithDelegate,
+            registry = filteredRegistry,
             requestApproval = env.requestApproval,
             systemPrompt = systemPrompt,
             agentProfile = prof,

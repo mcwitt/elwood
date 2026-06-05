@@ -180,7 +180,8 @@ agentLoopIteration cfg msgs iteration = do
       mdl = cfg.agentProfile.model.model
       thk = cfg.agentProfile.thinking
 
-  -- Always send all tool schemas (tool search handles filtering server-side)
+  -- Send the schemas in the (already availability-filtered) registry. Tool
+  -- search, if enabled, marks a subset deferred server-side.
   let schemas = toolSchemas reg
       prunedMsgs = case cfg.pruningConfig of
         Nothing -> msgs

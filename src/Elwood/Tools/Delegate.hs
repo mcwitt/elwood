@@ -34,7 +34,7 @@ import Elwood.Prompt (PromptInput (InlineText), assemblePrompt)
 import Elwood.Thinking (ThinkingOverrides (..))
 import Elwood.Tools.AsyncTask (AsyncTaskStore, TaskId (..), insertTask, storeTtlSeconds, toMicroseconds)
 import Elwood.Tools.Command (mkRunCommandTool)
-import Elwood.Tools.Registry (ToolRegistry, registerTool)
+import Elwood.Tools.Registry (ToolRegistry, applyToolFilter, registerTool)
 import Elwood.Tools.Types
 import System.Timeout (timeout)
 
@@ -141,7 +141,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
             -- Re-register run_command with sub-profile's permissions (so delegate
             -- permission overrides affect command-pattern checking)
             let subRunCmd = mkRunCommandTool logger workspace subProfile.permissions
-                subRegistry = registerTool subRunCmd baseRegistry
+                subRegistry = applyToolFilter subProfile.toolFilter (registerTool subRunCmd baseRegistry)
 
             let resolvedLabel = fromMaybe di.task di.label
                 notifyLabel = truncateText labelMaxLen resolvedLabel
