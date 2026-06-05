@@ -162,6 +162,18 @@ agent:
 compaction:
   model: gemma-4-12B                # model name as configured in llama-swap
   provider: local
+
+delegate:
+  extra_agents:
+    local:
+      model: gemma-4-12B
+      provider: local
+      tools: [run_command]   # avoid eager-loading the full tool catalog
+      tool_search: false
+      thinking:
+        enable: false
+      cache:
+        enable: false
 ```
 
 `provider:` is available alongside `model:` at every model instance (main
@@ -180,6 +192,9 @@ overrides, and per-webhook-endpoint overrides). Omitting `provider:` defaults to
   feature and is meaningless to llama.cpp.
 - Do not enable `tool_search` — it injects a server-side BM25 tool that local
   servers cannot handle.
+- Restrict the toolset with `tools: [run_command]` (or whatever the task needs).
+  Local backends load every tool schema eagerly — the full catalog (~85K tokens)
+  overflows a 64K window — so ship only the tools the sub-agent actually uses.
 - Cost metrics (`elwood_cost_dollars`, `agent-daily-cost`) will read approximately
   zero for local model instances; no Anthropic pricing applies.
 
