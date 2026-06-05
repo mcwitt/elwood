@@ -248,6 +248,11 @@ in
           agent = {
             model = "claude-test-model";
             provider = "local";
+            # Enabled tool search with an autoload list (never-defer set).
+            toolSearch = {
+              enable = true;
+              autoload = [ "run_command" ];
+            };
             permissions = {
               safePatterns = [
                 "^ls\\b"
@@ -262,6 +267,17 @@ in
           providers.local = {
             baseUrl = "http://satori:8080";
             apiKeyEnv = "LOCAL_KEY";
+          };
+
+          # Local delegate agent: the #57 use case. Non-Anthropic backends (e.g.
+          # llama-swap) ignore tool_search's deferral, so every advertised schema
+          # lands in context eagerly. Restrict availability with the `tools`
+          # allowlist and disable tool_search so no bm25 server tool is emitted.
+          delegate.extraAgents.local = {
+            model = "gemma-test";
+            provider = "local";
+            tools = [ "run_command" ];
+            toolSearch.enable = false;
           };
 
           # Heartbeat is now handled via systemd timer, not in config
@@ -305,6 +321,16 @@ in
       assert '"base_url"' in config, f"provider base_url missing (snake_case regression?): {config}"
       assert '"api_key_env"' in config, f"provider api_key_env missing: {config}"
       assert '"provider":"local"' in config, f"agent provider missing: {config}"
+
+      # Enabled tool search collapses {enable=true; autoload=[...]} to the list union.
+      assert '"tool_search":["run_command"]' in config, f"tool_search autoload list not in config: {config}"
+
+      # Verify local delegate agent (the #57 use case): availability allowlist
+      # restricts the schemas sent, and tool_search is disabled (enable=false
+      # collapses to false) so no bm25 server tool is emitted for non-Anthropic
+      # backends.
+      assert '"tool_search":false' in config, f"tool_search:false not in config: {config}"
+      assert '"tools":["run_command"]' in config, f"tools allowlist not in config: {config}"
 
       print("Config validation passed!")
       print(config)

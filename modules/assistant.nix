@@ -32,6 +32,13 @@ let
     else
       throw "strategyToYaml: unexpected strategy tag: ${builtins.toJSON s}";
 
+  # Collapse a toolSearchModule value to Elwood's `tool_search` YAML union:
+  #   disabled            -> false
+  #   enabled, autoload=[] -> []        (all tools deferred)
+  #   enabled, autoload=xs -> xs        (listed tools never deferred)
+  # autoload is inert while disabled, mirroring the underlying sum type.
+  mkToolSearchYaml = ts: if ts.enable then ts.autoload else false;
+
   # Thinking mode: {adaptive = {effort = "medium";};} or {fixed = {budgetTokens = N;};}.
   # Tags are camelCase per NixOS convention; mkThinkingModeYaml converts to
   # snake_case keys (budget_tokens) for the Haskell YAML parser.
@@ -150,7 +157,7 @@ let
           system_prompt = map mkPromptInputYaml agentOvr.systemPrompt;
         }
         // lib.optionalAttrs (agentOvr.toolSearch != null) {
-          tool_search = agentOvr.toolSearch;
+          tool_search = mkToolSearchYaml agentOvr.toolSearch;
         }
         // lib.optionalAttrs (agentOvr.tools != null) {
           tools = agentOvr.tools;
@@ -264,7 +271,7 @@ let
           };
         }
         // lib.optionalAttrs (agentCfg.agent.toolSearch != null) {
-          tool_search = agentCfg.agent.toolSearch;
+          tool_search = mkToolSearchYaml agentCfg.agent.toolSearch;
         }
         // lib.optionalAttrs (agentCfg.agent.tools != null) {
           tools = agentCfg.agent.tools;
@@ -509,6 +516,26 @@ let
     };
   };
 
+  # Submodule for server-side tool search (deferred tool loading). The enable flag
+  # is kept separate from its configuration so NixOS layers compose: an upstream
+  # layer can set `autoload` while a downstream layer flips `enable`. Collapses to
+  # Elwood's atomic `tool_search` union at YAML generation (see mkToolSearchYaml).
+  toolSearchModule = lib.types.submodule {
+    options = {
+      enable = lib.mkEnableOption "server-side tool search (deferred tool loading)";
+
+      autoload = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          Tools that are never deferred — their schemas are always sent eagerly.
+          Empty (the default) defers every tool. Only consulted when enable = true.
+        '';
+        example = [ "run_command" ];
+      };
+    };
+  };
+
   # Submodule for permission overrides (all fields nullable for selective override)
   permissionOverrideModule = lib.types.submodule {
     options = {
@@ -624,9 +651,9 @@ let
     };
 
     toolSearch = lib.mkOption {
-      type = lib.types.nullOr (lib.types.listOf lib.types.str);
+      type = lib.types.nullOr toolSearchModule;
       default = null;
-      description = "Tool search override. Null means inherit from parent. Empty list enables tool search with all tools deferred.";
+      description = "Tool search override. Null (untouched) inherits from parent; setting enable/autoload pins it for this agent.";
     };
 
     tools = lib.mkOption {
@@ -921,10 +948,9 @@ let
           };
 
           toolSearch = lib.mkOption {
-            type = lib.types.nullOr (lib.types.listOf lib.types.str);
+            type = lib.types.nullOr toolSearchModule;
             default = null;
-            description = "Tool names that are never deferred (always available). Null disables tool search.";
-            example = [ "run_command" ];
+            description = "Server-side tool search. Null (untouched) disables it; set enable = true (with optional autoload) to turn it on.";
           };
 
           tools = lib.mkOption {
