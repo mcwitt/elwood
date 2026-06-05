@@ -211,6 +211,7 @@ resolveTests =
         s.maxTokens @?= 16384
         s.systemPrompt @?= [WorkspaceFile "SOUL.md"]
         s.toolSearch @?= ToolSearchDisabled
+        s.toolFilter @?= AllTools
         s.permissions @?= resolvePermissions mempty,
       testCase "agentDefaults resolves to same defaults" $ do
         resolveProfile agentDefaults @?= resolveProfile mempty,

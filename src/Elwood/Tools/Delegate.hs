@@ -44,7 +44,7 @@ labelMaxLen = 30
 
 -- | Default overrides for delegate sub-agents.
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
--- Other fields (model, provider, thinking, system_prompt, tool_search, permissions) inherit from parent.
+-- Other fields (model, provider, thinking, system_prompt, tool_search, tools, permissions) inherit from parent.
 delegateDefaults :: AgentOverrides
 delegateDefaults = AgentOverrides mempty Nothing (Last (Just 10)) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
 
