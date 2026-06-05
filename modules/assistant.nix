@@ -152,6 +152,9 @@ let
         // lib.optionalAttrs (agentOvr.toolSearch != null) {
           tool_search = agentOvr.toolSearch;
         }
+        // lib.optionalAttrs (agentOvr.tools != null) {
+          tools = agentOvr.tools;
+        }
         // (
           let
             permAttrs =
@@ -262,6 +265,9 @@ let
         }
         // lib.optionalAttrs (agentCfg.agent.toolSearch != null) {
           tool_search = agentCfg.agent.toolSearch;
+        }
+        // lib.optionalAttrs (agentCfg.agent.tools != null) {
+          tools = agentCfg.agent.tools;
         }
         // lib.optionalAttrs (agentCfg.agent.provider != null) {
           provider = agentCfg.agent.provider;
@@ -623,6 +629,12 @@ let
       description = "Tool search override. Null means inherit from parent. Empty list enables tool search with all tools deferred.";
     };
 
+    tools = lib.mkOption {
+      type = lib.types.nullOr (lib.types.either lib.types.str (lib.types.listOf lib.types.str));
+      default = null;
+      description = "Tool availability allowlist. Null means inherit. \"all\" allows every tool; a list restricts to the named tools.";
+    };
+
     permissions = lib.mkOption {
       type = lib.types.nullOr permissionOverrideModule;
       default = null;
@@ -913,6 +925,12 @@ let
             default = null;
             description = "Tool names that are never deferred (always available). Null disables tool search.";
             example = [ "run_command" ];
+          };
+
+          tools = lib.mkOption {
+            type = lib.types.nullOr (lib.types.either lib.types.str (lib.types.listOf lib.types.str));
+            default = null;
+            description = "Tool availability allowlist. Null means inherit. \"all\" allows every tool; a list restricts to the named tools.";
           };
 
           permissions = {
