@@ -497,7 +497,9 @@ data ModelPricing = ModelPricing
 -- | Prefix-matched pricing table. First match wins, so more specific prefixes come first.
 pricingTable :: [(Text, ModelPricing)]
 pricingTable =
-  [ ("claude-opus-4-7", ModelPricing 5 25 6.25 10 0.50),
+  [ ("claude-fable-5", ModelPricing 10 50 12.50 20 1),
+    ("claude-opus-4-8", ModelPricing 5 25 6.25 10 0.50),
+    ("claude-opus-4-7", ModelPricing 5 25 6.25 10 0.50),
     ("claude-opus-4-6", ModelPricing 5 25 6.25 10 0.50),
     ("claude-opus-4-5", ModelPricing 5 25 6.25 10 0.50),
     ("claude-opus-4-1", ModelPricing 15 75 18.75 30 1.50),
