@@ -9,6 +9,7 @@
 module Elwood.Telegram.Markdown
   ( markdownToTelegramHtml,
     warmupMarkdown,
+    escapeHtmlText,
   )
 where
 
@@ -146,7 +147,11 @@ escapeCharCommon c = T.singleton c
 
 -- | Escape text for HTML content.
 escapeHtml :: Text -> Builder
-escapeHtml = B.fromText . T.concatMap escapeCharCommon
+escapeHtml = B.fromText . escapeHtmlText
+
+-- | Escape text for HTML content as 'Text' (for callers outside this module).
+escapeHtmlText :: Text -> Text
+escapeHtmlText = T.concatMap escapeCharCommon
 
 -- | Escape text for use in an HTML attribute value (adds @\"@ escaping).
 escapeAttr :: Text -> Text
