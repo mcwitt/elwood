@@ -91,10 +91,11 @@ runApp config = do
   let builtinRegistry =
         Tools.registerTool (Tools.mkQueueAttachmentTool logger attachmentQueue_) $
           Tools.registerTool (Tools.mkRunCommandTool logger config.workspace config.agentProfile.permissions) $
-            Tools.registerTool (Tools.mkSaveMemoryTool logger memoryStore) $
-              Tools.registerTool
-                (Tools.mkSearchMemoryTool logger memoryStore)
-                Tools.newToolRegistry
+            Tools.registerTool (Tools.mkViewImageTool logger config.workspace) $
+              Tools.registerTool (Tools.mkSaveMemoryTool logger memoryStore) $
+                Tools.registerTool
+                  (Tools.mkSearchMemoryTool logger memoryStore)
+                  Tools.newToolRegistry
 
   logInfo
     logger

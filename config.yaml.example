@@ -211,7 +211,9 @@ agent:
 #     - claude-sonnet-4-20250514
 
 # Maximum image dimension (pixels) for images sent to the Claude API.
-# Images exceeding this are resized (preserving aspect ratio) before sending.
+# Applies to inbound photos (e.g. Telegram) and to image tool results
+# (view_image, image-typed MCP results). Images exceeding this are resized
+# (preserving aspect ratio) before sending.
 # Set to null to disable resizing and send original images.
 # Default: 1568 (Claude's native processing resolution)
 max_image_dimension: 1568

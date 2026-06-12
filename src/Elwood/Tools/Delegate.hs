@@ -71,6 +71,8 @@ mkDelegateTaskTool ::
   AgentProfile ->
   Maybe PruningConfig ->
   FilePath ->
+  -- | Maximum dimension for tool-result images (Nothing = no resizing)
+  Maybe Int ->
   MetricsStore ->
   AgentPreset ->
   Map Text AgentPreset ->
@@ -80,7 +82,7 @@ mkDelegateTaskTool ::
   -- | Async task store (Nothing = async not available)
   Maybe AsyncTaskStore ->
   Tool
-mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspace metrics delegateAgentPreset extraAgents allowedModels delegateOnToolUse asyncStore =
+mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspace maxImageDim metrics delegateAgentPreset extraAgents allowedModels delegateOnToolUse asyncStore =
   Tool
     { schema =
         ToolSchema
@@ -164,6 +166,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
                       pruningConfig = pruning,
                       pruneHorizon = 0,
                       outputFormat = outputFmt,
+                      maxImageDimension = maxImageDim,
                       isCancelled = pure False
                     }
                 userMsg = ClaudeMessage User [TextBlock di.task]

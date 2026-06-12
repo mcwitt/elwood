@@ -3,7 +3,7 @@ module Test.Elwood.Claude.Pruning (tests) where
 import Data.Aeson qualified as Aeson
 import Data.Text qualified as T
 import Elwood.Claude.Pruning (getAndUpdateHorizon, newPruneHorizons, protectedBoundary, pruneThinkingBlocks, pruneToolInputs, pruneToolResults, softPrune)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolUseId (..))
+import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolResultPart (..), ToolUseId (..))
 import Elwood.Config (PruningStrategy (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
 import Numeric.Natural (Natural)
 import Test.Tasty
@@ -58,6 +58,7 @@ tests =
       recencyProtectsRecentTurns,
       recencyClipsHorizon,
       shortResultsUnchanged,
+      imagePartsPreserved,
       -- thinking pruning tests
       thinkingPruneDisabled,
       thinkingPruneStripsOldTurns,
@@ -127,7 +128,7 @@ protectedBoundaryBasic =
     let msgs =
           [ ClaudeMessage User [TextBlock "turn 1"], -- index 0 (turn boundary)
             ClaudeMessage Assistant [TextBlock "reply 1"], -- index 1
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "result" False], -- index 2 (iteration, not turn)
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText "result"] False], -- index 2 (iteration, not turn)
             ClaudeMessage Assistant [TextBlock "reply 2"], -- index 3
             ClaudeMessage User [TextBlock "turn 2"], -- index 4 (turn boundary)
             ClaudeMessage Assistant [TextBlock "reply 3"], -- index 5
@@ -168,8 +169,8 @@ pruneBeforeHorizon =
   testCase "soft-prunes tool results before horizon" $ do
     let bigOutput = T.replicate 200 "x"
         msgs =
-          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") bigOutput False],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") bigOutput False],
+          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText bigOutput] False],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") [ToolResultText bigOutput] False],
             ClaudeMessage User [TextBlock "question"]
           ]
         -- keepTurns = 0 so recency doesn't interfere
@@ -179,11 +180,11 @@ pruneBeforeHorizon =
       [m1, m2, m3] -> do
         -- Soft-pruned: should contain indicator, not be the full original
         case m1.content of
-          [ToolResultBlock _ txt False] ->
+          [ToolResultBlock _ [ToolResultText txt] False] ->
             assertBool "m1 contains pruning indicator" (T.isInfixOf "pruned" txt)
           _ -> assertFailure "Expected single ToolResultBlock in m1"
         case m2.content of
-          [ToolResultBlock _ txt False] ->
+          [ToolResultBlock _ [ToolResultText txt] False] ->
             assertBool "m2 contains pruning indicator" (T.isInfixOf "pruned" txt)
           _ -> assertFailure "Expected single ToolResultBlock in m2"
         m3.content @?= [TextBlock "question"]
@@ -195,21 +196,21 @@ preserveAtAndAfterHorizon =
   testCase "preserves messages at/after horizon" $ do
     let bigOutput = T.replicate 200 "x"
         msgs =
-          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") bigOutput False],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") bigOutput False],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t3") bigOutput False]
+          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText bigOutput] False],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") [ToolResultText bigOutput] False],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t3") [ToolResultText bigOutput] False]
           ]
         tc = toolsWithKeepTurns 0 testToolConfig
         result = pruneToolResults tc 1 msgs
     case result of
       [m1, m2, m3] -> do
         case m1.content of
-          [ToolResultBlock _ txt False] ->
+          [ToolResultBlock _ [ToolResultText txt] False] ->
             assertBool "m1 pruned" (T.isInfixOf "pruned" txt)
           _ -> assertFailure "Expected single ToolResultBlock in m1"
         -- m2 and m3 should be unchanged
-        m2.content @?= [ToolResultBlock (ToolUseId "t2") bigOutput False]
-        m3.content @?= [ToolResultBlock (ToolUseId "t3") bigOutput False]
+        m2.content @?= [ToolResultBlock (ToolUseId "t2") [ToolResultText bigOutput] False]
+        m3.content @?= [ToolResultBlock (ToolUseId "t3") [ToolResultText bigOutput] False]
       _ -> assertFailure "Expected 3 messages"
 
 -- | Error results (isError = True) are never pruned
@@ -217,16 +218,16 @@ preserveErrors :: TestTree
 preserveErrors =
   testCase "preserves error results" $ do
     let msgs =
-          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "error msg" True],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") (T.replicate 200 "x") False]
+          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText "error msg"] True],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") [ToolResultText (T.replicate 200 "x")] False]
           ]
         tc = toolsWithKeepTurns 0 testToolConfig
         result = pruneToolResults tc 2 msgs
     case result of
       [m1, m2] -> do
-        m1.content @?= [ToolResultBlock (ToolUseId "t1") "error msg" True]
+        m1.content @?= [ToolResultBlock (ToolUseId "t1") [ToolResultText "error msg"] True]
         case m2.content of
-          [ToolResultBlock _ txt False] ->
+          [ToolResultBlock _ [ToolResultText txt] False] ->
             assertBool "m2 pruned" (T.isInfixOf "pruned" txt)
           _ -> assertFailure "Expected single ToolResultBlock in m2"
       _ -> assertFailure "Expected 2 messages"
@@ -237,7 +238,7 @@ preserveNonToolResultBlocks =
   testCase "preserves non-ToolResultBlock content" $ do
     let bigOutput = T.replicate 200 "x"
         msgs =
-          [ ClaudeMessage User [TextBlock "hello", ToolResultBlock (ToolUseId "t1") bigOutput False],
+          [ ClaudeMessage User [TextBlock "hello", ToolResultBlock (ToolUseId "t1") [ToolResultText bigOutput] False],
             ClaudeMessage User [TextBlock "world"]
           ]
         tc = toolsWithKeepTurns 0 testToolConfig
@@ -245,7 +246,7 @@ preserveNonToolResultBlocks =
     case result of
       [m1, m2] -> do
         case m1.content of
-          [TextBlock "hello", ToolResultBlock _ txt False] ->
+          [TextBlock "hello", ToolResultBlock _ [ToolResultText txt] False] ->
             assertBool "tool result pruned" (T.isInfixOf "pruned" txt)
           _ -> assertFailure "Expected TextBlock + ToolResultBlock in m1"
         m2.content @?= [TextBlock "world"]
@@ -259,7 +260,7 @@ neverModifyAssistantMessages =
         bigOutput = T.replicate 200 "x"
         msgs =
           [ ClaudeMessage Assistant [toolUse],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") bigOutput False]
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText bigOutput] False]
           ]
         tc = toolsWithKeepTurns 0 testToolConfig
         result = pruneToolResults tc 2 msgs
@@ -267,7 +268,7 @@ neverModifyAssistantMessages =
       [m1, m2] -> do
         m1.content @?= [toolUse]
         case m2.content of
-          [ToolResultBlock _ txt False] ->
+          [ToolResultBlock _ [ToolResultText txt] False] ->
             assertBool "tool result pruned" (T.isInfixOf "pruned" txt)
           _ -> assertFailure "Expected single ToolResultBlock in m2"
       _ -> assertFailure "Expected 2 messages"
@@ -278,19 +279,19 @@ horizonBeyondLength =
   testCase "horizon beyond list length prunes all" $ do
     let bigOutput = T.replicate 200 "x"
         msgs =
-          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") bigOutput False],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") bigOutput False]
+          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText bigOutput] False],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") [ToolResultText bigOutput] False]
           ]
         tc = toolsWithKeepTurns 0 testToolConfig
         result = pruneToolResults tc 100 msgs
     case result of
       [m1, m2] -> do
         case m1.content of
-          [ToolResultBlock _ txt False] ->
+          [ToolResultBlock _ [ToolResultText txt] False] ->
             assertBool "m1 pruned" (T.isInfixOf "pruned" txt)
           _ -> assertFailure "Expected single ToolResultBlock in m1"
         case m2.content of
-          [ToolResultBlock _ txt False] ->
+          [ToolResultBlock _ [ToolResultText txt] False] ->
             assertBool "m2 pruned" (T.isInfixOf "pruned" txt)
           _ -> assertFailure "Expected single ToolResultBlock in m2"
       _ -> assertFailure "Expected 2 messages"
@@ -300,7 +301,7 @@ horizonZero :: TestTree
 horizonZero =
   testCase "horizon 0 is no-op" $ do
     let msgs =
-          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "data" False]
+          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText "data"] False]
           ]
         result = pruneToolResults testToolConfig 0 msgs
     result @?= msgs
@@ -317,9 +318,9 @@ idempotent =
   testCase "idempotent" $ do
     let bigOutput = T.replicate 200 "x"
         msgs =
-          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") bigOutput False],
+          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText bigOutput] False],
             ClaudeMessage Assistant [TextBlock "reply"],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") bigOutput False]
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") [ToolResultText bigOutput] False]
           ]
         tc = toolsWithKeepTurns 0 testToolConfig
         once = pruneToolResults tc 2 msgs
@@ -333,7 +334,7 @@ preservesCountAndOrder =
     let msgs =
           [ ClaudeMessage User [TextBlock "q1"],
             ClaudeMessage Assistant [TextBlock "a1"],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") (T.replicate 200 "x") False],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText (T.replicate 200 "x")] False],
             ClaudeMessage Assistant [TextBlock "a2"]
           ]
         tc = toolsWithKeepTurns 0 testToolConfig
@@ -365,10 +366,10 @@ recencyProtectsRecentTurns =
         msgs =
           [ ClaudeMessage User [TextBlock "turn 1"], -- turn boundary
             ClaudeMessage Assistant [TextBlock "reply 1"],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") bigOutput False], -- iteration
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText bigOutput] False], -- iteration
             ClaudeMessage User [TextBlock "turn 2"], -- turn boundary
             ClaudeMessage Assistant [TextBlock "reply 2"],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") bigOutput False], -- iteration
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") [ToolResultText bigOutput] False], -- iteration
             ClaudeMessage User [TextBlock "turn 3"], -- turn boundary
             ClaudeMessage Assistant [TextBlock "reply 3"]
           ]
@@ -386,10 +387,10 @@ recencyClipsHorizon =
         msgs =
           [ ClaudeMessage User [TextBlock "turn 1"], -- index 0 (turn boundary)
             ClaudeMessage Assistant [TextBlock "reply 1"], -- index 1
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") bigOutput False], -- index 2
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText bigOutput] False], -- index 2
             ClaudeMessage User [TextBlock "turn 2"], -- index 3 (turn boundary)
             ClaudeMessage Assistant [TextBlock "reply 2"], -- index 4
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") bigOutput False], -- index 5
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t2") [ToolResultText bigOutput] False], -- index 5
             ClaudeMessage User [TextBlock "turn 3"], -- index 6 (turn boundary)
             ClaudeMessage Assistant [TextBlock "reply 3"] -- index 7
           ]
@@ -399,18 +400,38 @@ recencyClipsHorizon =
         result = pruneToolResults tc 5 msgs
     -- Index 2 (tool result before boundary) should be pruned
     case result !! 2 of
-      ClaudeMessage _ [ToolResultBlock _ txt False] ->
+      ClaudeMessage _ [ToolResultBlock _ [ToolResultText txt] False] ->
         assertBool "pre-boundary tool result pruned" (T.isInfixOf "pruned" txt)
       _ -> assertFailure "Expected pruned ToolResultBlock at index 2"
     -- Index 5 (tool result within protected turns) should be untouched
-    (result !! 5).content @?= [ToolResultBlock (ToolUseId "t2") bigOutput False]
+    (result !! 5).content @?= [ToolResultBlock (ToolUseId "t2") [ToolResultText bigOutput] False]
+
+-- | Image parts survive pruning while text parts in the same result are pruned
+imagePartsPreserved :: TestTree
+imagePartsPreserved =
+  testCase "image parts preserved while text parts pruned" $ do
+    let bigOutput = T.replicate 200 "x"
+        img = ToolResultImage "image/png" "aGVsbG8="
+        msgs =
+          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText bigOutput, img] False],
+            ClaudeMessage User [TextBlock "question"]
+          ]
+        tc = toolsWithKeepTurns 0 testToolConfig
+        result = pruneToolResults tc 2 msgs
+    case result of
+      (m1 : _) -> case m1.content of
+        [ToolResultBlock _ [ToolResultText txt, img'] False] -> do
+          assertBool "text part pruned" (T.isInfixOf "pruned" txt)
+          img' @?= img
+        other -> assertFailure $ "Expected text + image parts, got: " <> show other
+      _ -> assertFailure "Expected at least one message"
 
 -- | Short results are left unchanged even before horizon (softPrune no-op)
 shortResultsUnchanged :: TestTree
 shortResultsUnchanged =
   testCase "short results unchanged even before horizon" $ do
     let msgs =
-          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "small" False],
+          [ ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText "small"] False],
             ClaudeMessage User [TextBlock "question"]
           ]
         tc = toolsWithKeepTurns 0 testToolConfig
@@ -542,7 +563,7 @@ toolInputPruneLargeInputs =
     let bigInput = Aeson.String (T.replicate 10000 "x")
         msgs =
           [ ClaudeMessage Assistant [ToolUseBlock (ToolUseId "t1") (ToolName "tool") bigInput],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "result" False],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText "result"] False],
             ClaudeMessage User [TextBlock "question"]
           ]
         tc = toolsWithKeepTurns 0 testToolConfig
@@ -562,7 +583,7 @@ toolInputPruneProtectsRecent =
         msgs =
           [ ClaudeMessage User [TextBlock "turn 1"],
             ClaudeMessage Assistant [ToolUseBlock (ToolUseId "t1") (ToolName "tool") bigInput],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "result" False]
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText "result"] False]
           ]
         tc = toolsWithKeepTurns 1 testToolConfig
         result = pruneToolInputs tc 100 msgs
@@ -576,7 +597,7 @@ toolInputPruneSmallInputUnchanged =
     let smallInput = Aeson.object [("key", "value")]
         msgs =
           [ ClaudeMessage Assistant [ToolUseBlock (ToolUseId "t1") (ToolName "tool") smallInput],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "result" False]
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText "result"] False]
           ]
         tc = toolsWithKeepTurns 0 testToolConfig
         result = pruneToolInputs tc 100 msgs
@@ -589,7 +610,7 @@ toolInputPruneStructuredJson =
     let bigInput = Aeson.object [("code", Aeson.String (T.replicate 10000 "x"))]
         msgs =
           [ ClaudeMessage Assistant [ToolUseBlock (ToolUseId "t1") (ToolName "write_file") bigInput],
-            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "ok" False],
+            ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText "ok"] False],
             ClaudeMessage User [TextBlock "question"]
           ]
         tc = toolsWithKeepTurns 0 testToolConfig
@@ -642,10 +663,10 @@ divergentKeepTurnsThinkingVsTools =
         msgs =
           [ ClaudeMessage User [TextBlock "turn 1"], -- index 0 (turn boundary)
             ClaudeMessage Assistant [ThinkingBlock "t1" "s1", TextBlock "reply 1"], -- index 1
-            ClaudeMessage User [ToolResultBlock (ToolUseId "r1") bigOutput False], -- index 2
+            ClaudeMessage User [ToolResultBlock (ToolUseId "r1") [ToolResultText bigOutput] False], -- index 2
             ClaudeMessage User [TextBlock "turn 2"], -- index 3 (turn boundary)
             ClaudeMessage Assistant [ThinkingBlock "t2" "s2", TextBlock "reply 2"], -- index 4
-            ClaudeMessage User [ToolResultBlock (ToolUseId "r2") bigOutput False], -- index 5
+            ClaudeMessage User [ToolResultBlock (ToolUseId "r2") [ToolResultText bigOutput] False], -- index 5
             ClaudeMessage User [TextBlock "turn 3"], -- index 6 (turn boundary)
             ClaudeMessage Assistant [ThinkingBlock "t3" "s3", TextBlock "reply 3"] -- index 7
           ]
@@ -675,8 +696,8 @@ divergentKeepTurnsThinkingVsTools =
 
     -- Tool result at index 2: pruned (before output's keepTurns=2 boundary at index 3)
     case (afterResults !! 2).content of
-      [ToolResultBlock _ txt False] ->
+      [ToolResultBlock _ [ToolResultText txt] False] ->
         assertBool "turn 1 tool result pruned" (T.isInfixOf "pruned" txt)
       _ -> assertFailure "Expected pruned ToolResultBlock at index 2"
     -- Tool result at index 5: kept (after output's keepTurns=2 boundary at index 3)
-    (afterResults !! 5).content @?= [ToolResultBlock (ToolUseId "r2") bigOutput False]
+    (afterResults !! 5).content @?= [ToolResultBlock (ToolUseId "r2") [ToolResultText bigOutput] False]

@@ -17,9 +17,11 @@ import Codec.Picture.Types
     imageWidth,
   )
 import Data.ByteString qualified as BS
+import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as LBS
-import Elwood.Event.Types (MediaType (..))
-import Elwood.Image (ResizeResult (..), resizeImage)
+import Data.Text.Encoding qualified as TE
+import Elwood.Event.Types (Base64Data (..), ImageData (..), MediaType (..))
+import Elwood.Image (ResizeResult (..), imageMediaTypeFromPath, perceiveImageBytes, resizeImage)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -27,6 +29,59 @@ tests :: TestTree
 tests =
   testGroup
     "Image"
+    [ resizeTests,
+      perceiveTests,
+      mediaTypeTests
+    ]
+
+perceiveTests :: TestTree
+perceiveTests =
+  testGroup
+    "perceiveImageBytes"
+    [ testCase "small image passes through unchanged" $ do
+        let img = mkPngBytes 100 80
+        case perceiveImageBytes (Just 200) "image/png" img of
+          Left err -> assertFailure $ "Expected Right, got: " <> show err
+          Right d -> do
+            d.mediaType @?= MediaType "image/png"
+            B64.decode (TE.encodeUtf8 d.base64Data.unBase64Data) @?= Right img,
+      testCase "oversized image is resized within max dimension" $ do
+        let img = mkPngBytes 400 200
+        case perceiveImageBytes (Just 200) "image/png" img of
+          Left err -> assertFailure $ "Expected Right, got: " <> show err
+          Right d -> case B64.decode (TE.encodeUtf8 d.base64Data.unBase64Data) of
+            Left err -> assertFailure $ "Invalid base64: " <> err
+            Right bytes -> assertResizedWithin 200 bytes,
+      testCase "no max dimension leaves bytes unchanged" $ do
+        let img = mkPngBytes 400 200
+        case perceiveImageBytes Nothing "image/png" img of
+          Left err -> assertFailure $ "Expected Right, got: " <> show err
+          Right d -> B64.decode (TE.encodeUtf8 d.base64Data.unBase64Data) @?= Right img,
+      testCase "unsupported media type is rejected" $
+        case perceiveImageBytes (Just 200) "image/bmp" (mkPngBytes 10 10) of
+          Left _ -> pure ()
+          Right _ -> assertFailure "Expected Left for unsupported media type"
+    ]
+
+mediaTypeTests :: TestTree
+mediaTypeTests =
+  testGroup
+    "imageMediaTypeFromPath"
+    [ testCase "recognizes supported extensions case-insensitively" $ do
+        imageMediaTypeFromPath "photo.PNG" @?= Just "image/png"
+        imageMediaTypeFromPath "a/b/pic.jpeg" @?= Just "image/jpeg"
+        imageMediaTypeFromPath "pic.jpg" @?= Just "image/jpeg"
+        imageMediaTypeFromPath "anim.gif" @?= Just "image/gif"
+        imageMediaTypeFromPath "modern.webp" @?= Just "image/webp",
+      testCase "rejects unsupported extensions" $ do
+        imageMediaTypeFromPath "doc.pdf" @?= Nothing
+        imageMediaTypeFromPath "noext" @?= Nothing
+    ]
+
+resizeTests :: TestTree
+resizeTests =
+  testGroup
+    "resizeImage"
     [ testCase "within bounds returns original bytes unchanged" $ do
         let img = mkJpegBytes 100 80
             (result, mt, status) = resizeImage 200 img (MediaType "image/jpeg")

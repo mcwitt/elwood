@@ -18,10 +18,11 @@ import Data.Aeson (encode, object, (.=))
 import Data.ByteString.Lazy qualified as LBS
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), turnBoundaryIndices)
+import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolResultPart (..), turnBoundaryIndices)
 import Elwood.Config (PruningStrategy (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
 
 -- | Conservative overhead estimate for the pruning indicator text.
@@ -111,11 +112,15 @@ pruneMessage dir (ClaudeMessage User blocks) =
 pruneMessage _ msg = msg
 
 -- | Soft-prune the content of a non-error 'ToolResultBlock'.
+-- Text parts are soft-pruned independently; image parts are left intact
+-- (matching the treatment of top-level 'ImageBlock's).
 pruneBlock :: ToolDirectionConfig -> ContentBlock -> ContentBlock
-pruneBlock dir (ToolResultBlock tid content False) =
-  case softPrune dir.headChars dir.tailChars content of
-    Nothing -> ToolResultBlock tid content False
-    Just pruned -> ToolResultBlock tid pruned False
+pruneBlock dir (ToolResultBlock tid parts False) =
+  ToolResultBlock tid (map prunePart parts) False
+  where
+    prunePart (ToolResultText t) =
+      ToolResultText (fromMaybe t (softPrune dir.headChars dir.tailChars t))
+    prunePart img = img
 pruneBlock _ block = block
 
 -- ---------------------------------------------------------------------------

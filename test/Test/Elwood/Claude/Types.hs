@@ -57,16 +57,58 @@ contentBlockTests =
           Just decoded -> decoded @?= block
           Nothing -> assertFailure "Failed to decode ToolUseBlock",
       testCase "ToolResultBlock encodes correctly" $ do
-        let block = ToolResultBlock (ToolUseId "toolu_123") "file contents here" False
+        let block = ToolResultBlock (ToolUseId "toolu_123") [ToolResultText "file contents here"] False
         case decode (encode block) of
           Just decoded -> decoded @?= block
           Nothing -> assertFailure "Failed to decode ToolResultBlock",
       testCase "ToolResultBlock with error encodes is_error" $ do
-        let block = ToolResultBlock (ToolUseId "toolu_123") "Error: file not found" True
+        let block = ToolResultBlock (ToolUseId "toolu_123") [ToolResultText "Error: file not found"] True
             json = encode block
         -- Check that is_error is present in the JSON by decoding and checking
         case decode json :: Maybe Value of
           Just (Object obj) -> KM.member "is_error" obj @?= True
+          _ -> assertFailure "Expected JSON object",
+      testCase "text-only ToolResultBlock serializes content as plain string" $ do
+        let block = ToolResultBlock (ToolUseId "toolu_123") [ToolResultText "file contents"] False
+        case decode (encode block) :: Maybe Value of
+          Just (Object obj) -> KM.lookup "content" obj @?= Just (String "file contents")
+          _ -> assertFailure "Expected JSON object",
+      testCase "legacy string content decodes to single text part" $ do
+        let json =
+              Aeson.object
+                [ "type" Aeson..= ("tool_result" :: Text),
+                  "tool_use_id" Aeson..= ("toolu_old" :: Text),
+                  "content" Aeson..= ("legacy result" :: Text)
+                ]
+        case Aeson.fromJSON json :: Aeson.Result ContentBlock of
+          Aeson.Success block ->
+            block @?= ToolResultBlock (ToolUseId "toolu_old") [ToolResultText "legacy result"] False
+          Aeson.Error err -> assertFailure $ "Failed to parse legacy tool_result: " <> err,
+      testCase "ToolResultBlock with image round-trips" $ do
+        let block =
+              ToolResultBlock
+                (ToolUseId "toolu_123")
+                [ToolResultText "Image inbox/photo.png:", ToolResultImage "image/png" "aGVsbG8="]
+                False
+        case decode (encode block) of
+          Just decoded -> decoded @?= block
+          Nothing -> assertFailure "Failed to decode ToolResultBlock with image",
+      testCase "image part serializes with base64 source like ImageBlock" $ do
+        let block = ToolResultBlock (ToolUseId "t1") [ToolResultImage "image/jpeg" "ZGF0YQ=="] False
+            expected =
+              Aeson.toJSON
+                [ Aeson.object
+                    [ "type" Aeson..= ("image" :: Text),
+                      "source"
+                        Aeson..= Aeson.object
+                          [ "type" Aeson..= ("base64" :: Text),
+                            "media_type" Aeson..= ("image/jpeg" :: Text),
+                            "data" Aeson..= ("ZGF0YQ==" :: Text)
+                          ]
+                    ]
+                ]
+        case decode (encode block) :: Maybe Value of
+          Just (Object obj) -> KM.lookup "content" obj @?= Just expected
           _ -> assertFailure "Expected JSON object"
     ]
 

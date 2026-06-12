@@ -274,7 +274,7 @@ handleTelegramMessage env msg =
     countBlock _ tb (Claude.RedactedThinkingBlock d) = tb {thinkingTokens = tb.thinkingTokens + estimateTextTokens d}
     countBlock _ tb (Claude.ToolUseBlock _ _ input) = tb {toolCallTokens = tb.toolCallTokens + estimateJsonTokens input}
     countBlock _ tb (Claude.ServerToolUseBlock _ _ input) = tb {toolCallTokens = tb.toolCallTokens + estimateJsonTokens input}
-    countBlock _ tb (Claude.ToolResultBlock _ content_ _) = tb {toolResultTokens = tb.toolResultTokens + estimateTextTokens content_}
+    countBlock _ tb (Claude.ToolResultBlock _ parts _) = tb {toolResultTokens = tb.toolResultTokens + estimateTextTokens (Claude.toolResultText parts)}
     countBlock _ tb (Claude.ToolSearchResultBlock _ v) = tb {toolResultTokens = tb.toolResultTokens + estimateJsonTokens v}
     countBlock _ tb _ = tb
 

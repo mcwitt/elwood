@@ -3,7 +3,7 @@ module Test.Elwood.Claude.Compaction (tests) where
 import Data.Aeson qualified as Aeson
 import Data.Text qualified as T
 import Elwood.Claude.Compaction (estimateTokens, extractText, formatMessagesForSummary, strategySplit)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolUseId (..), turnBoundaryIndices)
+import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolResultPart (..), ToolUseId (..), turnBoundaryIndices)
 import Elwood.Config (CompactionStrategy (..))
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -65,7 +65,7 @@ extractTextTests =
       testCase "ignores ToolResultBlock" $ do
         let blocks =
               [ TextBlock "Start",
-                ToolResultBlock (ToolUseId "id") "result" False,
+                ToolResultBlock (ToolUseId "id") [ToolResultText "result"] False,
                 TextBlock "End"
               ]
         extractText blocks @?= "Start\nEnd",
@@ -142,7 +142,7 @@ strategySplitTests =
             let msgs =
                   [ ClaudeMessage User [TextBlock "Turn 1"],
                     ClaudeMessage Assistant [ToolUseBlock (ToolUseId "t1") "tool" (Aeson.object [])],
-                    ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "result" False],
+                    ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText "result"] False],
                     ClaudeMessage User [TextBlock "Turn 2"],
                     ClaudeMessage Assistant [TextBlock "Response 2"],
                     ClaudeMessage User [TextBlock "Turn 3"],
@@ -203,7 +203,7 @@ strategySplitTests =
             let msgs =
                   [ ClaudeMessage User [TextBlock "Hello"],
                     ClaudeMessage Assistant [TextBlock "Hi"],
-                    ClaudeMessage User [ToolResultBlock (ToolUseId "t1") "res" False],
+                    ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText "res"] False],
                     ClaudeMessage User [TextBlock "Question"],
                     ClaudeMessage Assistant [TextBlock "Answer"]
                   ]

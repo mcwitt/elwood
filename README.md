@@ -17,7 +17,7 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Persistent memory** — Cross-session knowledge store
 - **Scheduled tasks** — Cron jobs via systemd timers that call webhooks
 - **Tool approval flow** — Approve sensitive operations via inline keyboard (Telegram only; webhook-triggered runs deny `ask` tools)
-- **Image support** — Send photos and Claude can see them (auto-resized to save tokens)
+- **Image support** — Send photos and Claude can see them (auto-resized to save tokens); the agent can also view workspace images via `view_image` and perceive image-typed MCP tool results
 - **Extended thinking** — Configurable reasoning budget for complex tasks
 - **Task delegation** — Spawn sub-agents with isolated context for tool-heavy tasks
 - **Context compaction** — Automatic summarization for long conversations
@@ -311,6 +311,7 @@ Each agent runs as a separate systemd service (`assistant-<name>.service`) with 
 | `run_command` | Execute shell commands (with permission checks) |
 | `save_memory` | Persist knowledge across sessions |
 | `search_memory` | Search saved memories |
+| `view_image` | View an image file (png/jpg/gif/webp) so the model can see its content |
 | `queue_attachment` | Queue files to send as Telegram attachments |
 | `delegate_task` | Spawn a sub-agent with isolated context for multi-step tasks |
 

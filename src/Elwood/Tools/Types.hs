@@ -16,6 +16,7 @@ module Elwood.Tools.Types
     toolSuccess,
     toolError,
     taggedError,
+    imageResultPart,
 
     -- * Failure Modes
     FailureMode (..),
@@ -26,11 +27,12 @@ where
 import Data.Aeson (Value)
 import Data.Text (Text)
 import Elwood.Claude.Types qualified as Claude
+import Elwood.Event.Types (Base64Data (..), ImageData (..), MediaType (..))
 
 -- | Result of executing a tool
 data ToolResult
-  = -- | Successful execution with output
-    ToolSuccess Text
+  = -- | Successful execution with output parts (text and/or images)
+    ToolSuccess [Claude.ToolResultPart]
   | -- | Execution failed with error message
     ToolError Text
   deriving stock (Show, Eq)
@@ -82,13 +84,17 @@ data Tool = Tool
     execute :: Value -> IO ToolResult
   }
 
--- | Create a success result
+-- | Create a text-only success result
 toolSuccess :: Text -> ToolResult
-toolSuccess = ToolSuccess
+toolSuccess t = ToolSuccess [Claude.ToolResultText t]
 
 -- | Create an error result
 toolError :: Text -> ToolResult
 toolError = ToolError
+
+-- | Convert perceivable image data into a tool result part
+imageResultPart :: ImageData -> Claude.ToolResultPart
+imageResultPart img = Claude.ToolResultImage img.mediaType.unMediaType img.base64Data.unBase64Data
 
 -- | The way a tool-level operation can fail. Surfaced verbatim to the
 -- delegating agent so it can branch on the kind without parsing prose.

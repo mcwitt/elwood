@@ -6,6 +6,7 @@ import Data.Aeson (Value (..), object, (.=))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Claude.AgentLoop (AgentResult (..), ExhaustionInfo (..))
+import Elwood.Claude.Types (toolResultText)
 import Elwood.Tools.AsyncTask (TaskId (..), cancelAllTasks, insertTask, mkAwaitTaskTool, mkCancelTaskTool, mkCheckTaskTool, newAsyncTaskStore)
 import Elwood.Tools.Types
 import Test.Tasty
@@ -33,7 +34,7 @@ checkTaskParsingTests =
         store <- newAsyncTaskStore 3600
         let tool = mkCheckTaskTool store
         result <- tool.execute (object [])
-        result @?= ToolSuccess "No async tasks.",
+        result @?= toolSuccess "No async tasks.",
       testCase "non-object input returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCheckTaskTool store
@@ -77,7 +78,7 @@ checkTaskRoundTripTests =
         insertTask store (TaskId "test-id") "my label" a
         let tool = mkCheckTaskTool store
         result <- tool.execute (object ["task_id" .= ("test-id" :: Text)])
-        result @?= ToolSuccess "task output",
+        result @?= toolSuccess "task output",
       testCase "poll completed task with error returns error" $ do
         store <- newAsyncTaskStore 3600
         a <- Async.async $ pure $ AgentError "something went wrong"
@@ -122,7 +123,8 @@ checkTaskRoundTripTests =
         let tool = mkCheckTaskTool store
         result <- tool.execute (object [])
         case result of
-          ToolSuccess t -> do
+          ToolSuccess parts -> do
+            let t = toolResultText parts
             assertBool "should contain list-ex-id" (T.isInfixOf "list-ex-id" t)
             assertBool "should contain 'exhausted' status" (T.isInfixOf "exhausted" t)
           _ -> assertFailure $ "expected ToolSuccess, got: " <> show result,
@@ -133,7 +135,7 @@ checkTaskRoundTripTests =
         insertTask store (TaskId "re-id") "consume-once" a
         let tool = mkCheckTaskTool store
         r1 <- tool.execute (object ["task_id" .= ("re-id" :: Text)])
-        r1 @?= ToolSuccess "one-time result"
+        r1 @?= toolSuccess "one-time result"
         r2 <- tool.execute (object ["task_id" .= ("re-id" :: Text)])
         r2 @?= ToolError "Unknown task: re-id",
       testCase "poll running task returns still running" $ do
@@ -145,7 +147,7 @@ checkTaskRoundTripTests =
         result <- tool.execute (object ["task_id" .= ("run-id" :: Text)])
         assertBool "should indicate running" $
           case result of
-            ToolSuccess t -> T.isInfixOf "still running" t
+            ToolSuccess parts -> T.isInfixOf "still running" (toolResultText parts)
             _ -> False
         Async.cancel blocker,
       testCase "list shows completed and running tasks" $ do
@@ -159,7 +161,8 @@ checkTaskRoundTripTests =
         let tool = mkCheckTaskTool store
         result <- tool.execute (object [])
         case result of
-          ToolSuccess t -> do
+          ToolSuccess parts -> do
+            let t = toolResultText parts
             assertBool "should contain done-id" (T.isInfixOf "done-id" t)
             assertBool "should contain run-id" (T.isInfixOf "run-id" t)
             assertBool "should contain completed" (T.isInfixOf "completed" t)
@@ -172,7 +175,7 @@ checkTaskRoundTripTests =
         insertTask store (TaskId "wait-id") "wait task" a
         let tool = mkCheckTaskTool store
         result <- tool.execute (object ["task_id" .= ("wait-id" :: Text), "timeout_seconds" .= (5 :: Int)])
-        result @?= ToolSuccess "waited result"
+        result @?= toolSuccess "waited result"
     ]
 
 awaitTaskParsingTests :: TestTree
@@ -227,7 +230,7 @@ awaitTaskRoundTripTests =
         insertTask store (TaskId "await-id") "my task" a
         let tool = mkAwaitTaskTool store
         result <- tool.execute (object ["task_id" .= ("await-id" :: Text)])
-        result @?= ToolSuccess "awaited output",
+        result @?= toolSuccess "awaited output",
       testCase "await completed task with error returns error" $ do
         store <- newAsyncTaskStore 3600
         a <- Async.async $ pure $ AgentError "something broke"
@@ -243,7 +246,7 @@ awaitTaskRoundTripTests =
         insertTask store (TaskId "consume-id") "consume-once" a
         let tool = mkAwaitTaskTool store
         r1 <- tool.execute (object ["task_id" .= ("consume-id" :: Text)])
-        r1 @?= ToolSuccess "one-time"
+        r1 @?= toolSuccess "one-time"
         r2 <- tool.execute (object ["task_id" .= ("consume-id" :: Text)])
         r2 @?= ToolError "Unknown task: consume-id",
       testCase "await running task with short timeout returns timeout error" $ do
@@ -299,7 +302,7 @@ cancelTaskRoundTripTests =
         result <- cancelTool.execute (object ["task_id" .= ("cancel-id" :: Text)])
         assertBool "should confirm cancellation" $
           case result of
-            ToolSuccess t -> T.isInfixOf "cancelled" t
+            ToolSuccess parts -> T.isInfixOf "cancelled" (toolResultText parts)
             _ -> False
         -- Verify task is removed from store
         let checkTool = mkCheckTaskTool store
@@ -328,7 +331,7 @@ cancelAllTasksTests =
         -- Verify store is empty
         let tool = mkCheckTaskTool store
         result <- tool.execute (object [])
-        result @?= ToolSuccess "No async tasks."
+        result @?= toolSuccess "No async tasks."
     ]
 
 ttlSweepTests :: TestTree
@@ -352,5 +355,5 @@ ttlSweepTests =
         insertTask store (TaskId "gone-id") "gone task" a
         let tool = mkCheckTaskTool store
         result <- tool.execute (object [])
-        result @?= ToolSuccess "No async tasks."
+        result @?= toolSuccess "No async tasks."
     ]

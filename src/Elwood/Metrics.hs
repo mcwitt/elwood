@@ -216,9 +216,10 @@ recordInputBreakdown store model source systemPrompt toolSearch msgs schemas = d
       record ItThinking "" (estimateTextTokens d)
     recordBlock _ _ _ (Claude.ToolUseBlock _ (Claude.ToolName tn) input) =
       record ItToolUse tn (estimateJsonTokens input)
-    recordBlock _ toolNameMap _ (Claude.ToolResultBlock tid content_ _isErr) =
+    -- Image parts are not estimated, matching ImageBlock treatment below.
+    recordBlock _ toolNameMap _ (Claude.ToolResultBlock tid parts _isErr) =
       let Claude.ToolName tn = Map.findWithDefault (Claude.ToolName "unknown") tid toolNameMap
-       in record ItToolResult tn (estimateTextTokens content_)
+       in record ItToolResult tn (estimateTextTokens (Claude.toolResultText parts))
     recordBlock _ _ schemaMap (Claude.ToolSearchResultBlock _ searchResult) =
       let refs = extractToolReferences searchResult
        in mapM_ (recordReferencedSchema schemaMap) refs

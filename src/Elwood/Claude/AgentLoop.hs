@@ -4,17 +4,21 @@ module Elwood.Claude.AgentLoop
     AgentResult (..),
     ExhaustionInfo (..),
     formatExhaustion,
+
+    -- * Exported for testing
+    perceiveResultImages,
   )
 where
 
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Exception (SomeException)
 import Data.Aeson (Value (..), encode, object, (.=))
+import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as LBS
 import Data.Set (Set)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding (decodeUtf8)
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Elwood.AgentSettings (AgentProfile (..), ModelRef (..))
 import Elwood.Claude.Client (ClaudeClient, RetryConfig (..), defaultRetryConfig, sendMessagesWithRetry)
 import Elwood.Claude.Observer (AgentObserver (..), RateLimitCallback, TextCallback, ToolUseCallback)
@@ -30,12 +34,15 @@ import Elwood.Claude.Types
     StopReason (..),
     ThinkingConfig (..),
     ToolName (..),
+    ToolResultPart (..),
     ToolUseId (..),
     Usage (..),
     stopReasonToText,
+    toolResultText,
   )
 import Elwood.Config (PruningConfig (..))
 import Elwood.Exception (catchSync)
+import Elwood.Image (perceiveImageBytes)
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (PermissionConfig, ToolPolicy (..), getToolPolicy)
@@ -46,7 +53,7 @@ import Elwood.Tools.Registry
     lookupTool,
     toolSchemas,
   )
-import Elwood.Tools.Types (ApprovalFunction, ApprovalOutcome (..), FailureMode (..), Tool (..), ToolResult (..), failureTag)
+import Elwood.Tools.Types (ApprovalFunction, ApprovalOutcome (..), FailureMode (..), Tool (..), ToolResult (..), failureTag, imageResultPart)
 
 -- | Result of running an agent turn
 data AgentResult
@@ -98,6 +105,10 @@ data AgentConfig = AgentConfig
     -- Safe to pass on every iteration: the API only applies format
     -- constraints when stop_reason is end_turn, not during tool_use.
     outputFormat :: Maybe OutputFormat,
+    -- | Maximum dimension for tool-result images (Nothing = no resizing).
+    -- Perception constraints are enforced centrally here so individual
+    -- tools can emit image parts without caring about API limits.
+    maxImageDimension :: Maybe Int,
     -- | Check whether the turn has been cancelled (e.g. by /stop).
     -- The loop checks this at each safe point and exits if True.
     isCancelled :: IO Bool
@@ -331,8 +342,11 @@ handleResponse cfg msgs response iteration =
           -- Record tool call metrics
           mapM_ (\case ToolUseBlock _ (ToolName tn) _ -> cfg.observer.onToolCall tn; _ -> pure ()) toolUses
 
-          -- Execute all tool uses
-          toolResults <- executeToolUses lgr reg cfg.agentProfile.permissions cfg.requestApproval toolUses
+          -- Execute all tool uses, then enforce perception constraints on
+          -- any image parts (resize, media type and size limits)
+          toolResults <-
+            map (perceiveResultImages cfg.maxImageDimension)
+              <$> executeToolUses lgr reg cfg.agentProfile.permissions cfg.requestApproval toolUses
 
           -- Build messages for next iteration (pure)
           let nextIteration = iteration + 1
@@ -438,11 +452,33 @@ executeToolWithLogging :: Logger -> Tool -> Text -> Value -> IO ToolResult
 executeToolWithLogging lgr tool n input = do
   result <- tool.execute input
   case result of
-    ToolSuccess output ->
-      logInfo lgr "Tool succeeded" [("tool", n), ("output_length", T.pack (show (T.length output)))]
+    ToolSuccess parts ->
+      logInfo
+        lgr
+        "Tool succeeded"
+        [ ("tool", n),
+          ("output_length", T.pack (show (T.length (toolResultText parts)))),
+          ("images", T.pack (show (length [() | ToolResultImage _ _ <- parts])))
+        ]
     ToolError err ->
       logWarn lgr "Tool failed" [("tool", n), ("error", err)]
   pure result
+
+-- | Enforce perception constraints on the image parts of a tool result:
+-- validate the media type, resize to the configured max dimension, and
+-- enforce the API's per-image size limit. Invalid images degrade to a
+-- short text part rather than poisoning the API request.
+perceiveResultImages :: Maybe Int -> ToolResult -> ToolResult
+perceiveResultImages maxDim (ToolSuccess parts) = ToolSuccess (map perceivePart parts)
+  where
+    perceivePart (ToolResultImage mt b64) =
+      case B64.decode (encodeUtf8 b64) of
+        Left err -> ToolResultText $ "[image elided: invalid base64 data: " <> T.pack err <> "]"
+        Right raw -> case perceiveImageBytes maxDim mt raw of
+          Left err -> ToolResultText $ "[image elided: " <> err <> "]"
+          Right img -> imageResultPart img
+    perceivePart part = part
+perceiveResultImages _ err = err
 
 -- | Extract the tool use ID from a ToolUseBlock
 extractToolUseId :: ContentBlock -> ToolUseId
@@ -451,8 +487,8 @@ extractToolUseId _ = ToolUseId "unknown"
 
 -- | Make a tool result block from a tool use ID and its result
 makeResultBlock :: ToolUseId -> ToolResult -> ContentBlock
-makeResultBlock tid (ToolSuccess output) = ToolResultBlock tid output False
-makeResultBlock tid (ToolError err) = ToolResultBlock tid err True
+makeResultBlock tid (ToolSuccess parts) = ToolResultBlock tid parts False
+makeResultBlock tid (ToolError err) = ToolResultBlock tid [ToolResultText err] True
 
 -- | Format an error for user display using the notify format
 formatError :: ClaudeError -> Text

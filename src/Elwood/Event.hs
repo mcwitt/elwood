@@ -282,6 +282,7 @@ handleEventCore env event callbacks = do
           prof
           env.pruning
           env.workspace
+          env.maxImageDimension
           env.metrics
           env.delegateAgent
           env.delegateExtraAgents
@@ -326,6 +327,7 @@ handleEventCore env event callbacks = do
             pruningConfig = env.pruning,
             pruneHorizon = pruneHorizon,
             outputFormat = Nothing,
+            maxImageDimension = env.maxImageDimension,
             isCancelled = isCancelled_
           }
 

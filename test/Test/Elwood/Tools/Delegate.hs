@@ -237,6 +237,7 @@ descriptionTests =
                 undefined
                 undefined
                 undefined
+                undefined
                 (AgentPreset Nothing mempty)
                 presets
                 []
@@ -258,6 +259,7 @@ descriptionTests =
                 undefined
                 undefined
                 undefined
+                undefined
                 (AgentPreset (Just "General-purpose sub-agent") mempty)
                 Map.empty
                 []
@@ -269,6 +271,7 @@ descriptionTests =
         let presets = Map.fromList [("fast", AgentPreset Nothing mempty)]
             tool =
               mkDelegateTaskTool
+                undefined
                 undefined
                 undefined
                 undefined
@@ -319,6 +322,7 @@ mkStubDelegateToolWithModels models =
     undefined -- parentProfile
     undefined -- pruning
     undefined -- workspace
+    undefined -- maxImageDim
     undefined -- metrics
     (AgentPreset Nothing mempty) -- delegateAgentPreset
     Map.empty -- extraAgents
@@ -336,6 +340,7 @@ mkStubDelegateToolWithAgents agentNames =
     undefined -- parentProfile
     undefined -- pruning
     undefined -- workspace
+    undefined -- maxImageDim
     undefined -- metrics
     (AgentPreset Nothing mempty) -- delegateAgentPreset
     (Map.fromList [(n, AgentPreset Nothing mempty) | n <- agentNames])

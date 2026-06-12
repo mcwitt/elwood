@@ -6,7 +6,7 @@ import Data.Text (Text)
 import Elwood.AgentSettings (ToolFilter (..))
 import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
 import Elwood.Tools.Registry
-import Elwood.Tools.Types (Tool (..), ToolResult (..))
+import Elwood.Tools.Types (Tool (..), toolSuccess)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -21,7 +21,7 @@ mkTestTool n =
                 description = "Test tool: " <> nt,
                 inputSchema = object ["type" .= ("object" :: Text)]
               },
-          execute = \_ -> pure (ToolSuccess "ok")
+          execute = \_ -> pure (toolSuccess "ok")
         }
 
 tests :: TestTree

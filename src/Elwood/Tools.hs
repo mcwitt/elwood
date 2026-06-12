@@ -27,6 +27,7 @@ module Elwood.Tools
     mkCheckTaskTool,
     mkAwaitTaskTool,
     mkCancelTaskTool,
+    mkViewImageTool,
 
     -- * Async Task Store
     AsyncTaskStore,
@@ -41,3 +42,4 @@ import Elwood.Tools.Delegate (mkDelegateTaskTool)
 import Elwood.Tools.Memory (mkSaveMemoryTool, mkSearchMemoryTool)
 import Elwood.Tools.Registry
 import Elwood.Tools.Types
+import Elwood.Tools.ViewImage (mkViewImageTool)

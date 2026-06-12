@@ -26,6 +26,8 @@ module Elwood.Claude
     CacheTtl (..),
     ClaudeMessage (..),
     ContentBlock (..),
+    ToolResultPart (..),
+    toolResultText,
     Conversation (..),
     Role (..),
     ToolName (..),

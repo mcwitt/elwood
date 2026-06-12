@@ -6,6 +6,7 @@ import Control.Exception (finally)
 import Data.Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text qualified as T
+import Elwood.Claude.Types (ToolResultPart (..))
 import Elwood.Config (MCPServerConfig (..))
 import Elwood.Logging (newLogger)
 import Elwood.Logging qualified as Log
@@ -15,6 +16,7 @@ import Elwood.MCP.Registry
     injectTimeoutProperty,
     maxRequestTimeoutSeconds,
     schemaDeclaresTimeout,
+    toolResultParts,
   )
 import Elwood.MCP.Types
 import System.IO (hClose, hPutStr)
@@ -31,7 +33,63 @@ tests =
       mcpErrorTests,
       mcpServerConfigTests,
       concurrentRequestTests,
-      timeoutArgTests
+      timeoutArgTests,
+      toolResultPartsTests
+    ]
+
+-- | Tests for converting MCP tool results into tool result parts
+toolResultPartsTests :: TestTree
+toolResultPartsTests =
+  testGroup
+    "toolResultParts"
+    [ testCase "text-only content yields a single merged text part" $ do
+        let result =
+              object
+                [ "content"
+                    .= [ object ["type" .= ("text" :: T.Text), "text" .= ("line one" :: T.Text)],
+                         object ["type" .= ("text" :: T.Text), "text" .= ("line two" :: T.Text)]
+                       ]
+                ]
+        toolResultParts result @?= [ToolResultText "line one\nline two"],
+      testCase "image content becomes an image part (read_media_file shape)" $ do
+        let result =
+              object
+                [ "content"
+                    .= [ object
+                           [ "type" .= ("image" :: T.Text),
+                             "data" .= ("aGVsbG8=" :: T.Text),
+                             "mimeType" .= ("image/png" :: T.Text)
+                           ]
+                       ]
+                ]
+        toolResultParts result @?= [ToolResultImage "image/png" "aGVsbG8="],
+      testCase "mixed content preserves order, merging only adjacent text" $ do
+        let result =
+              object
+                [ "content"
+                    .= [ object ["type" .= ("text" :: T.Text), "text" .= ("before" :: T.Text)],
+                         object
+                           [ "type" .= ("image" :: T.Text),
+                             "data" .= ("aW1n" :: T.Text),
+                             "mimeType" .= ("image/jpeg" :: T.Text)
+                           ],
+                         object ["type" .= ("text" :: T.Text), "text" .= ("after" :: T.Text)]
+                       ]
+                ]
+        toolResultParts result
+          @?= [ ToolResultText "before",
+                ToolResultImage "image/jpeg" "aW1n",
+                ToolResultText "after"
+              ],
+      testCase "image block missing data falls back to text" $ do
+        let result =
+              object
+                ["content" .= [object ["type" .= ("image" :: T.Text), "mimeType" .= ("image/png" :: T.Text)]]]
+        case toolResultParts result of
+          [ToolResultText _] -> pure ()
+          other -> assertFailure $ "Expected single text part, got: " <> show other,
+      testCase "non-object result renders as text" $
+        toolResultParts (toJSON ("plain string" :: T.Text)) @?= [ToolResultText "plain string"]
     ]
 
 jsonRpcTests :: TestTree

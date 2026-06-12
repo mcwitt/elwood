@@ -4,6 +4,7 @@ module Elwood.MCP.Registry
 
     -- * Tool Conversion
     toTool,
+    toolResultParts,
 
     -- * Server Management
     startMCPServers,
@@ -25,7 +26,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
-import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
+import Elwood.Claude.Types (ToolName (..), ToolResultPart (..), ToolSchema (..))
 import Elwood.Config (MCPServerConfig (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.MCP.Client (defaultRequestTimeoutSeconds, sendRequest, spawnServer, stopServer)
@@ -72,6 +73,7 @@ fromJSONValue v = case fromJSON v of
 -- | Convert an MCP tool to an Elwood Tool. If the upstream schema already
 -- owns a @timeout_seconds@ property, we leave it (and its value) alone;
 -- otherwise we inject one and intercept it as a per-request timeout override.
+-- Image-typed result content is converted to perceivable image parts.
 toTool :: Text -> MCPServer -> MCPTool -> Tool
 toTool serverName server mcpTool =
   let baseSchema = ensureTypeObject mcpTool.inputSchema
@@ -155,7 +157,7 @@ executeMCPTool server mcpTool extract input =
       case result of
         Left (MCPToolError _code msg) -> pure $ ToolError msg
         Left err -> pure $ ToolError $ T.pack $ show err
-        Right value -> pure $ ToolSuccess $ formatToolResult value
+        Right value -> pure $ ToolSuccess $ toolResultParts value
 
 -- | Pull the optional @timeout_seconds@ argument out of a tool input object,
 -- clamping it into [1, maxRequestTimeoutSeconds]. Returns the chosen timeout
@@ -170,14 +172,35 @@ extractTimeout (Object obj) =
     Just _ -> Left $ "Invalid '" <> Key.toText timeoutArgKey <> "' parameter (must be an integer)"
 extractTimeout v = Right (defaultRequestTimeoutSeconds, v)
 
--- | Format tool result for display
-formatToolResult :: Value -> Text
-formatToolResult (Object obj) =
+-- | Convert an MCP tool result into tool result parts. Image-typed content
+-- becomes perceivable image parts (validated and resized centrally by the
+-- agent loop); everything else is flattened to text. Adjacent text parts
+-- are merged so text-only results keep their historical single-string
+-- wire shape.
+toolResultParts :: Value -> [ToolResultPart]
+toolResultParts (Object obj) =
   case KM.lookup "content" obj of
-    Just (Array arr) -> T.intercalate "\n" $ map extractContent (V.toList arr)
-    Just v -> renderValue v
-    Nothing -> renderValue (Object obj)
-formatToolResult v = renderValue v
+    Just (Array arr) -> mergeTextParts $ map contentPart (V.toList arr)
+    Just v -> [ToolResultText (renderValue v)]
+    Nothing -> [ToolResultText (renderValue (Object obj))]
+toolResultParts v = [ToolResultText (renderValue v)]
+
+-- | Convert a single MCP content block to a tool result part
+contentPart :: Value -> ToolResultPart
+contentPart v@(Object obj)
+  | Just (String "image") <- KM.lookup "type" obj,
+    Just (String b64) <- KM.lookup "data" obj,
+    Just (String mt) <- KM.lookup "mimeType" obj =
+      ToolResultImage mt b64
+  | otherwise = ToolResultText (extractContent v)
+contentPart v = ToolResultText (extractContent v)
+
+-- | Merge adjacent text parts, joining with newlines
+mergeTextParts :: [ToolResultPart] -> [ToolResultPart]
+mergeTextParts (ToolResultText a : ToolResultText b : rest) =
+  mergeTextParts (ToolResultText (a <> "\n" <> b) : rest)
+mergeTextParts (p : rest) = p : mergeTextParts rest
+mergeTextParts [] = []
 
 -- | Extract text content from MCP content blocks
 extractContent :: Value -> Text

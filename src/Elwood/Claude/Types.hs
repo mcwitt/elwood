@@ -9,6 +9,8 @@ module Elwood.Claude.Types
 
     -- * Content Blocks
     ContentBlock (..),
+    ToolResultPart (..),
+    toolResultText,
 
     -- * Newtypes
     ToolName (..),
@@ -50,6 +52,7 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.String (IsString)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Time (NominalDiffTime, UTCTime (..), addUTCTime, fromGregorian)
 import Elwood.Thinking (ThinkingEffort (..))
 import GHC.Generics (Generic)
@@ -86,6 +89,49 @@ data ThinkingConfig
     ThinkingConfigBudget Int
   deriving stock (Show, Eq, Generic)
 
+-- | One part of a tool result's content: text, or an image the model can
+-- perceive. Mirrors the Anthropic API, which accepts text and image blocks
+-- inside @tool_result@ content.
+data ToolResultPart
+  = -- | Plain text content
+    ToolResultText Text
+  | -- | Image content (media type, base64-encoded data); same wire shape as 'ImageBlock'
+    ToolResultImage Text Text
+  deriving stock (Show, Eq, Generic)
+
+-- | Concatenate the text parts of a tool result (image parts are elided).
+toolResultText :: [ToolResultPart] -> Text
+toolResultText parts = T.intercalate "\n" [t | ToolResultText t <- parts]
+
+instance ToJSON ToolResultPart where
+  toJSON (ToolResultText t) =
+    object
+      [ "type" .= ("text" :: Text),
+        "text" .= t
+      ]
+  toJSON (ToolResultImage mt imageData) =
+    object
+      [ "type" .= ("image" :: Text),
+        "source"
+          .= object
+            [ "type" .= ("base64" :: Text),
+              "media_type" .= mt,
+              "data" .= imageData
+            ]
+      ]
+
+instance FromJSON ToolResultPart where
+  parseJSON = withObject "ToolResultPart" $ \v -> do
+    partType <- v .: "type"
+    case partType :: Text of
+      "text" -> ToolResultText <$> v .: "text"
+      "image" -> do
+        source <- v .: "source"
+        ToolResultImage
+          <$> source .: "media_type"
+          <*> source .: "data"
+      other -> fail $ "Unknown tool result part type: " <> show other
+
 -- | Content block in a message - can be text, image, tool use, or tool result
 data ContentBlock
   = -- | Plain text content
@@ -94,8 +140,8 @@ data ContentBlock
     ImageBlock Text Text
   | -- | Tool use request (tool use ID, tool name, JSON arguments)
     ToolUseBlock ToolUseId ToolName Value
-  | -- | Tool use result (tool use ID, result content, is error)
-    ToolResultBlock ToolUseId Text Bool
+  | -- | Tool use result (tool use ID, result content parts, is error)
+    ToolResultBlock ToolUseId [ToolResultPart] Bool
   | -- | Extended thinking (thinking text, signature)
     ThinkingBlock Text Text
   | -- | Redacted thinking (opaque data)
@@ -129,13 +175,21 @@ instance ToJSON ContentBlock where
         "name" .= n,
         "input" .= inp
       ]
-  toJSON (ToolResultBlock tid c isErr) =
+  toJSON (ToolResultBlock tid parts isErr) =
     object $
       [ "type" .= ("tool_result" :: Text),
         "tool_use_id" .= tid,
-        "content" .= c
+        "content" .= partsValue
       ]
         ++ ["is_error" .= True | isErr]
+    where
+      -- Text-only results serialize as a plain string (the historical wire
+      -- shape, also used in persisted sessions); anything richer uses the
+      -- content-block array form.
+      partsValue = case parts of
+        [] -> String ""
+        [ToolResultText t] -> String t
+        _ -> toJSON parts
   toJSON (ThinkingBlock t sig) =
     object
       [ "type" .= ("thinking" :: Text),
@@ -176,10 +230,15 @@ instance FromJSON ContentBlock where
           <$> v .: "id"
           <*> v .: "name"
           <*> v .: "input"
-      "tool_result" ->
+      "tool_result" -> do
+        c <- v .: "content"
+        parts <- case c of
+          String t -> pure [ToolResultText t]
+          Array _ -> parseJSON c
+          _ -> fail "tool_result content must be a string or an array of content blocks"
         ToolResultBlock
           <$> v .: "tool_use_id"
-          <*> v .: "content"
+          <*> pure parts
           <*> v .:? "is_error" .!= False
       "thinking" ->
         ThinkingBlock
