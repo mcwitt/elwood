@@ -68,10 +68,11 @@ import Elwood.Event.Types
   )
 import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
-import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks, wrapInCode)
+import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Prompt (assemblePrompt)
 import Elwood.Session (SessionLocks, sessionCancelFlag, withSessionLock)
 import Elwood.Telegram qualified as Telegram
+import Elwood.Telegram.ToolUse (ToolUseNote (..), formatToolUseNote)
 import Elwood.Tools qualified as Tools
 import Elwood.Tools.Attachment (isPhotoExtension)
 
@@ -416,7 +417,7 @@ data BufferedItem
     BufferedText Text [Tools.Attachment]
   | -- | Tool-use notification; recipients are filtered by per-chat @/tools@
     -- overrides at flush time, not at buffer time.
-    BufferedToolUse Text
+    BufferedToolUse ToolUseNote
   | BufferedRateLimit Text
 
 -- | Result of a buffered event handler run
@@ -451,9 +452,9 @@ handleEventBuffered env event targets = do
                 writeTVar env'.attachmentQueue []
                 pure a
               modifyIORef' bufRef (BufferedText t atts :),
-            onToolUse = Just $ \iter calls -> do
-              let m = formatToolUseMessage iter (map fst calls)
-              unless (T.null m) $ modifyIORef' bufRef (BufferedToolUse m :),
+            onToolUse = Just $ \_iter calls ->
+              unless (null calls) $
+                modifyIORef' bufRef (BufferedToolUse (formatToolUseNote Nothing calls) :),
             onRateLimit =
               Just
                 ( \n s -> do
@@ -462,9 +463,9 @@ handleEventBuffered env event targets = do
                 ),
             onBeforeApiCall = Nothing,
             onResponse = \_ -> pure (),
-            onDelegateToolUse = Just $ \task iter calls -> do
-              let m = formatDelegateToolUseMessage task iter (map fst calls)
-              unless (T.null m) $ modifyIORef' bufRef (BufferedToolUse m :)
+            onDelegateToolUse = Just $ \task _iter calls ->
+              unless (null calls) $
+                modifyIORef' bufRef (BufferedToolUse (formatToolUseNote (Just task) calls) :)
           }
   result <- withSessionLockIfNamed env' event $ handleEventCore env' event callbacks
   case result of
@@ -493,13 +494,13 @@ flushBuffer env target items finalResponse = do
       deliverTextOnly env target t
       -- Deliver attachments that were queued before this text
       mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) atts
-    flushItem _ (BufferedToolUse t) =
+    flushItem _ (BufferedToolUse note) =
       filterTargetByToolUse env target >>= \case
         Nothing -> pure ()
         Just subTarget -> do
           sendTypingToTargets env subTarget
           threadDelay flushPacingDelay
-          deliverTextOnly env subTarget t
+          deliverNote env subTarget note
     flushItem _ (BufferedRateLimit m) = do
       deliverTextOnly env target m
 
@@ -608,43 +609,40 @@ mkRateLimitCallback env event attemptNum waitSecs =
   where
     msg = formatNotify Warn $ "Rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s"
 
--- | Format a tool use notification message
-formatToolUseMessage :: Int -> [Text] -> Text
-formatToolUseMessage _ [] = ""
-formatToolUseMessage _iter names = formatToolList "\128295 " names
+-- | Deliver a tool-use note (pre-rendered HTML with plain fallback) to a
+-- target; LogOnly targets log the plain rendering.
+deliverNote :: AppEnv -> DeliveryTarget -> ToolUseNote -> IO ()
+deliverNote env target note = case target of
+  TelegramDelivery chatIds -> mapM_ (\cid -> notifyNoteSafe env cid note) chatIds
+  TelegramBroadcast -> mapM_ (\cid -> notifyNoteSafe env cid note) (Map.keys env.telegramChatMap)
+  LogOnly -> logInfo env.logger "Tool use (log only)" [("note", T.take 200 note.plain)]
+
+-- | Safely send a tool-use notification, logging on failure. Unlike
+-- 'notifySafe', no error message is sent to the chat: tool-use notes are
+-- ephemeral status, not content worth a delivery-failure alert.
+notifyNoteSafe :: AppEnv -> Int64 -> ToolUseNote -> IO ()
+notifyNoteSafe env chatId_ note =
+  Telegram.notifyHtml env.logger env.telegram chatId_ note.html note.plain
+    `catch` \(e :: SomeException) ->
+      logError env.logger "Failed to send tool-use notification" [("chat_id", T.pack (show chatId_)), ("error", T.pack (show e))]
 
 -- | Create tool use notification callback based on event delivery targets.
 -- Filters per-chat by the @/tools@ override before delivering.
 mkToolUseCallback :: AppEnv -> Event -> Claude.ToolUseCallback
-mkToolUseCallback env event iter calls =
-  filterTargetByToolUse env event.deliveryTarget >>= \case
-    Nothing -> pure ()
-    Just t ->
-      deliverOrLog env t (formatToolUseMessage iter (map fst calls)) $
-        logInfo env.logger "Tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " (map fst calls))]
+mkToolUseCallback env event _iter calls =
+  unless (null calls) $
+    filterTargetByToolUse env event.deliveryTarget >>= \case
+      Nothing -> pure ()
+      Just t -> deliverNote env t (formatToolUseNote Nothing calls)
 
--- | Format a delegate sub-agent tool use notification message.
-formatDelegateToolUseMessage :: Text -> Int -> [Text] -> Text
-formatDelegateToolUseMessage _ _ [] = ""
-formatDelegateToolUseMessage label _iter names =
-  formatToolList ("\128295 **" <> label <> "**: ") names
-
--- | Create delegate tool use notification callback based on event delivery targets.
--- Filters per-chat by the @/tools@ override before delivering.
+-- | Create delegate tool use notification callback based on event delivery
+-- targets. Filters per-chat by the @/tools@ override before delivering.
 mkDelegateToolUseCallback :: AppEnv -> Event -> Text -> Claude.ToolUseCallback
-mkDelegateToolUseCallback env event task iter calls =
-  filterTargetByToolUse env event.deliveryTarget >>= \case
-    Nothing -> pure ()
-    Just t ->
-      deliverOrLog env t (formatDelegateToolUseMessage task iter (map fst calls)) $
-        logInfo env.logger "Delegate tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " (map fst calls))]
-
--- | Format a list of tool names with a per-line prefix, or summarize if many.
-formatToolList :: Text -> [Text] -> Text
-formatToolList _ [] = ""
-formatToolList prefix (first : rest)
-  | length rest < 5 = T.intercalate "\n" (map (\n -> prefix <> wrapInCode n) (first : rest))
-  | otherwise = prefix <> wrapInCode first <> " + " <> T.pack (show (length rest)) <> " others"
+mkDelegateToolUseCallback env event task _iter calls =
+  unless (null calls) $
+    filterTargetByToolUse env event.deliveryTarget >>= \case
+      Nothing -> pure ()
+      Just t -> deliverNote env t (formatToolUseNote (Just task) calls)
 
 -- | Send typing indicator to a delivery target
 sendTypingToTargets :: AppEnv -> DeliveryTarget -> IO ()
