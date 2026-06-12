@@ -2,7 +2,6 @@ module Elwood.Notify
   ( Severity (..),
     formatNotify,
     sanitizeBackticks,
-    wrapInCode,
     truncateText,
   )
 where
@@ -30,10 +29,6 @@ escapeUnderscores = T.replace "_" "\\_"
 -- | Replace backticks with single quotes to avoid breaking inline code spans.
 sanitizeBackticks :: Text -> Text
 sanitizeBackticks = T.replace "`" "'"
-
--- | Wrap text in backticks for inline code display, sanitizing any internal backticks.
-wrapInCode :: Text -> Text
-wrapInCode t = "`" <> sanitizeBackticks t <> "`"
 
 -- | Truncate text for display, adding ellipsis if needed.
 truncateText :: Int -> Text -> Text
