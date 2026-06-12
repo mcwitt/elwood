@@ -4,10 +4,12 @@ module Elwood.Telegram.Client
     newClient,
     getUpdatesAllowed,
     sendMessage,
+    sendMessageHtml,
     sendMessageWithKeyboard,
     answerCallbackQuery,
     editMessageReplyMarkup,
     notify,
+    notifyHtml,
     getFile,
     downloadFile,
     sendPhoto,
@@ -155,11 +157,18 @@ sendMessage :: TelegramClient -> Int64 -> Text -> IO ()
 sendMessage client chatId_ msgText =
   mapM_ (sendChunk client chatId_) (filter (not . T.null) $ splitForTelegram msgText)
 
--- | Send a single chunk, with HTML formatting and plain-text fallback.
+-- | Send a single markdown chunk: convert to HTML, fall back to the raw
+-- markdown as plain text if Telegram rejects the HTML.
 sendChunk :: TelegramClient -> Int64 -> Text -> IO ()
-sendChunk client chatId_ chunk = do
-  let htmlText = markdownToTelegramHtml chunk
-      msgReq =
+sendChunk client chatId_ chunk =
+  sendMessageHtml client chatId_ (markdownToTelegramHtml chunk) chunk
+
+-- | Send a message with pre-rendered Telegram HTML and a plain-text
+-- fallback. If Telegram rejects the HTML with a parse error, the fallback
+-- text is sent without a parse mode so the message is never silently lost.
+sendMessageHtml :: TelegramClient -> Int64 -> Text -> Text -> IO ()
+sendMessageHtml client chatId_ htmlText plainText = do
+  let msgReq =
         SendMessageRequest
           { chatId = chatId_,
             text = htmlText,
@@ -171,11 +180,10 @@ sendChunk client chatId_ chunk = do
       | status == 400,
         isParseEntityError body -> do
           logWarn client.tcLogger "HTML parse failed, falling back to plain text" []
-          -- Retry with original markdown as plain text (not the HTML)
           let plainReq =
                 SendMessageRequest
                   { chatId = msgReq.chatId,
-                    text = chunk,
+                    text = plainText,
                     parseMode = Nothing
                   }
            in sendMessageRaw client plainReq >>= \case
@@ -357,6 +365,12 @@ notify :: Logger -> TelegramClient -> Int64 -> Text -> IO ()
 notify logger client chatIdVal msgText = do
   logInfo logger "Sending notification" [("chat_id", T.pack (show chatIdVal))]
   sendMessage client chatIdVal msgText
+
+-- | Send a proactive pre-rendered HTML notification with logging.
+notifyHtml :: Logger -> TelegramClient -> Int64 -> Text -> Text -> IO ()
+notifyHtml logger client chatIdVal htmlText plainText = do
+  logInfo logger "Sending notification" [("chat_id", T.pack (show chatIdVal))]
+  sendMessageHtml client chatIdVal htmlText plainText
 
 -- | Get file information for downloading
 getFile :: TelegramClient -> Text -> IO (Maybe TelegramFile)
