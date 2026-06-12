@@ -49,6 +49,12 @@ channels:
 #    #api_key_env: LOCAL_API_KEY   # optional; read the key from this env var
 #    #api_key: "inline-key"        # optional; inline (discouraged)
 #    #format: anthropic            # optional; only "anthropic" is supported
+#    # How image parts in tool results are delivered to the model:
+#    #   embedded - inside tool_result content blocks (Anthropic API shape; default)
+#    #   hoisted  - re-sent as image blocks after the tool result in the same
+#    #              user message. Use for anthropic-compatible endpoints (e.g.
+#    #              llama.cpp) that silently drop images inside tool results.
+#    #tool_result_images: hoisted
 
 # Agent settings (model, thinking, permissions, system prompt, tool search, etc.)
 agent:

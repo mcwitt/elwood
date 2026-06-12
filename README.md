@@ -155,6 +155,7 @@ agent on Claude:
 providers:
   local:
     base_url: "http://satori:8080"  # llama-swap endpoint
+    tool_result_images: hoisted     # llama.cpp drops images inside tool results
 
 agent:
   model: claude-sonnet-4-20250514   # uses built-in anthropic provider
@@ -195,6 +196,10 @@ overrides, and per-webhook-endpoint overrides). Omitting `provider:` defaults to
 - Restrict the toolset with `tools: [run_command]` (or whatever the task needs).
   Local backends load every tool schema eagerly — the full catalog (~85K tokens)
   overflows a 64K window — so ship only the tools the sub-agent actually uses.
+- For multimodal models (e.g. Gemma with an `--mmproj` projector), set
+  `tool_result_images: hoisted` on the provider — llama.cpp's Anthropic endpoint
+  silently drops image blocks inside `tool_result` content, so Elwood re-sends
+  them as user-message image blocks the model can actually see.
 - Cost metrics (`elwood_cost_dollars`, `agent-daily-cost`) will read approximately
   zero for local model instances; no Anthropic pricing applies.
 

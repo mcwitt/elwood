@@ -13,7 +13,7 @@ import Elwood.Claude.Client (ClaudeClient (..))
 import Elwood.Claude.Observer (AgentObserver (..))
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolResultPart (..))
 import Elwood.Permissions (resolvePermissions)
-import Elwood.Provider (ApiFormat (..), ProviderConfig (..))
+import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ToolResultImageMode (..))
 import Elwood.Tools.Registry (newToolRegistry)
 import Elwood.Tools.Types (ToolResult (..), noApprovalChannel)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
@@ -93,7 +93,7 @@ mkTestConfig isCancelled = do
   let client =
         ClaudeClient
           { manager = mgr,
-            providers = Map.singleton "anthropic" (ProviderConfig "anthropic" "http://localhost:1" (Just "test-key") AnthropicFormat)
+            providers = Map.singleton "anthropic" (ProviderConfig "anthropic" "http://localhost:1" (Just "test-key") AnthropicFormat ImagesEmbedded)
           }
       profile =
         AgentProfile

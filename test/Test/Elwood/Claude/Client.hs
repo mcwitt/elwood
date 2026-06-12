@@ -9,11 +9,19 @@ import Elwood.Claude.Client
     buildRequest,
     calculateRetryDelay,
     defaultRetryConfig,
+    hoistToolResultImages,
     isRetryableError,
     retryWithBackoff,
   )
-import Elwood.Claude.Types (ClaudeError (..))
-import Elwood.Provider (ApiFormat (..), ProviderConfig (..))
+import Elwood.Claude.Types
+  ( ClaudeError (..),
+    ClaudeMessage (..),
+    ContentBlock (..),
+    Role (..),
+    ToolResultPart (..),
+    ToolUseId (..),
+  )
+import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ToolResultImageMode (..))
 import Network.HTTP.Client (host, path, port, requestHeaders)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
@@ -25,26 +33,81 @@ tests =
     [ testGroup "isRetryableError" isRetryableTests,
       testGroup "calculateRetryDelay" calculateDelayTests,
       testGroup "retryWithBackoff" retryTests,
-      testGroup "buildRequest" buildRequestTests
+      testGroup "buildRequest" buildRequestTests,
+      testGroup "hoistToolResultImages" hoistTests
     ]
+
+-- | Tests for the tool-result image hoisting transform
+hoistTests :: [TestTree]
+hoistTests =
+  [ testCase "image part is hoisted to a labeled user image block" $ do
+      let msg =
+            ClaudeMessage
+              User
+              [ ToolResultBlock
+                  (ToolUseId "t1")
+                  [ToolResultText "Image x.png:", ToolResultImage "image/png" "AAAA"]
+                  False
+              ]
+          expected =
+            ClaudeMessage
+              User
+              [ ToolResultBlock
+                  (ToolUseId "t1")
+                  [ToolResultText "Image x.png:", ToolResultText "[image attached below]"]
+                  False,
+                TextBlock "[Image from tool result t1:]",
+                ImageBlock "image/png" "AAAA"
+              ]
+      assertEqual "hoisted" [expected] (hoistToolResultImages [msg]),
+    testCase "multiple tool results keep attribution and order" $ do
+      let msg =
+            ClaudeMessage
+              User
+              [ ToolResultBlock (ToolUseId "t1") [ToolResultImage "image/png" "AAAA"] False,
+                ToolResultBlock (ToolUseId "t2") [ToolResultText "plain"] False,
+                ToolResultBlock (ToolUseId "t3") [ToolResultImage "image/jpeg" "BBBB"] False
+              ]
+      case hoistToolResultImages [msg] of
+        [ClaudeMessage User blocks] ->
+          blocks
+            `assertEqualBlocks` [ ToolResultBlock (ToolUseId "t1") [ToolResultText "[image attached below]"] False,
+                                  ToolResultBlock (ToolUseId "t2") [ToolResultText "plain"] False,
+                                  ToolResultBlock (ToolUseId "t3") [ToolResultText "[image attached below]"] False,
+                                  TextBlock "[Image from tool result t1:]",
+                                  ImageBlock "image/png" "AAAA",
+                                  TextBlock "[Image from tool result t3:]",
+                                  ImageBlock "image/jpeg" "BBBB"
+                                ]
+        other -> assertBool ("unexpected: " <> show other) False,
+    testCase "messages without images are untouched" $ do
+      let msgs =
+            [ ClaudeMessage User [TextBlock "hi"],
+              ClaudeMessage Assistant [TextBlock "hello"],
+              ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultText "ok"] False]
+            ]
+      assertEqual "unchanged" msgs (hoistToolResultImages msgs)
+  ]
+  where
+    assertEqualBlocks actual expected = assertEqual "blocks" expected actual
 
 -- | Tests for buildRequest
 buildRequestTests :: [TestTree]
 buildRequestTests =
   [ testCase "keyed anthropic provider sets x-api-key and version" $ do
-      req <- buildRequest (ProviderConfig "anthropic" "https://api.anthropic.com" (Just "sekret") AnthropicFormat)
+      req <- buildRequest (ProviderConfig "anthropic" "https://api.anthropic.com" (Just "sekret") AnthropicFormat ImagesEmbedded)
       assertBool "host" (host req == "api.anthropic.com")
       assertBool "path" (path req == "/v1/messages")
       assertBool "has x-api-key" (("x-api-key", "sekret") `elem` requestHeaders req)
       assertBool "has version" (("anthropic-version", "2023-06-01") `elem` requestHeaders req)
       assertBool "has content-type" (("Content-Type", "application/json") `elem` requestHeaders req),
     testCase "keyless local provider omits x-api-key" $ do
-      req <- buildRequest (ProviderConfig "local" "http://host:9000" Nothing AnthropicFormat)
+      req <- buildRequest (ProviderConfig "local" "http://host:9000" Nothing AnthropicFormat ImagesEmbedded)
       assertBool "host" (host req == "host")
       assertBool "port" (port req == 9000)
       assertBool "no x-api-key" ("x-api-key" `notElem` map fst (requestHeaders req)),
     testCase "trailing slash in base_url does not double up" $ do
-      req <- buildRequest (ProviderConfig "local" "http://host:9000/" Nothing AnthropicFormat)
+      req <- buildRequest (ProviderConfig "local" "http://host:9000/" Nothing AnthropicFormat ImagesEmbedded)
       assertBool "path" (path req == "/v1/messages")
   ]
 

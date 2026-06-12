@@ -1,5 +1,6 @@
 module Elwood.Provider
   ( ApiFormat (..),
+    ToolResultImageMode (..),
     ProviderConfig (..),
     ProviderConfigFile (..),
   )
@@ -23,6 +24,26 @@ instance FromJSON ApiFormat where
           <> show other
           <> ". Only \"anthropic\" is currently supported."
 
+-- | How image parts in tool results are delivered to the model.
+data ToolResultImageMode
+  = -- | Inside @tool_result@ content blocks (the Anthropic API shape)
+    ImagesEmbedded
+  | -- | Moved to image blocks after the tool results in the same user
+    -- message. For anthropic-compatible endpoints (e.g. llama.cpp) whose
+    -- translation layer silently drops images inside tool results.
+    ImagesHoisted
+  deriving stock (Show, Eq)
+
+instance FromJSON ToolResultImageMode where
+  parseJSON = withText "ToolResultImageMode" $ \case
+    "embedded" -> pure ImagesEmbedded
+    "hoisted" -> pure ImagesHoisted
+    other ->
+      fail $
+        "Invalid tool_result_images: "
+          <> show other
+          <> ". Expected \"embedded\" or \"hoisted\"."
+
 -- | A resolved provider endpoint.
 data ProviderConfig = ProviderConfig
   { -- | Map key, kept for logging and error messages
@@ -32,7 +53,9 @@ data ProviderConfig = ProviderConfig
     -- | Optional API key (local servers need none)
     apiKey :: Maybe Text,
     -- | Wire format (determines request/response encoding)
-    format :: ApiFormat
+    format :: ApiFormat,
+    -- | How tool-result images are delivered
+    toolResultImages :: ToolResultImageMode
   }
   deriving stock (Show, Eq)
 
@@ -45,15 +68,18 @@ data ProviderConfigFile = ProviderConfigFile
     -- | Name of an environment variable holding the API key
     apiKeyEnv :: Maybe Text,
     -- | Wire format (default: anthropic)
-    format :: Maybe ApiFormat
+    format :: Maybe ApiFormat,
+    -- | How tool-result images are delivered (default: embedded)
+    toolResultImages :: Maybe ToolResultImageMode
   }
   deriving stock (Show, Eq)
 
 instance FromJSON ProviderConfigFile where
   parseJSON = withObject "ProviderConfigFile" $ \v -> do
-    rejectUnknownKeys "ProviderConfigFile" ["base_url", "api_key", "api_key_env", "format"] v
+    rejectUnknownKeys "ProviderConfigFile" ["base_url", "api_key", "api_key_env", "format", "tool_result_images"] v
     ProviderConfigFile
       <$> v .: "base_url"
       <*> v .:? "api_key"
       <*> v .:? "api_key_env"
       <*> v .:? "format"
+      <*> v .:? "tool_result_images"

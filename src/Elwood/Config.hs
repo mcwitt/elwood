@@ -52,7 +52,7 @@ import Elwood.AgentSettings
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), PermissionConfigFile (..))
 import Elwood.Positive (Positive)
-import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ProviderConfigFile (..))
+import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ProviderConfigFile (..), ToolResultImageMode (..))
 import Elwood.Webhook.Types
   ( DeliveryTargetFile (..),
     WebhookConfig (..),
@@ -554,14 +554,15 @@ loadConfig path = do
             { name = n,
               baseUrl = pcf.baseUrl,
               apiKey = key,
-              format = fromMaybe AnthropicFormat pcf.format
+              format = fromMaybe AnthropicFormat pcf.format,
+              toolResultImages = fromMaybe ImagesEmbedded pcf.toolResultImages
             }
 
   userProviders <-
     maybe (pure Map.empty) (Map.traverseWithKey resolveProviderEntry) configFile.providers
 
   let builtinAnthropic =
-        ProviderConfig "anthropic" "https://api.anthropic.com" anthropicApiKey_ AnthropicFormat
+        ProviderConfig "anthropic" "https://api.anthropic.com" anthropicApiKey_ AnthropicFormat ImagesEmbedded
       -- left-biased: a user-defined "anthropic" overrides the built-in
       providersMap = Map.union userProviders (Map.singleton "anthropic" builtinAnthropic)
       anthropicUserDefined = "anthropic" `Map.member` userProviders

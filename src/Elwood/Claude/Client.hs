@@ -8,6 +8,7 @@ module Elwood.Claude.Client
 
     -- * Exported for testing
     buildRequest,
+    hoistToolResultImages,
     isRetryableError,
     calculateRetryDelay,
     retryWithBackoff,
@@ -27,7 +28,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Elwood.Claude.Types
-import Elwood.Provider (ApiFormat (..), ProviderConfig (..))
+import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ToolResultImageMode (..))
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Header (hRetryAfter)
@@ -76,7 +77,7 @@ sendMessages client providerName req =
     Nothing -> pure (Left (ClaudeUnknownProvider providerName))
     Just provider -> do
       httpReq <- buildRequest provider
-      let body = encode req
+      let body = encode (adaptForProvider provider req)
           betaHeaders = case req.cacheControl of
             Just CacheTtl1Hour -> [("anthropic-beta", "extended-cache-ttl-2025-04-11")]
             _ -> []
@@ -155,6 +156,50 @@ parseRetryAfter :: Response a -> Maybe Int
 parseRetryAfter response =
   lookup hRetryAfter (responseHeaders response)
     >>= readMaybe . BS8.unpack
+
+-- | Adapt the wire shape of a request to the provider's quirks. The
+-- conversation history keeps the canonical (Anthropic) representation;
+-- only the encoded request differs per provider.
+adaptForProvider :: ProviderConfig -> MessagesRequest -> MessagesRequest
+adaptForProvider provider req = case provider.toolResultImages of
+  ImagesEmbedded -> req
+  ImagesHoisted ->
+    MessagesRequest
+      { model = req.model,
+        maxTokens = req.maxTokens,
+        system = req.system,
+        messages = hoistToolResultImages req.messages,
+        tools = req.tools,
+        thinking = req.thinking,
+        cacheControl = req.cacheControl,
+        toolSearch = req.toolSearch,
+        outputFormat = req.outputFormat
+      }
+
+-- | Rewrite messages for endpoints whose anthropic-compat layer drops
+-- image blocks inside @tool_result@ content (e.g. llama.cpp): each image
+-- part is replaced with a placeholder text part, and the image is
+-- re-attached as a user-message image block after the tool results,
+-- labeled with the originating tool_use_id.
+hoistToolResultImages :: [ClaudeMessage] -> [ClaudeMessage]
+hoistToolResultImages = map hoistMessage
+  where
+    hoistMessage (ClaudeMessage User blocks) =
+      let hoisted = map hoistBlock blocks
+       in ClaudeMessage User (map fst hoisted ++ concatMap snd hoisted)
+    hoistMessage msg = msg
+
+    hoistBlock :: ContentBlock -> (ContentBlock, [ContentBlock])
+    hoistBlock (ToolResultBlock tid parts isErr)
+      | imgs@(_ : _) <- [(mt, d) | ToolResultImage mt d <- parts] =
+          ( ToolResultBlock tid (map placeholder parts) isErr,
+            TextBlock ("[Image from tool result " <> tid.unToolUseId <> ":]")
+              : [ImageBlock mt d | (mt, d) <- imgs]
+          )
+    hoistBlock block = (block, [])
+
+    placeholder (ToolResultImage _ _) = ToolResultText "[image attached below]"
+    placeholder part = part
 
 -- | Build the HTTP request for a provider (URL + auth headers by format).
 buildRequest :: ProviderConfig -> IO Request

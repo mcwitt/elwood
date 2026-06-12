@@ -237,6 +237,7 @@ let
         // lib.optionalAttrs (p.apiKey != null) { api_key = p.apiKey; }
         // lib.optionalAttrs (p.apiKeyEnv != null) { api_key_env = p.apiKeyEnv; }
         // lib.optionalAttrs (p.format != null) { format = p.format; }
+        // lib.optionalAttrs (p.toolResultImages != null) { tool_result_images = p.toolResultImages; }
       ) agentCfg.providers;
 
       configContent = {
@@ -770,6 +771,23 @@ let
         type = lib.types.nullOr (lib.types.enum [ "anthropic" ]);
         default = null;
         description = "Wire format. Currently only \"anthropic\".";
+      };
+      toolResultImages = lib.mkOption {
+        type = lib.types.nullOr (
+          lib.types.enum [
+            "embedded"
+            "hoisted"
+          ]
+        );
+        default = null;
+        description = ''
+          How image parts in tool results are delivered to the model:
+          "embedded" places them inside tool_result content blocks (the
+          Anthropic API shape; the default), "hoisted" re-sends them as image
+          blocks after the tool result in the same user message. Use
+          "hoisted" for anthropic-compatible endpoints (e.g. llama.cpp) that
+          silently drop images inside tool results.
+        '';
       };
     };
   };
