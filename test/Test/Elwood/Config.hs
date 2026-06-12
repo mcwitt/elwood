@@ -47,7 +47,7 @@ tests =
       pruningFromJsonTests,
       -- exampleConfigTests/providerTests mutate the process-global environment;
       -- envLock serializes those critical sections (see withConfig/withEnvLock).
-      testGroup "env-dependent" [exampleConfigTests, providerTests]
+      testGroup "env-dependent" [exampleConfigTests, providerTests, toolUseMessagesTests]
     ]
 
 compactionConfigTests :: TestTree
@@ -396,6 +396,18 @@ withConfigExpectFailure expectedSubstr yaml envSetup =
               Left e -> assertBool ("expected substring " <> show expectedSubstr <> " in: " <> show e) (expectedSubstr `isInfixOf` show e)
               Right _ -> assertFailure "expected loadConfig to fail"
         )
+
+toolUseMessagesTests :: TestTree
+toolUseMessagesTests =
+  testGroup
+    "tool_use_messages"
+    [ testCase "defaults to off" $
+        withConfig "agent:\n  model: claude-opus-4-8\n" (setEnv "ANTHROPIC_API_KEY" "k") $ \cfg ->
+          cfg.toolUseMessages @?= False,
+      testCase "explicit true enables" $
+        withConfig "tool_use_messages: true\nagent:\n  model: claude-opus-4-8\n" (setEnv "ANTHROPIC_API_KEY" "k") $ \cfg ->
+          cfg.toolUseMessages @?= True
+    ]
 
 providerTests :: TestTree
 providerTests =

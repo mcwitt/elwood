@@ -224,9 +224,11 @@ agent:
 # Default: 1568 (Claude's native processing resolution)
 max_image_dimension: 1568
 
-# Send notification messages when the agent uses tools (e.g. "🔧 Using bash")
-# Default: true
-tool_use_messages: true
+# Send notification messages when the agent uses tools (e.g. "🔧 run_command"
+# with the full call arguments in a collapsed, tap-to-expand quote).
+# Toggle per-chat at runtime with the /tools command.
+# Default: false
+tool_use_messages: false
 
 # Context compaction settings
 # When conversation history exceeds the token threshold, older messages

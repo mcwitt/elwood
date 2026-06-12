@@ -1068,8 +1068,8 @@ let
 
         toolUseMessages = lib.mkOption {
           type = lib.types.bool;
-          default = true;
-          description = "Send notification messages when the agent uses tools.";
+          default = false;
+          description = "Send notification messages when the agent uses tools, with call arguments in an expandable quote.";
         };
 
         compaction = {
