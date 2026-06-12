@@ -451,8 +451,8 @@ handleEventBuffered env event targets = do
                 writeTVar env'.attachmentQueue []
                 pure a
               modifyIORef' bufRef (BufferedText t atts :),
-            onToolUse = Just $ \iter names -> do
-              let m = formatToolUseMessage iter names
+            onToolUse = Just $ \iter calls -> do
+              let m = formatToolUseMessage iter (map fst calls)
               unless (T.null m) $ modifyIORef' bufRef (BufferedToolUse m :),
             onRateLimit =
               Just
@@ -462,8 +462,8 @@ handleEventBuffered env event targets = do
                 ),
             onBeforeApiCall = Nothing,
             onResponse = \_ -> pure (),
-            onDelegateToolUse = Just $ \task iter names -> do
-              let m = formatDelegateToolUseMessage task iter names
+            onDelegateToolUse = Just $ \task iter calls -> do
+              let m = formatDelegateToolUseMessage task iter (map fst calls)
               unless (T.null m) $ modifyIORef' bufRef (BufferedToolUse m :)
           }
   result <- withSessionLockIfNamed env' event $ handleEventCore env' event callbacks
@@ -616,12 +616,12 @@ formatToolUseMessage _iter names = formatToolList "\128295 " names
 -- | Create tool use notification callback based on event delivery targets.
 -- Filters per-chat by the @/tools@ override before delivering.
 mkToolUseCallback :: AppEnv -> Event -> Claude.ToolUseCallback
-mkToolUseCallback env event iter names =
+mkToolUseCallback env event iter calls =
   filterTargetByToolUse env event.deliveryTarget >>= \case
     Nothing -> pure ()
     Just t ->
-      deliverOrLog env t (formatToolUseMessage iter names) $
-        logInfo env.logger "Tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " names)]
+      deliverOrLog env t (formatToolUseMessage iter (map fst calls)) $
+        logInfo env.logger "Tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " (map fst calls))]
 
 -- | Format a delegate sub-agent tool use notification message.
 formatDelegateToolUseMessage :: Text -> Int -> [Text] -> Text
@@ -632,12 +632,12 @@ formatDelegateToolUseMessage label _iter names =
 -- | Create delegate tool use notification callback based on event delivery targets.
 -- Filters per-chat by the @/tools@ override before delivering.
 mkDelegateToolUseCallback :: AppEnv -> Event -> Text -> Claude.ToolUseCallback
-mkDelegateToolUseCallback env event task iter names =
+mkDelegateToolUseCallback env event task iter calls =
   filterTargetByToolUse env event.deliveryTarget >>= \case
     Nothing -> pure ()
     Just t ->
-      deliverOrLog env t (formatDelegateToolUseMessage task iter names) $
-        logInfo env.logger "Delegate tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " names)]
+      deliverOrLog env t (formatDelegateToolUseMessage task iter (map fst calls)) $
+        logInfo env.logger "Delegate tool use" [("iteration", T.pack (show iter)), ("tools", T.intercalate ", " (map fst calls))]
 
 -- | Format a list of tool names with a per-line prefix, or summarize if many.
 formatToolList :: Text -> [Text] -> Text

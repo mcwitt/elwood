@@ -334,9 +334,9 @@ handleResponse cfg msgs response iteration =
             _ -> pure ()
 
           -- Notify about tool use
-          let toolNames = [tn | ToolUseBlock _ (ToolName tn) _ <- toolUses]
+          let toolCalls = [(tn, input) | ToolUseBlock _ (ToolName tn) input <- toolUses]
           case cfg.onToolUse of
-            Just cb | not (null toolNames) -> cb iteration toolNames
+            Just cb | not (null toolCalls) -> cb iteration toolCalls
             _ -> pure ()
 
           -- Record tool call metrics
