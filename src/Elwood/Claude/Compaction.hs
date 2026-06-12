@@ -28,12 +28,41 @@ import Elwood.Config (CompactionConfig (..), CompactionStrategy (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.Positive (Positive (getPositive))
 
--- | Estimate the number of tokens in a message list
--- Uses a rough heuristic: JSON length / 4
+-- | Tokens the API charges for one image: ~(width * height) / 750, capped
+-- by server-side downscaling to ~1.15 megapixels — about 1,600 tokens at
+-- the cap. Counting base64 as text instead would overestimate ~50x and
+-- trip the compaction threshold on a single image.
+estimatedImageTokens :: Int
+estimatedImageTokens = 1600
+
+-- | Estimate the number of tokens in a message list.
+-- Uses a rough heuristic: JSON length / 4, with image payloads excluded
+-- and counted at 'estimatedImageTokens' each instead.
 estimateTokens :: [ClaudeMessage] -> Int
 estimateTokens msgs =
-  let jsonBytes = LBS.length $ encode msgs
-   in fromIntegral jsonBytes `div` 4
+  let stripped = map stripImageData msgs
+      jsonBytes = LBS.length $ encode stripped
+      imageCount = sum (map countImages msgs)
+   in fromIntegral jsonBytes `div` 4 + imageCount * estimatedImageTokens
+
+-- | Replace image payloads with empty strings so the JSON-length heuristic
+-- measures only text-like content.
+stripImageData :: ClaudeMessage -> ClaudeMessage
+stripImageData msg = ClaudeMessage {role = msg.role, content = map stripBlock msg.content}
+  where
+    stripBlock (ImageBlock mt _) = ImageBlock mt ""
+    stripBlock (ToolResultBlock tid parts isErr) = ToolResultBlock tid (map stripPart parts) isErr
+    stripBlock block = block
+    stripPart (ToolResultImage mt _) = ToolResultImage mt ""
+    stripPart part = part
+
+-- | Count image blocks (top-level and inside tool results) in a message.
+countImages :: ClaudeMessage -> Int
+countImages msg = sum (map blockImages msg.content)
+  where
+    blockImages (ImageBlock _ _) = 1
+    blockImages (ToolResultBlock _ parts _) = length [() | ToolResultImage _ _ <- parts]
+    blockImages _ = 0
 
 -- | Compact messages if they exceed the token threshold.
 -- When compaction occurs, the persist callback is called with the

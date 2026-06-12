@@ -14,17 +14,15 @@ where
 import Control.Exception (SomeException, catch)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
-import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as LBS
-import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit, toLower)
 import Data.List (sortOn)
-import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
-import Elwood.Event.Types (Base64Data (..), ImageData (..), MediaType (..), SavedAttachment (..))
-import Elwood.Image (ResizeResult (..), resizeImage)
+import Elwood.Event.Types (ImageData, SavedAttachment (..))
+import Elwood.Image (imageMediaTypeFromPath, perceiveImageBytes)
 import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.Telegram.Client (TelegramClient, downloadFile, getFile)
 import Elwood.Telegram.Types
@@ -146,17 +144,16 @@ resolveMediaType att fp = case att.mimeType of
   Nothing -> fromMaybe (defaultMime att.kind) (guessMimeFromPath fp)
 
 guessMimeFromPath :: Text -> Maybe Text
-guessMimeFromPath fp = case takeExtension (T.unpack (T.toLower fp)) of
-  ".jpg" -> Just "image/jpeg"
-  ".jpeg" -> Just "image/jpeg"
-  ".png" -> Just "image/png"
-  ".gif" -> Just "image/gif"
-  ".webp" -> Just "image/webp"
-  ".pdf" -> Just "application/pdf"
-  ".ogg" -> Just "audio/ogg"
-  ".oga" -> Just "audio/ogg"
-  ".mp3" -> Just "audio/mpeg"
-  _ -> Nothing
+guessMimeFromPath fp = case imageMediaTypeFromPath path of
+  Just mt -> Just mt
+  Nothing -> case takeExtension (map toLower path) of
+    ".pdf" -> Just "application/pdf"
+    ".ogg" -> Just "audio/ogg"
+    ".oga" -> Just "audio/ogg"
+    ".mp3" -> Just "audio/mpeg"
+    _ -> Nothing
+  where
+    path = T.unpack fp
 
 defaultMime :: AttachmentKind -> Text
 defaultMime = \case
@@ -164,17 +161,6 @@ defaultMime = \case
   KindVoice -> "audio/ogg"
   KindAudio -> "audio/mpeg"
   KindDocument -> "application/octet-stream"
-
--- | Build a perception image from raw bytes, resizing if a max dimension is set.
--- Returns the resize outcome so callers can log decode failures.
-buildPerception :: Maybe Int -> ByteString -> Text -> (ImageData, ResizeResult)
-buildPerception maxDim raw mt =
-  let mtv = MediaType mt
-      (imgBytes, finalMt, rr) = case maxDim of
-        Nothing -> (raw, mtv, Unchanged)
-        Just d -> resizeImage d raw mtv
-      b64 = Base64Data (TE.decodeUtf8 (B64.encode imgBytes))
-   in (ImageData {mediaType = finalMt, base64Data = b64}, rr)
 
 -- | Download and archive every attachment in a message. Per-attachment failures
 -- are logged and skipped. Returns the saved metadata and the perception image
@@ -218,20 +204,18 @@ processInbound lgr tg workspace maxDim msg = do
                 [("path", T.pack relPath), ("media_type", mt), ("bytes", T.pack (show (BS.length raw)))]
               mImg <-
                 if isPhoto
-                  then do
-                    let (imgData, rr) = buildPerception maxDim raw mt
-                    case rr of
-                      DecodeFailed err ->
-                        logWarn lgr "Image decode failed, sending original" [("file_id", att.fileId), ("error", T.pack err)]
-                      _ -> pure ()
-                    pure (Just imgData)
+                  then case perceiveImageBytes maxDim raw of
+                    Left err -> do
+                      logWarn lgr "Inbound photo not perceivable" [("file_id", att.fileId), ("error", err)]
+                      pure Nothing
+                    Right imgData -> pure (Just imgData)
                   else pure Nothing
               let sa =
                     SavedAttachment
                       { path = relPath,
                         mediaType = mt,
                         sizeBytes = BS.length raw,
-                        perceivable = isPhoto,
+                        perceivable = isJust mImg,
                         originalName = att.fileName
                       }
               pure (Just sa, mImg)

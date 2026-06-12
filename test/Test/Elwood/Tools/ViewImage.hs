@@ -1,18 +1,18 @@
 module Test.Elwood.Tools.ViewImage (tests) where
 
-import Codec.Picture (encodePng, generateImage)
-import Codec.Picture.Types (PixelRGBA8 (..))
 import Colog.Core (LogAction (..))
 import Data.Aeson (object, (.=))
 import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
-import Data.ByteString.Lazy qualified as LBS
+import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Elwood.Claude.Types (ToolResultPart (..))
+import Elwood.Image (maxImageFileBytes)
 import Elwood.Tools.Types (Tool (..), ToolResult (..))
 import Elwood.Tools.ViewImage (mkViewImageTool)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import Test.Elwood.TestImage (mkPngBytes)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -49,6 +49,13 @@ tests =
           case result of
             ToolError _ -> pure ()
             other -> assertFailure $ "Expected error, got: " <> show other,
+      testCase "file larger than the read cap is an error" $
+        withWorkspace $ \ws -> do
+          BS.writeFile (ws </> "huge.png") (BS.replicate (maxImageFileBytes + 1) 0)
+          result <- runViewImage ws "huge.png"
+          case result of
+            ToolError err -> assertBool "mentions too large" (T.isInfixOf "too large" err)
+            other -> assertFailure $ "Expected error, got: " <> show other,
       testCase "missing path parameter is an error" $
         withWorkspace $ \ws -> do
           let tool = mkViewImageTool (LogAction (const (pure ()))) ws
@@ -65,8 +72,3 @@ runViewImage :: FilePath -> FilePath -> IO ToolResult
 runViewImage ws p = do
   let tool = mkViewImageTool (LogAction (const (pure ()))) ws
   tool.execute (object ["path" .= (p :: String)])
-
-mkPngBytes :: Int -> Int -> BS.ByteString
-mkPngBytes w h =
-  let img = generateImage (\x y -> PixelRGBA8 (fromIntegral x) (fromIntegral y) 128 255) w h
-   in LBS.toStrict (encodePng img)

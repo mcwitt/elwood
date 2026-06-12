@@ -180,7 +180,12 @@ extractTimeout v = Right (defaultRequestTimeoutSeconds, v)
 toolResultParts :: Value -> [ToolResultPart]
 toolResultParts (Object obj) =
   case KM.lookup "content" obj of
-    Just (Array arr) -> mergeTextParts $ map contentPart (V.toList arr)
+    -- Canonicalize an empty content array to one empty text part (the
+    -- historical "" result); an empty parts list would not round-trip
+    -- through the string wire form.
+    Just (Array arr) -> case mergeTextParts $ map contentPart (V.toList arr) of
+      [] -> [ToolResultText ""]
+      parts -> parts
     Just v -> [ToolResultText (renderValue v)]
     Nothing -> [ToolResultText (renderValue (Object obj))]
 toolResultParts v = [ToolResultText (renderValue v)]

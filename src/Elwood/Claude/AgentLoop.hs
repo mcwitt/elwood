@@ -465,18 +465,18 @@ executeToolWithLogging lgr tool n input = do
   pure result
 
 -- | Enforce perception constraints on the image parts of a tool result:
--- validate the media type, resize to the configured max dimension, and
--- enforce the API's per-image size limit. Invalid images degrade to a
--- short text part rather than poisoning the API request.
+-- detect the actual format (declared media types can lie), resize to the
+-- configured max dimension, and enforce the API's per-image size limit.
+-- Invalid images degrade to a short text part rather than poisoning the
+-- API request. Base64 is decoded leniently (whitespace-wrapped input from
+-- tools is fine); garbage input fails format detection and is elided.
 perceiveResultImages :: Maybe Int -> ToolResult -> ToolResult
 perceiveResultImages maxDim (ToolSuccess parts) = ToolSuccess (map perceivePart parts)
   where
-    perceivePart (ToolResultImage mt b64) =
-      case B64.decode (encodeUtf8 b64) of
-        Left err -> ToolResultText $ "[image elided: invalid base64 data: " <> T.pack err <> "]"
-        Right raw -> case perceiveImageBytes maxDim mt raw of
-          Left err -> ToolResultText $ "[image elided: " <> err <> "]"
-          Right img -> imageResultPart img
+    perceivePart (ToolResultImage _declaredMt b64) =
+      case perceiveImageBytes maxDim (B64.decodeLenient (encodeUtf8 b64)) of
+        Left err -> ToolResultText $ "[image elided: " <> err <> "]"
+        Right img -> imageResultPart img
     perceivePart part = part
 perceiveResultImages _ err = err
 

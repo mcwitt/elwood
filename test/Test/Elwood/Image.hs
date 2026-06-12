@@ -1,27 +1,14 @@
 module Test.Elwood.Image (tests) where
 
-import Codec.Picture
-  ( Image,
-    decodeImage,
-    encodeJpegAtQuality,
-    encodePng,
-    generateImage,
-  )
-import Codec.Picture.Types
-  ( PixelRGB8 (..),
-    PixelRGBA8 (..),
-    PixelYCbCr8,
-    convertImage,
-    dynamicMap,
-    imageHeight,
-    imageWidth,
-  )
+import Codec.Picture (decodeImage)
+import Codec.Picture.Types (dynamicMap, imageHeight, imageWidth)
 import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
-import Data.ByteString.Lazy qualified as LBS
+import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Elwood.Event.Types (Base64Data (..), ImageData (..), MediaType (..))
-import Elwood.Image (ResizeResult (..), imageMediaTypeFromPath, perceiveImageBytes, resizeImage)
+import Elwood.Image (ResizeResult (..), imageMediaTypeFromPath, perceiveImageBytes, resizeImage, sniffImageMediaType)
+import Test.Elwood.TestImage (mkJpegBytes, mkPngBytes)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -31,6 +18,7 @@ tests =
     "Image"
     [ resizeTests,
       perceiveTests,
+      sniffTests,
       mediaTypeTests
     ]
 
@@ -40,27 +28,58 @@ perceiveTests =
     "perceiveImageBytes"
     [ testCase "small image passes through unchanged" $ do
         let img = mkPngBytes 100 80
-        case perceiveImageBytes (Just 200) "image/png" img of
+        case perceiveImageBytes (Just 200) img of
           Left err -> assertFailure $ "Expected Right, got: " <> show err
           Right d -> do
             d.mediaType @?= MediaType "image/png"
             B64.decode (TE.encodeUtf8 d.base64Data.unBase64Data) @?= Right img,
       testCase "oversized image is resized within max dimension" $ do
         let img = mkPngBytes 400 200
-        case perceiveImageBytes (Just 200) "image/png" img of
+        case perceiveImageBytes (Just 200) img of
           Left err -> assertFailure $ "Expected Right, got: " <> show err
           Right d -> case B64.decode (TE.encodeUtf8 d.base64Data.unBase64Data) of
             Left err -> assertFailure $ "Invalid base64: " <> err
             Right bytes -> assertResizedWithin 200 bytes,
       testCase "no max dimension leaves bytes unchanged" $ do
         let img = mkPngBytes 400 200
-        case perceiveImageBytes Nothing "image/png" img of
+        case perceiveImageBytes Nothing img of
           Left err -> assertFailure $ "Expected Right, got: " <> show err
           Right d -> B64.decode (TE.encodeUtf8 d.base64Data.unBase64Data) @?= Right img,
-      testCase "unsupported media type is rejected" $
-        case perceiveImageBytes (Just 200) "image/bmp" (mkPngBytes 10 10) of
-          Left _ -> pure ()
-          Right _ -> assertFailure "Expected Left for unsupported media type"
+      testCase "unrecognized bytes are rejected" $
+        case perceiveImageBytes (Just 200) (BS.pack [0, 1, 2, 3, 4, 5]) of
+          Left err -> assertBool "mentions unrecognized" (T.isInfixOf "Unrecognized" err)
+          Right _ -> assertFailure "Expected Left for unrecognizable bytes",
+      testCase "media type comes from content, not the declared label" $
+        -- caller has no way to declare a type anymore; sniffing decides
+        case perceiveImageBytes (Just 200) (mkJpegBytes 50 40) of
+          Left err -> assertFailure $ "Expected Right, got: " <> show err
+          Right d -> d.mediaType @?= MediaType "image/jpeg",
+      testCase "PNG declaring oversized dimensions is rejected before decode" $ do
+        -- a real (cheap) 8001px-wide PNG: the header guard must reject it
+        let img = mkPngBytes 8001 2
+        case perceiveImageBytes (Just 200) img of
+          Left err -> assertBool "mentions dimensions" (T.isInfixOf "dimensions" err)
+          Right _ -> assertFailure "Expected Left for oversized dimensions",
+      testCase "JPEG declaring oversized dimensions is rejected before decode" $ do
+        let img = mkJpegBytes 2 8001
+        case perceiveImageBytes (Just 200) img of
+          Left err -> assertBool "mentions dimensions" (T.isInfixOf "dimensions" err)
+          Right _ -> assertFailure "Expected Left for oversized dimensions"
+    ]
+
+sniffTests :: TestTree
+sniffTests =
+  testGroup
+    "sniffImageMediaType"
+    [ testCase "detects png/jpeg by magic bytes" $ do
+        sniffImageMediaType (mkPngBytes 4 4) @?= Just "image/png"
+        sniffImageMediaType (mkJpegBytes 4 4) @?= Just "image/jpeg",
+      testCase "detects gif and webp prefixes" $ do
+        sniffImageMediaType ("GIF89a" <> BS.replicate 16 0) @?= Just "image/gif"
+        sniffImageMediaType ("RIFF" <> BS.replicate 4 0 <> "WEBP" <> BS.replicate 8 0) @?= Just "image/webp",
+      testCase "returns Nothing for garbage" $ do
+        sniffImageMediaType (BS.pack [1, 2, 3]) @?= Nothing
+        sniffImageMediaType BS.empty @?= Nothing
     ]
 
 mediaTypeTests :: TestTree
@@ -133,19 +152,6 @@ resizeTests =
         mt @?= MediaType "image/png"
         assertUnchanged status
     ]
-
--- | Generate a JPEG image of given dimensions as strict ByteString
-mkJpegBytes :: Int -> Int -> BS.ByteString
-mkJpegBytes w h =
-  let rgb8 = generateImage (\x y -> PixelRGB8 (fromIntegral x) (fromIntegral y) 128) w h
-      ycbcr = convertImage rgb8 :: Image PixelYCbCr8
-   in LBS.toStrict (encodeJpegAtQuality 90 ycbcr)
-
--- | Generate a PNG image of given dimensions as strict ByteString
-mkPngBytes :: Int -> Int -> BS.ByteString
-mkPngBytes w h =
-  let img = generateImage (\x y -> PixelRGBA8 (fromIntegral x) (fromIntegral y) 128 255) w h
-   in LBS.toStrict (encodePng img)
 
 -- | Assert that the resized image has both dimensions <= maxDim
 assertResizedWithin :: Int -> BS.ByteString -> IO ()

@@ -1,12 +1,9 @@
 module Test.Elwood.Claude.AgentLoop (tests) where
 
-import Codec.Picture (encodePng, generateImage)
-import Codec.Picture.Types (PixelRGBA8 (..))
 import Colog.Core (LogAction (..))
 import Control.Exception (SomeException, try)
 import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
-import Data.ByteString.Lazy qualified as LBS
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -20,6 +17,7 @@ import Elwood.Provider (ApiFormat (..), ProviderConfig (..))
 import Elwood.Tools.Registry (newToolRegistry)
 import Elwood.Tools.Types (ToolResult (..), noApprovalChannel)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
+import Test.Elwood.TestImage (mkPngBytes)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -77,21 +75,15 @@ perceiveResultImagesTests =
         case perceiveResultImages Nothing (ToolSuccess [ToolResultImage "image/png" "not!base64!"]) of
           ToolSuccess [ToolResultText t] -> assertBool "mentions elision" (T.isInfixOf "image elided" t)
           other -> assertFailure $ "Expected elided text part, got: " <> show other,
-      testCase "unsupported media type degrades to elided text" $ do
+      testCase "mislabeled media type is corrected by content sniffing" $ do
         let b64 = TE.decodeUtf8 (B64.encode (mkPngBytes 10 10))
         case perceiveResultImages Nothing (ToolSuccess [ToolResultImage "image/tiff" b64]) of
-          ToolSuccess [ToolResultText t] -> assertBool "mentions elision" (T.isInfixOf "image elided" t)
-          other -> assertFailure $ "Expected elided text part, got: " <> show other,
+          ToolSuccess [ToolResultImage "image/png" b64'] -> b64' @?= b64
+          other -> assertFailure $ "Expected corrected image part, got: " <> show other,
       testCase "errors pass through untouched" $ do
         let err = ToolError "boom"
         perceiveResultImages (Just 100) err @?= err
     ]
-
--- | Generate a PNG image of given dimensions as strict ByteString
-mkPngBytes :: Int -> Int -> BS.ByteString
-mkPngBytes w h =
-  let img = generateImage (\x y -> PixelRGBA8 (fromIntegral x) (fromIntegral y) 128 255) w h
-   in LBS.toStrict (encodePng img)
 
 -- | Build a minimal AgentConfig for testing cancellation.
 -- Uses a dummy ClaudeClient that will produce an HTTP error if called.

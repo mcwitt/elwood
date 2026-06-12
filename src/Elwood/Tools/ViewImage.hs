@@ -12,10 +12,10 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Elwood.Claude.Types (ToolResultPart (..), ToolSchema (..))
-import Elwood.Image (imageMediaTypeFromPath)
+import Elwood.Image (imageMediaTypeFromPath, maxImageFileBytes)
 import Elwood.Logging (Logger, logInfo)
 import Elwood.Tools.Types
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, getFileSize)
 import System.FilePath (isAbsolute, (</>))
 
 -- | Construct a tool that reads an image file and returns it as a
@@ -44,13 +44,24 @@ mkViewImageTool logger workspace =
             (True, Nothing) ->
               pure $ toolError $ "Not a supported image type: " <> T.pack resolved <> ". Supported extensions: png, jpg, jpeg, gif, webp."
             (True, Just mt) -> do
-              raw <- BS.readFile resolved
-              logInfo logger "Viewing image" [("path", T.pack resolved), ("media_type", mt)]
-              pure $
-                ToolSuccess
-                  [ ToolResultText $ "Image " <> T.pack p <> " (" <> mt <> "):",
-                    ToolResultImage mt (TE.decodeUtf8 (B64.encode raw))
-                  ]
+              size <- getFileSize resolved
+              if size > fromIntegral maxImageFileBytes
+                then
+                  pure $
+                    toolError $
+                      "Image file is too large to view ("
+                        <> T.pack (show size)
+                        <> " bytes, max "
+                        <> T.pack (show maxImageFileBytes)
+                        <> ")"
+                else do
+                  raw <- BS.readFile resolved
+                  logInfo logger "Viewing image" [("path", T.pack resolved), ("media_type", mt)]
+                  pure $
+                    ToolSuccess
+                      [ ToolResultText $ "Image " <> T.pack p <> " (" <> mt <> "):",
+                        ToolResultImage mt (TE.decodeUtf8 (B64.encode raw))
+                      ]
     }
 
 -- | JSON Schema for view_image input

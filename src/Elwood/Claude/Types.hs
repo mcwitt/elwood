@@ -184,12 +184,13 @@ instance ToJSON ContentBlock where
         ++ ["is_error" .= True | isErr]
     where
       -- Text-only results serialize as a plain string (the historical wire
-      -- shape, also used in persisted sessions); anything richer uses the
-      -- content-block array form.
-      partsValue = case parts of
-        [] -> String ""
-        [ToolResultText t] -> String t
-        _ -> toJSON parts
+      -- shape, also used in persisted sessions); anything with images uses
+      -- the content-block array form.
+      partsValue
+        | all isTextPart parts = String (toolResultText parts)
+        | otherwise = toJSON parts
+      isTextPart (ToolResultText _) = True
+      isTextPart _ = False
   toJSON (ThinkingBlock t sig) =
     object
       [ "type" .= ("thinking" :: Text),
