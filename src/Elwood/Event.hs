@@ -43,7 +43,7 @@ import Control.Concurrent.STM (STM, TVar, atomically, newTVarIO, readTVar, readT
 import Control.Exception (SomeException, catch)
 import Control.Monad (filterM, unless)
 import Data.Aeson (Value (..))
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict (Map)
@@ -193,11 +193,11 @@ eagerCallbacks :: AppEnv -> Event -> DeliveryCallbacks
 eagerCallbacks env event =
   DeliveryCallbacks
     { onText = Just (mkTextCallback env event),
-      onToolUse = Just (mkToolUseCallback env event),
+      onToolUse = Just (mkToolUseNotifier env event Nothing),
       onRateLimit = Just (mkRateLimitCallback env event),
       onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
       onResponse = deliverResponse env event,
-      onDelegateToolUse = Just (mkDelegateToolUseCallback env event)
+      onDelegateToolUse = Just (mkToolUseNotifier env event . Just)
     }
 
 -- | Core event handler parameterised by delivery callbacks
@@ -415,10 +415,18 @@ flushPacingDelay = 500000
 data BufferedItem
   = -- | Intermediate text with any attachments queued before it
     BufferedText Text [Tools.Attachment]
-  | -- | Tool-use notification; recipients are filtered by per-chat @/tools@
-    -- overrides at flush time, not at buffer time.
-    BufferedToolUse ToolUseNote
+  | -- | Tool-use notification, carried as (optional delegate label, tool
+    -- calls). Recipients are filtered and the note is formatted at flush
+    -- time, not at buffer time, so a chat that has notifications disabled
+    -- pays no formatting cost.
+    BufferedToolUse (Maybe Text) [(Text, Value)]
   | BufferedRateLimit Text
+
+-- | Atomically prepend an item to the output buffer. Tool-use callbacks from
+-- concurrently-executing delegate sub-agents can fire from multiple threads,
+-- so a non-atomic read-modify-write would drop items.
+bufferItem :: IORef [BufferedItem] -> BufferedItem -> IO ()
+bufferItem ref item = atomicModifyIORef' ref (\items -> (item : items, ()))
 
 -- | Result of a buffered event handler run
 data BufferedResult
@@ -451,21 +459,19 @@ handleEventBuffered env event targets = do
                 a <- readTVar env'.attachmentQueue
                 writeTVar env'.attachmentQueue []
                 pure a
-              modifyIORef' bufRef (BufferedText t atts :),
+              bufferItem bufRef (BufferedText t atts),
             onToolUse = Just $ \_iter calls ->
-              unless (null calls) $
-                modifyIORef' bufRef (BufferedToolUse (formatToolUseNote Nothing calls) :),
+              bufferItem bufRef (BufferedToolUse Nothing calls),
             onRateLimit =
               Just
                 ( \n s -> do
                     let m = formatNotify Warn $ "Rate limited, retry " <> T.pack (show n) <> " in " <> T.pack (show s) <> "s"
-                    modifyIORef' bufRef (BufferedRateLimit m :)
+                    bufferItem bufRef (BufferedRateLimit m)
                 ),
             onBeforeApiCall = Nothing,
             onResponse = \_ -> pure (),
             onDelegateToolUse = Just $ \task _iter calls ->
-              unless (null calls) $
-                modifyIORef' bufRef (BufferedToolUse (formatToolUseNote (Just task) calls) :)
+              bufferItem bufRef (BufferedToolUse (Just task) calls)
           }
   result <- withSessionLockIfNamed env' event $ handleEventCore env' event callbacks
   case result of
@@ -494,13 +500,13 @@ flushBuffer env target items finalResponse = do
       deliverTextOnly env target t
       -- Deliver attachments that were queued before this text
       mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) atts
-    flushItem _ (BufferedToolUse note) =
+    flushItem _ (BufferedToolUse label calls) =
       filterTargetByToolUse env target >>= \case
         Nothing -> pure ()
         Just subTarget -> do
           sendTypingToTargets env subTarget
           threadDelay flushPacingDelay
-          deliverNote env subTarget note
+          deliverNote env subTarget label calls
     flushItem _ (BufferedRateLimit m) = do
       deliverTextOnly env target m
 
@@ -525,15 +531,19 @@ deliverTextOnly env target msg =
   deliverOrLog env target msg $
     logInfo env.logger "Event response (log only)" [("response", T.take 100 msg)]
 
+-- | Run a per-chat send action over a delivery target's chats, or a fallback
+-- action for 'LogOnly'. The single place that resolves a 'DeliveryTarget' to
+-- concrete recipients.
+deliverWith :: AppEnv -> DeliveryTarget -> (Int64 -> IO ()) -> IO () -> IO ()
+deliverWith env target send logAction = case target of
+  TelegramDelivery chatIds -> mapM_ send chatIds
+  TelegramBroadcast -> mapM_ send (Map.keys env.telegramChatMap)
+  LogOnly -> logAction
+
 -- | Deliver a formatted message to Telegram targets, or run a fallback IO
 -- action for LogOnly targets. Shared by all notification callbacks.
 deliverOrLog :: AppEnv -> DeliveryTarget -> Text -> IO () -> IO ()
-deliverOrLog env target msg logAction = case target of
-  TelegramDelivery chatIds ->
-    mapM_ (\cid -> notifySafe env cid msg) chatIds
-  TelegramBroadcast ->
-    mapM_ (\cid -> notifySafe env cid msg) (Map.keys env.telegramChatMap)
-  LogOnly -> logAction
+deliverOrLog env target msg = deliverWith env target (\cid -> notifySafe env cid msg)
 
 -- | Deliver a message to the specified target, then send queued attachments
 deliverToTargets :: AppEnv -> DeliveryTarget -> Text -> IO ()
@@ -609,13 +619,18 @@ mkRateLimitCallback env event attemptNum waitSecs =
   where
     msg = formatNotify Warn $ "Rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s"
 
--- | Deliver a tool-use note (pre-rendered HTML with plain fallback) to a
--- target; LogOnly targets log the plain rendering.
-deliverNote :: AppEnv -> DeliveryTarget -> ToolUseNote -> IO ()
-deliverNote env target note = case target of
-  TelegramDelivery chatIds -> mapM_ (\cid -> notifyNoteSafe env cid note) chatIds
-  TelegramBroadcast -> mapM_ (\cid -> notifyNoteSafe env cid note) (Map.keys env.telegramChatMap)
-  LogOnly -> logInfo env.logger "Tool use (log only)" [("note", T.take 200 note.plain)]
+-- | Deliver a tool-use notification (optional delegate label + tool calls) to
+-- a target. The note is built lazily, so 'LogOnly' targets pay no formatting
+-- cost; they log the tool names instead.
+deliverNote :: AppEnv -> DeliveryTarget -> Maybe Text -> [(Text, Value)] -> IO ()
+deliverNote env target label calls =
+  deliverWith
+    env
+    target
+    (\cid -> notifyNoteSafe env cid note)
+    (logInfo env.logger "Tool use" [("tools", T.intercalate ", " (map fst calls))])
+  where
+    note = formatToolUseNote label calls
 
 -- | Safely send a tool-use notification, logging on failure. Unlike
 -- 'notifySafe', no error message is sent to the chat: tool-use notes are
@@ -626,23 +641,14 @@ notifyNoteSafe env chatId_ note =
     `catch` \(e :: SomeException) ->
       logError env.logger "Failed to send tool-use notification" [("chat_id", T.pack (show chatId_)), ("error", T.pack (show e))]
 
--- | Create tool use notification callback based on event delivery targets.
+-- | Tool-use notification callback for an event's delivery target. The
+-- optional label names a delegate sub-agent ('Nothing' is the main agent).
 -- Filters per-chat by the @/tools@ override before delivering.
-mkToolUseCallback :: AppEnv -> Event -> Claude.ToolUseCallback
-mkToolUseCallback env event _iter calls =
-  unless (null calls) $
-    filterTargetByToolUse env event.deliveryTarget >>= \case
-      Nothing -> pure ()
-      Just t -> deliverNote env t (formatToolUseNote Nothing calls)
-
--- | Create delegate tool use notification callback based on event delivery
--- targets. Filters per-chat by the @/tools@ override before delivering.
-mkDelegateToolUseCallback :: AppEnv -> Event -> Text -> Claude.ToolUseCallback
-mkDelegateToolUseCallback env event task _iter calls =
-  unless (null calls) $
-    filterTargetByToolUse env event.deliveryTarget >>= \case
-      Nothing -> pure ()
-      Just t -> deliverNote env t (formatToolUseNote (Just task) calls)
+mkToolUseNotifier :: AppEnv -> Event -> Maybe Text -> Claude.ToolUseCallback
+mkToolUseNotifier env event label _iter calls =
+  filterTargetByToolUse env event.deliveryTarget >>= \case
+    Nothing -> pure ()
+    Just t -> deliverNote env t label calls
 
 -- | Send typing indicator to a delivery target
 sendTypingToTargets :: AppEnv -> DeliveryTarget -> IO ()

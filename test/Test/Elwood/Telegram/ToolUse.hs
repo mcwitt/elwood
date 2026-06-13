@@ -1,6 +1,7 @@
 module Test.Elwood.Telegram.ToolUse (tests) where
 
 import Data.Aeson (Value (..), object, (.=))
+import Data.Char (ord)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Telegram.ToolUse (ToolUseNote (..), formatToolUseNote)
@@ -47,7 +48,18 @@ tests =
             note = formatToolUseNote Nothing calls
         assertBool "has elision marker" ("\8230 +" `T.isInfixOf` note.plain)
         assertBool "plain bounded under telegram limit" (T.length note.plain <= 4096),
+      testCase "astral-heavy args stay within the UTF-16 message limit" $ do
+        -- Each emoji is one code point but two UTF-16 code units; the budget
+        -- must count units, not code points (Telegram measures units).
+        let emoji = T.replicate 900 "\128512" -- U+1F600, astral
+            calls = [(T.pack ("tool" <> show i), object ["data" .= emoji]) | i <- [1 :: Int .. 8]]
+            note = formatToolUseNote Nothing calls
+        assertBool "plain within UTF-16 limit" (utf16Len note.plain <= 4096),
       testCase "plain rendering contains no HTML tags" $ do
         let note = formatToolUseNote (Just "task") [("run_command", object ["command" .= ("ls" :: Text)])]
         assertBool "no tags" (not ("<" `T.isInfixOf` note.plain))
     ]
+
+-- | UTF-16 code-unit length (astral code points count as two).
+utf16Len :: Text -> Int
+utf16Len = T.foldl' (\n c -> n + if ord c >= 0x10000 then 2 else 1) 0

@@ -178,8 +178,11 @@ sendMessageHtml client chatId_ htmlText plainText = do
     Right () -> pure ()
     Left (status, body)
       | status == 400,
-        isParseEntityError body -> do
-          logWarn client.tcLogger "HTML parse failed, falling back to plain text" []
+        isParseEntityError body || isMessageTooLongError body -> do
+          -- The HTML rendering can be longer than its plain-text form (tags
+          -- plus entity escaping), so a length rejection is worth retrying as
+          -- the (shorter, guaranteed-fitting) plain text.
+          logWarn client.tcLogger "HTML send failed, falling back to plain text" []
           let plainReq =
                 SendMessageRequest
                   { chatId = msgReq.chatId,
@@ -270,6 +273,12 @@ sendMessageRaw client msgReq = do
 isParseEntityError :: ByteString -> Bool
 isParseEntityError body =
   "can't parse entities" `T.isInfixOf` TE.decodeUtf8Lenient (LBS.toStrict body)
+
+-- | Check if a Telegram error response indicates the message exceeded the
+-- length limit.
+isMessageTooLongError :: ByteString -> Bool
+isMessageTooLongError body =
+  "message is too long" `T.isInfixOf` TE.decodeUtf8Lenient (LBS.toStrict body)
 
 -- | Send a message with an inline keyboard
 --
