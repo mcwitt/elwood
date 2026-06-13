@@ -15,7 +15,7 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Tool execution** — Run commands, read/write files
 - **MCP support** — Extend capabilities with Model Context Protocol servers
 - **Persistent memory** — Cross-session knowledge store
-- **Scheduled tasks** — Cron jobs via systemd timers that call webhooks
+- **Scheduled tasks** — Recurring cron jobs via systemd timers that call webhooks; plus one-shot self-wakeups the agent can schedule itself via `schedule_callback` (persisted to disk, fired in-process)
 - **Tool approval flow** — Approve sensitive operations via inline keyboard (Telegram only; webhook-triggered runs deny `ask` tools)
 - **Image support** — Send photos and Claude can see them (auto-resized to save tokens); the agent can also view images on disk via `view_image` (workspace-relative or absolute paths) and perceive image-typed MCP tool results
 - **Extended thinking** — Configurable reasoning budget for complex tasks
@@ -321,6 +321,9 @@ Each agent runs as a separate systemd service (`assistant-<name>.service`) with 
 | `view_image` | View an image file (png/jpg/gif/webp) so the model can see its content |
 | `queue_attachment` | Queue files to send as Telegram attachments |
 | `delegate_task` | Spawn a sub-agent with isolated context for multi-step tasks |
+| `schedule_callback` | Schedule a one-shot wakeup at an absolute time; the woken turn resumes the current conversation and is delivered to the current chat |
+| `list_callbacks` | List pending scheduled callbacks |
+| `cancel_callback` | Cancel a pending scheduled callback by id |
 
 ## Monitoring
 
