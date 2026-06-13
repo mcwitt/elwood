@@ -6,6 +6,8 @@ where
 import Control.Concurrent.Async (async, wait)
 import Control.Concurrent.STM (newTVarIO)
 import Control.Exception (finally)
+import Control.Monad (void)
+import Data.Aeson (Value (Null))
 import Data.Foldable (for_)
 import Data.Int (Int64)
 import Data.Map.Strict qualified as Map
@@ -26,12 +28,13 @@ import Elwood.Approval
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Pruning (newPruneHorizons)
 import Elwood.Config
-import Elwood.Event (AppEnv (..))
+import Elwood.Event (AppEnv (..), Event (..), EventSource (..), handleEvent)
 import Elwood.Logging
 import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
 import Elwood.Metrics (newMetricsStore, setMCPServerCount)
 import Elwood.Positive (Positive)
+import Elwood.Scheduler qualified as Scheduler
 import Elwood.Session (newSessionLocks)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Telegram.Handler (handleTelegramMessage)
@@ -71,6 +74,10 @@ runApp config = do
   memoryStore <- newMemoryStore config.stateDir
   logInfo logger "Memory store initialized" []
 
+  -- Initialize scheduled-callback store (loads pending callbacks from disk)
+  callbackStore_ <- Scheduler.newCallbackStore logger config.stateDir
+  logInfo logger "Callback store initialized" []
+
   -- Initialize approval coordinator
   approvalCoordinator <- newApprovalCoordinator
   logInfo logger "Approval coordinator initialized" []
@@ -89,13 +96,15 @@ runApp config = do
   -- but is re-registered per-request in handleEventCore with current permissions
   -- (so per-chat/per-webhook/per-delegate overrides take effect).
   let builtinRegistry =
-        Tools.registerTool (Tools.mkQueueAttachmentTool logger attachmentQueue_) $
-          Tools.registerTool (Tools.mkRunCommandTool logger config.workspace config.agentProfile.permissions) $
-            Tools.registerTool (Tools.mkViewImageTool logger config.workspace) $
-              Tools.registerTool (Tools.mkSaveMemoryTool logger memoryStore) $
-                Tools.registerTool
-                  (Tools.mkSearchMemoryTool logger memoryStore)
-                  Tools.newToolRegistry
+        Tools.registerTool (Tools.mkListCallbacksTool callbackStore_) $
+          Tools.registerTool (Tools.mkCancelCallbackTool callbackStore_) $
+            Tools.registerTool (Tools.mkQueueAttachmentTool logger attachmentQueue_) $
+              Tools.registerTool (Tools.mkRunCommandTool logger config.workspace config.agentProfile.permissions) $
+                Tools.registerTool (Tools.mkViewImageTool logger config.workspace) $
+                  Tools.registerTool (Tools.mkSaveMemoryTool logger memoryStore) $
+                    Tools.registerTool
+                      (Tools.mkSearchMemoryTool logger memoryStore)
+                      Tools.newToolRegistry
 
   logInfo
     logger
@@ -176,7 +185,8 @@ runApp config = do
             delegateExtraAgents = config.delegateExtraAgents,
             delegateAllowedModels = config.delegateAllowedModels,
             maxImageDimension = config.maxImageDimension,
-            asyncTaskStore = asyncStore
+            asyncTaskStore = asyncStore,
+            callbackStore = callbackStore_
           }
 
   -- Telegram message handler: inject per-chat approval and overrides
@@ -213,6 +223,26 @@ runApp config = do
               logInfo logger "Starting webhook server" [("port", T.pack (show webhookCfg.port))]
               Just <$> async (Webhook.runWebhookServer webhookCfg appEnv)
             else pure Nothing
+
+        -- Start the scheduled-callback timer thread. When a callback is due it
+        -- injects a turn via handleEvent, resuming the captured session and
+        -- delivering to the captured target.
+        let fireCallback cb =
+              void $
+                handleEvent
+                  appEnv
+                  Event
+                    { source = WebhookSource "callback",
+                      timestamp = cb.fireAt,
+                      payload = Null,
+                      prompt = cb.prompt,
+                      image = Nothing,
+                      attachments = [],
+                      session = cb.session,
+                      deliveryTarget = cb.deliveryTarget
+                    }
+        logInfo logger "Starting scheduler" []
+        _ <- async (Scheduler.runScheduler logger callbackStore_ fireCallback)
 
         -- Run Telegram polling
         Telegram.runPolling

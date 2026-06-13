@@ -70,6 +70,7 @@ import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Prompt (assemblePrompt)
+import Elwood.Scheduler (CallbackStore)
 import Elwood.Session (SessionLocks, sessionCancelFlag, withSessionLock)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Telegram.ToolUse (ToolUseNote (..), formatToolUseNote)
@@ -137,7 +138,9 @@ data AppEnv = AppEnv
     -- | Maximum image dimension for resizing (Nothing = disabled)
     maxImageDimension :: Maybe Int,
     -- | Async task store for delegate_task async mode
-    asyncTaskStore :: Tools.AsyncTaskStore
+    asyncTaskStore :: Tools.AsyncTaskStore,
+    -- | Store of pending scheduled callbacks (one-shot self-wakeups)
+    callbackStore :: CallbackStore
   }
 
 -- | Callbacks wired into the agent loop for delivery during a turn
@@ -266,11 +269,15 @@ handleEventCore env event callbacks = do
   -- Re-register tools that need per-event state:
   -- - run_command: per-chat/per-webhook permission overrides
   -- - queue_attachment: per-event attachment queue (prevents cross-event interference)
+  -- - schedule_callback: captures this turn's session and delivery target so the
+  --   woken turn resumes the same conversation and is delivered to the same chat
   let runCmdTool = Tools.mkRunCommandTool lgr env.workspace prof.permissions
       attachmentTool = Tools.mkQueueAttachmentTool lgr env.attachmentQueue
+      scheduleTool = Tools.mkScheduleCallbackTool lgr env.callbackStore event.session event.deliveryTarget
       registryWithPerms =
-        Tools.registerTool attachmentTool $
-          Tools.registerTool runCmdTool env.registry
+        Tools.registerTool scheduleTool $
+          Tools.registerTool attachmentTool $
+            Tools.registerTool runCmdTool env.registry
 
   -- Build registry with delegate and check_task tools (base registry has no
   -- delegate_task or check_task, preventing recursive nesting)
