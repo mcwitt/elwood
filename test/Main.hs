@@ -16,6 +16,7 @@ import Test.Elwood.Memory qualified
 import Test.Elwood.Metrics qualified
 import Test.Elwood.Permissions qualified
 import Test.Elwood.Provider qualified
+import Test.Elwood.Scheduler qualified
 import Test.Elwood.Session qualified
 import Test.Elwood.Telegram.Client qualified
 import Test.Elwood.Telegram.Inbox qualified
@@ -41,6 +42,7 @@ tests =
       Test.Elwood.Memory.tests,
       Test.Elwood.Permissions.tests,
       Test.Elwood.Provider.tests,
+      Test.Elwood.Scheduler.tests,
       Test.Elwood.Config.tests,
       Test.Elwood.Claude.AgentLoop.tests,
       Test.Elwood.Claude.Types.tests,

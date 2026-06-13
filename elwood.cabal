@@ -53,6 +53,7 @@ library
     Elwood.Positive
     Elwood.Prompt
     Elwood.Provider
+    Elwood.Scheduler
     Elwood.Session
     Elwood.Telegram
     Elwood.Telegram.Client
@@ -152,6 +153,7 @@ test-suite elwood-test
     Test.Elwood.Metrics
     Test.Elwood.Permissions
     Test.Elwood.Provider
+    Test.Elwood.Scheduler
     Test.Elwood.Session
     Test.Elwood.Telegram.Client
     Test.Elwood.Telegram.Inbox
