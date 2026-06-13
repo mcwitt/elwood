@@ -1,7 +1,9 @@
 module Test.Elwood.Event (tests) where
 
+import Data.Aeson (decode, encode)
+import Data.List.NonEmpty (NonEmpty (..))
 import Elwood.Event (attachPromptNote, sessionToConversationId)
-import Elwood.Event.Types (SavedAttachment (..), SessionConfig (..))
+import Elwood.Event.Types (DeliveryTarget (..), SavedAttachment (..), SessionConfig (..))
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -9,7 +11,23 @@ tests :: TestTree
 tests =
   testGroup
     "Event"
-    [sessionIdTests, attachPromptNoteTests]
+    [sessionIdTests, attachPromptNoteTests, deliveryAndSessionJson]
+
+deliveryAndSessionJson :: TestTree
+deliveryAndSessionJson =
+  testGroup
+    "SessionConfig/DeliveryTarget JSON round-trip"
+    [ testCase "Isolated" $
+        decode (encode Isolated) @?= Just Isolated,
+      testCase "Named" $
+        decode (encode (Named "chat-123")) @?= Just (Named "chat-123"),
+      testCase "TelegramDelivery" $
+        decode (encode (TelegramDelivery (1 :| [2, 3]))) @?= Just (TelegramDelivery (1 :| [2, 3])),
+      testCase "TelegramBroadcast" $
+        decode (encode TelegramBroadcast) @?= Just TelegramBroadcast,
+      testCase "LogOnly" $
+        decode (encode LogOnly) @?= Just LogOnly
+    ]
 
 sessionIdTests :: TestTree
 sessionIdTests =

@@ -20,9 +20,12 @@ module Elwood.Event.Types
   )
 where
 
+import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:), (.=))
+import Data.Aeson.Types (Parser)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
+import Data.Text qualified as T
 
 -- | Source of an event
 data EventSource
@@ -79,3 +82,29 @@ data DeliveryTarget
   | -- | Just log, no notification
     LogOnly
   deriving stock (Show, Eq)
+
+instance ToJSON SessionConfig where
+  toJSON Isolated = object ["tag" .= ("isolated" :: Text)]
+  toJSON (Named n) = object ["tag" .= ("named" :: Text), "name" .= n]
+
+instance FromJSON SessionConfig where
+  parseJSON = withObject "SessionConfig" $ \v -> do
+    tag <- v .: "tag" :: Parser Text
+    case tag of
+      "isolated" -> pure Isolated
+      "named" -> Named <$> v .: "name"
+      other -> fail ("Unknown session tag: " <> T.unpack other)
+
+instance ToJSON DeliveryTarget where
+  toJSON (TelegramDelivery chatIds) = object ["tag" .= ("telegram" :: Text), "chat_ids" .= chatIds]
+  toJSON TelegramBroadcast = object ["tag" .= ("broadcast" :: Text)]
+  toJSON LogOnly = object ["tag" .= ("log_only" :: Text)]
+
+instance FromJSON DeliveryTarget where
+  parseJSON = withObject "DeliveryTarget" $ \v -> do
+    tag <- v .: "tag" :: Parser Text
+    case tag of
+      "telegram" -> TelegramDelivery <$> v .: "chat_ids"
+      "broadcast" -> pure TelegramBroadcast
+      "log_only" -> pure LogOnly
+      other -> fail ("Unknown delivery target tag: " <> T.unpack other)
