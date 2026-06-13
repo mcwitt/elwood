@@ -71,6 +71,7 @@ library
     Elwood.Tools.Delegate
     Elwood.Tools.Memory
     Elwood.Tools.Registry
+    Elwood.Tools.Schedule
     Elwood.Tools.Types
     Elwood.Tools.ViewImage
     Elwood.Webhook
@@ -163,6 +164,7 @@ test-suite elwood-test
     Test.Elwood.Tools.AsyncTask
     Test.Elwood.Tools.Delegate
     Test.Elwood.Tools.Registry
+    Test.Elwood.Tools.Schedule
     Test.Elwood.Tools.ViewImage
     Test.Elwood.Webhook
 
