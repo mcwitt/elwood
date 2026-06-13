@@ -18,6 +18,10 @@ channels:
   telegram:
     - id: 123456789
       session: main       # persistent conversation (omit for isolated/ephemeral)
+    # tool_use_messages: true            # per-chat tool-use notifications
+                                         # (default: the global tool_use_messages
+                                         # below). Persists across restarts; the
+                                         # /tools command toggles it at runtime.
     # agent:                             # per-chat agent overrides (default: use global settings)
     #   model: claude-haiku-4-20250414
     #   #provider: anthropic            # provider name (default: anthropic)

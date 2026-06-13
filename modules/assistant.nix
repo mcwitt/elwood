@@ -251,6 +251,9 @@ let
           // lib.optionalAttrs (tc.session != null) {
             inherit (tc) session;
           }
+          // lib.optionalAttrs (tc.toolUseMessages != null) {
+            tool_use_messages = tc.toolUseMessages;
+          }
           // mkAgentOverrides tc.agent
         ) agentCfg.channels.telegram;
         agent = {
@@ -804,6 +807,12 @@ let
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Session name for persistent conversation. Null means isolated (no history).";
+      };
+
+      toolUseMessages = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Per-chat tool-use-notification default. Null falls back to the global toolUseMessages. Persists across restarts; the /tools command toggles it at runtime.";
       };
 
       agent = agentOverrideOptions;

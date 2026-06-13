@@ -24,7 +24,7 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Configurable providers** — Mix Claude with local models (llama-swap / llama.cpp) via a `providers` map; per-instance `provider:` routing
 - **Server-side tool search** — On-demand tool discovery via Anthropic's tool search with deferred loading
 - **Typing indicator** — Shows "typing..." in Telegram while the agent works
-- **Tool-use notifications** — Opt-in status messages for each tool call (`tool_use_messages` config or `/tools` per-chat toggle), with full call arguments in a tap-to-expand quote
+- **Tool-use notifications** — Opt-in status messages for each tool call, with full call arguments in a tap-to-expand quote. Default off; enable globally or per-chat via `tool_use_messages`, or toggle a chat at runtime with `/tools`
 - **Cost tracking** — Approximate API cost metric via model-aware pricing
 - **Prometheus metrics** — Token usage, API requests, tool calls, and conversation gauges
 - **NixOS module** — Multi-agent support with systemd hardening
@@ -63,6 +63,7 @@ channels:
   telegram:
     - id: 123456789
       session: main
+      # tool_use_messages: true   # optional per-chat override of the global default
 
 agent:
   model: claude-sonnet-4-20250514

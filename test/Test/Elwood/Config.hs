@@ -406,7 +406,15 @@ toolUseMessagesTests =
           cfg.toolUseMessages @?= False,
       testCase "explicit true enables" $
         withConfig "tool_use_messages: true\nagent:\n  model: claude-opus-4-8\n" (setEnv "ANTHROPIC_API_KEY" "k") $ \cfg ->
-          cfg.toolUseMessages @?= True
+          cfg.toolUseMessages @?= True,
+      testCase "per-chat tool_use_messages parses and resolves"
+        $ withConfig
+          "channels:\n  telegram:\n    - id: 1\n      tool_use_messages: true\n    - id: 2\nagent:\n  model: claude-opus-4-8\n"
+          (setEnv "ANTHROPIC_API_KEY" "k")
+        $ \cfg -> do
+          let byId i = [tc | tc <- cfg.telegramChats, tc.id_ == i]
+          map (.toolUseMessages) (byId 1) @?= [Just True]
+          map (.toolUseMessages) (byId 2) @?= [Nothing]
     ]
 
 providerTests :: TestTree

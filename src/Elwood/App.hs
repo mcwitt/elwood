@@ -147,7 +147,10 @@ runApp config = do
   -- Create async task store for delegate_task async mode (1 hour TTL)
   asyncStore <- Tools.newAsyncTaskStore 3600
 
-  toolUseMessagesOverrides_ <- newTVarIO Map.empty
+  -- Seed per-chat tool-use overrides from config so they persist across
+  -- restarts; the /tools command toggles them for the running session.
+  toolUseMessagesOverrides_ <-
+    newTVarIO $ Map.fromList [(tc.id_, b) | tc <- config.telegramChats, Just b <- [tc.toolUseMessages]]
 
   -- Create base app environment (shared by webhook and telegram handlers)
   let appEnv =

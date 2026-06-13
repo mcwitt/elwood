@@ -214,6 +214,11 @@ data MCPServerConfig = MCPServerConfig
 data TelegramChatConfigFile = TelegramChatConfigFile
   { id_ :: Int64,
     session :: Maybe Text,
+    -- | Per-chat tool-use-notification default. Seeds the runtime @/tools@
+    -- override at startup, so a value here persists across restarts; the
+    -- @/tools@ command still toggles it for the running session. Nothing
+    -- falls back to the global 'ConfigFile' default.
+    toolUseMessages :: Maybe Bool,
     overrides :: AgentOverrides
   }
   deriving stock (Show, Generic)
@@ -222,6 +227,8 @@ data TelegramChatConfigFile = TelegramChatConfigFile
 data TelegramChatConfig = TelegramChatConfig
   { id_ :: Int64,
     session :: SessionConfig,
+    -- | Per-chat tool-use-notification default (Nothing = use global default).
+    toolUseMessages :: Maybe Bool,
     overrides :: AgentOverrides
   }
   deriving stock (Show, Eq, Generic)
@@ -402,10 +409,11 @@ data MCPServerConfigFile = MCPServerConfigFile
 
 instance FromJSON TelegramChatConfigFile where
   parseJSON = withObject "TelegramChatConfigFile" $ \v -> do
-    rejectUnknownKeys "TelegramChatConfigFile" ["id", "session", "agent"] v
+    rejectUnknownKeys "TelegramChatConfigFile" ["id", "session", "tool_use_messages", "agent"] v
     TelegramChatConfigFile
       <$> v .: "id"
       <*> v .:? "session"
+      <*> v .:? "tool_use_messages"
       <*> v .:? "agent" .!= mempty
 
 instance FromJSON ChannelsConfigFile where
@@ -611,6 +619,7 @@ loadConfig path = do
         [ TelegramChatConfig
             { id_ = tc.id_,
               session = maybe Isolated Named tc.session,
+              toolUseMessages = tc.toolUseMessages,
               overrides = tc.overrides
             }
         | tc <- telegramChatFiles
