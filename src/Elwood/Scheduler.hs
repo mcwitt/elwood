@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
 module Elwood.Scheduler
@@ -25,10 +26,10 @@ module Elwood.Scheduler
   )
 where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Concurrent.STM
-  ( STM,
-    TVar,
+  ( TVar,
     atomically,
     modifyTVar',
     newTVarIO,
@@ -38,8 +39,8 @@ import Control.Concurrent.STM
     retry,
     writeTVar,
   )
-import Control.Exception (SomeException, catch)
-import Control.Monad (forM_, forever, unless, void, when)
+import Control.Exception (SomeException, catch, onException, try)
+import Control.Monad (forM_, forever, void, when)
 import Data.Aeson
   ( FromJSON (..),
     ToJSON (..),
@@ -105,7 +106,10 @@ instance FromJSON Callback where
 data CallbackStore = CallbackStore
   { callbacks :: TVar (Map CallbackId Callback),
     version :: TVar Int,
-    path :: FilePath
+    path :: FilePath,
+    -- | Serializes disk writes so concurrent mutations (tool threads + the
+    -- timer loop) cannot interleave temp-file writes or race the rename.
+    writeLock :: MVar ()
   }
 
 -- | Hard sanity cap on pending callbacks, to bound a runaway scheduling loop.
@@ -121,7 +125,8 @@ newCallbackStore lgr stateDir = do
   loaded <- loadCallbacks lgr p
   cbs <- newTVarIO (Map.fromList [(c.id_, c) | c <- loaded])
   ver <- newTVarIO 0
-  pure CallbackStore {callbacks = cbs, version = ver, path = p}
+  lock <- newMVar ()
+  pure CallbackStore {callbacks = cbs, version = ver, path = p, writeLock = lock}
 
 loadCallbacks :: Logger -> FilePath -> IO [Callback]
 loadCallbacks lgr p = do
@@ -136,50 +141,65 @@ loadCallbacks lgr p = do
           logWarn lgr "Failed to load callbacks; starting empty" [("error", T.pack err)]
           pure []
 
--- | Write the whole store to disk atomically (temp file + rename).
-persist :: CallbackStore -> IO ()
-persist store = do
-  m <- readTVarIO store.callbacks
+-- | Write a callback map to disk atomically (temp file + rename). Always
+-- called while holding 'writeLock', so the fixed temp path has a single writer.
+writeMap :: CallbackStore -> Map CallbackId Callback -> IO ()
+writeMap store m = do
   let tmp = store.path <> ".tmp"
   encodeFile tmp (Map.elems m)
   renameFile tmp store.path
 
-bumpVersion :: CallbackStore -> STM ()
-bumpVersion store = modifyTVar' store.version (+ 1)
+-- | Apply a pure transformation to the callback map and durably persist the
+-- result, returning the transformation's value. All mutations go through here.
+--
+-- Correctness properties:
+--
+--   * 'writeLock' serializes the whole read-modify-persist sequence, so
+--     concurrent callers cannot interleave on the shared temp file or the
+--     rename, and the map written to disk is exactly the one just committed
+--     (no stale snapshot from a separate read).
+--   * If the disk write fails, the in-memory map is rolled back to its prior
+--     value and the exception is rethrown, so memory never diverges from disk.
+--   * The write (and version bump) are skipped when the map is unchanged, so a
+--     no-op (e.g. a poll that finds nothing due) does not rewrite the file.
+modifyAndPersist :: CallbackStore -> (Map CallbackId Callback -> (Map CallbackId Callback, a)) -> IO a
+modifyAndPersist store f =
+  withMVar store.writeLock $ \_ -> do
+    prior <- readTVarIO store.callbacks
+    let (next, a) = f prior
+    when (next /= prior) $ do
+      atomically $ do
+        writeTVar store.callbacks next
+        modifyTVar' store.version (+ 1)
+      writeMap store next
+        `onException` atomically (writeTVar store.callbacks prior)
+    pure a
 
 -- | Insert a callback and persist. Returns 'Left' if the pending count would
--- exceed 'maxPendingCallbacks'.
+-- exceed 'maxPendingCallbacks' or the disk write fails (in which case nothing
+-- is left in memory).
 scheduleCallback :: CallbackStore -> Callback -> IO (Either Text ())
-scheduleCallback store cb = do
-  ok <- atomically $ do
-    m <- readTVar store.callbacks
-    if Map.size m >= maxPendingCallbacks
-      then pure False
-      else do
-        writeTVar store.callbacks (Map.insert cb.id_ cb m)
-        bumpVersion store
-        pure True
-  if ok
-    then persist store >> pure (Right ())
-    else pure (Left ("Too many pending callbacks (max " <> T.pack (show maxPendingCallbacks) <> ")"))
+scheduleCallback store cb =
+  try (modifyAndPersist store insert) >>= \case
+    Left (e :: SomeException) -> pure (Left (T.pack (show e)))
+    Right result -> pure result
+  where
+    insert m
+      | Map.size m >= maxPendingCallbacks =
+          (m, Left ("Too many pending callbacks (max " <> T.pack (show maxPendingCallbacks) <> ")"))
+      | otherwise = (Map.insert cb.id_ cb m, Right ())
 
 -- | All pending callbacks, earliest fire time first.
 listCallbacks :: CallbackStore -> IO [Callback]
 listCallbacks store = sortOn (.fireAt) . Map.elems <$> readTVarIO store.callbacks
 
--- | Remove a callback by id and persist. 'False' if not present.
-cancelCallback :: CallbackStore -> CallbackId -> IO Bool
-cancelCallback store cid = do
-  found <- atomically $ do
-    m <- readTVar store.callbacks
-    if Map.member cid m
-      then do
-        writeTVar store.callbacks (Map.delete cid m)
-        bumpVersion store
-        pure True
-      else pure False
-  when found (persist store)
-  pure found
+-- | Remove a callback by id and persist. 'Right False' if not present;
+-- 'Left' if the disk write fails (the callback is left in place).
+cancelCallback :: CallbackStore -> CallbackId -> IO (Either Text Bool)
+cancelCallback store cid =
+  try (modifyAndPersist store (\m -> (Map.delete cid m, Map.member cid m))) >>= \case
+    Left (e :: SomeException) -> pure (Left (T.pack (show e)))
+    Right found -> pure (Right found)
 
 -- | Split a map into (due now, not yet due). Pure.
 dueCallbacks :: UTCTime -> Map CallbackId Callback -> ([Callback], Map CallbackId Callback)
@@ -193,32 +213,42 @@ nextWake m
   | Map.null m = Nothing
   | otherwise = Just (minimum [c.fireAt | c <- Map.elems m])
 
--- | Remove all currently-due callbacks, persist the removal, then run the fire
--- action for each. Persisting before firing gives at-most-once semantics: a
--- crash between the persist and the fire loses that callback rather than
--- re-firing it on restart. The fire action is run synchronously here; the
--- production caller ('runScheduler') wraps it to fork and guard exceptions.
+-- | Remove all currently-due callbacks, durably persist the removal, then run
+-- the fire action for each. Persisting before firing gives at-most-once
+-- semantics: a crash between the persist and the fire loses that callback
+-- rather than re-firing it on restart. If the persist fails, 'modifyAndPersist'
+-- rolls the removal back (the callbacks stay pending for a later retry) and
+-- rethrows, so no work is silently dropped. The fire action is run
+-- synchronously here; the production caller ('runScheduler') wraps it to fork
+-- and guard exceptions.
 fireDue :: CallbackStore -> (Callback -> IO ()) -> IO ()
 fireDue store fire = do
   now <- getCurrentTime
-  due <- atomically $ do
-    m <- readTVar store.callbacks
+  due <- modifyAndPersist store $ \m ->
     let (dueList, rest) = dueCallbacks now m
-    unless (null dueList) $ do
-      writeTVar store.callbacks rest
-      bumpVersion store
-    pure dueList
-  unless (null due) (persist store)
+     in (rest, dueList)
   forM_ due fire
+
+-- | Backoff after a scheduler iteration fails (e.g. a disk write error) so the
+-- loop does not spin retrying a persistent failure.
+schedulerBackoffMicros :: Int
+schedulerBackoffMicros = 5_000_000
 
 -- | Run the scheduler loop forever: fire everything due, then wait until the
 -- next fire time or until the store changes. Each fire is forked and guarded so
--- a slow or failing turn cannot stall the loop. @fire@ injects the woken turn.
+-- a slow or failing turn cannot stall the loop. The whole iteration is guarded
+-- so a persist/IO failure logs and backs off instead of killing the thread
+-- (which would silently stop all future callbacks). @fire@ injects the woken
+-- turn.
 runScheduler :: Logger -> CallbackStore -> (Callback -> IO ()) -> IO ()
-runScheduler lgr store fire = forever $ do
-  fireDue store firedSafe
-  waitForNext store
+runScheduler lgr store fire = forever (iteration `catch` backoff)
   where
+    iteration = do
+      fireDue store firedSafe
+      waitForNext store
+    backoff (e :: SomeException) = do
+      logError lgr "Scheduler iteration failed; backing off" [("error", T.pack (show e))]
+      threadDelay schedulerBackoffMicros
     firedSafe cb = do
       logInfo lgr "Firing scheduled callback" [("id", cb.id_.unCallbackId), ("fire_at", T.pack (show cb.fireAt))]
       void $

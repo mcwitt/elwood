@@ -19,6 +19,7 @@ import Data.UUID.V4 (nextRandom)
 import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Event.Types (DeliveryTarget, SessionConfig)
 import Elwood.Logging (Logger, logInfo)
+import Elwood.Notify (truncateText)
 import Elwood.Scheduler
   ( Callback (..),
     CallbackId (..),
@@ -119,9 +120,7 @@ formatCallback :: Callback -> Text
 formatCallback c =
   c.id_.unCallbackId <> "  " <> T.pack (show c.fireAt) <> "  " <> preview c.prompt
   where
-    preview t =
-      let t' = T.strip (T.map (\ch -> if ch == '\n' then ' ' else ch) t)
-       in if T.length t' > 80 then T.take 80 t' <> "…" else t'
+    preview = truncateText 80 . T.map (\ch -> if ch == '\n' then ' ' else ch)
 
 -- | cancel_callback: cancel a pending callback by id.
 mkCancelCallbackTool :: CallbackStore -> Tool
@@ -137,11 +136,11 @@ mkCancelCallbackTool store =
         case reqText "id" input of
           Left err -> pure (toolError err)
           Right cid -> do
-            ok <- cancelCallback store (CallbackId cid)
-            pure $
-              if ok
-                then toolSuccess ("Cancelled callback " <> cid <> ".")
-                else toolError ("Unknown callback: " <> cid)
+            res <- cancelCallback store (CallbackId cid)
+            pure $ case res of
+              Left err -> toolError ("Failed to cancel callback: " <> err)
+              Right True -> toolSuccess ("Cancelled callback " <> cid <> ".")
+              Right False -> toolError ("Unknown callback: " <> cid)
     }
 
 cancelSchema :: Value

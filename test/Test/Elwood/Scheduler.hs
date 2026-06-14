@@ -2,16 +2,20 @@
 
 module Test.Elwood.Scheduler (tests) where
 
+import Control.Concurrent.Async (mapConcurrently)
 import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVarIO)
 import Data.Aeson (decode, encode)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Time (UTCTime (..))
 import Data.Time.Calendar (fromGregorian)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Logging (LogLevel (..), newLogger)
 import Elwood.Scheduler
+import System.Directory (createDirectory)
+import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -87,7 +91,7 @@ storeOps =
           _ <- scheduleCallback store (mkCallback "a" (mkUTC 3000 1 1))
           _ <- scheduleCallback store (mkCallback "b" (mkUTC 3000 1 2))
           ok <- cancelCallback store (CallbackId "a")
-          ok @?= True
+          ok @?= Right True
           store2 <- newCallbackStore lgr dir
           loaded <- listCallbacks store2
           map (.id_) loaded @?= [CallbackId "b"],
@@ -96,7 +100,28 @@ storeOps =
           lgr <- newLogger Error
           store <- newCallbackStore lgr dir
           ok <- cancelCallback store (CallbackId "nope")
-          ok @?= False
+          ok @?= Right False,
+      testCase "concurrent schedules do not corrupt the store" $
+        withSystemTempDirectory "sched" $ \dir -> do
+          lgr <- newLogger Error
+          store <- newCallbackStore lgr dir
+          let ids = [T.pack (show n) | n <- [1 .. 50 :: Int]]
+          _ <- mapConcurrently (\i -> scheduleCallback store (mkCallback i (mkUTC 3000 1 1))) ids
+          store2 <- newCallbackStore lgr dir
+          loaded <- listCallbacks store2
+          length loaded @?= 50,
+      testCase "schedule rolls back in-memory state when the disk write fails" $
+        withSystemTempDirectory "sched" $ \dir -> do
+          lgr <- newLogger Error
+          store <- newCallbackStore lgr dir
+          -- Make the temp path unwritable so persist throws.
+          createDirectory (dir </> "callbacks.json.tmp")
+          res <- scheduleCallback store (mkCallback "a" (mkUTC 3000 1 1))
+          case res of
+            Left _ -> pure ()
+            Right () -> assertFailure "expected a persist failure"
+          pending <- listCallbacks store
+          map (.id_) pending @?= []
     ]
 
 firing :: TestTree
