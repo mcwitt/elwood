@@ -28,12 +28,16 @@ import Elwood.Config (CompactionConfig (..), CompactionStrategy (..))
 import Elwood.Logging (Logger, logInfo, logWarn)
 import Elwood.Positive (Positive (getPositive))
 
--- | Tokens the API charges for one image: ~(width * height) / 750, capped
--- by server-side downscaling to ~1.15 megapixels — about 1,600 tokens at
--- the cap. Counting base64 as text instead would overestimate ~50x and
--- trip the compaction threshold on a single image.
+-- | Tokens the API charges for one image: ~(width * height) / 750. On
+-- high-resolution-vision models (Opus 4.7+) images up to ~2576px / 3.75MP
+-- are sent without the old ~1.15MP downscale, so a perceived image (our
+-- @max_image_dimension@ defaults to 1568px longest edge) costs roughly
+-- 1,850-3,280 tokens depending on aspect ratio rather than the old ~1,600
+-- cap. We use a single representative estimate; counting base64 as text
+-- instead would overestimate ~50x and trip the compaction threshold on a
+-- single image.
 estimatedImageTokens :: Int
-estimatedImageTokens = 1600
+estimatedImageTokens = 3000
 
 -- | Estimate the number of tokens in a message list.
 -- Uses a rough heuristic: JSON length / 4, with image payloads excluded

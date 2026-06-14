@@ -2,6 +2,8 @@ module Test.Elwood.Metrics (tests) where
 
 import Data.ByteString.Lazy qualified as LBS
 import Data.ByteString.Lazy.Char8 qualified as LBS8
+import Data.Char (isDigit)
+import Data.List (isPrefixOf)
 import Data.Text qualified as T
 import Elwood.Claude.Conversation (ConversationStore (..), newInMemoryConversationStore)
 import Elwood.Claude.Types (CacheTtl (..), ClaudeMessage (..), ContentBlock (..), Role (..), StopReason (..), Usage (..))
@@ -144,8 +146,31 @@ renderingTests =
         store <- newMetricsStore
         convStore <- newInMemoryConversationStore
         output <- renderMetrics store convStore newToolRegistry
-        assertBool "ends with newline" (LBS8.last output == '\n' || LBS.null output)
+        assertBool "ends with newline" (LBS8.last output == '\n' || LBS.null output),
+      testCase "conversation token gauge is image-aware (excludes base64)" $ do
+        -- A single image with a large base64 payload. Counting the raw base64
+        -- as text (full JSON / 4) would report ~25k tokens; the gauge must use
+        -- the same image-aware estimate as compaction, which strips image data
+        -- and counts a flat per-image cost — so the value stays well under 5k.
+        store <- newMetricsStore
+        convStore <- newInMemoryConversationStore
+        let bigB64 = T.replicate 100000 "A"
+        convStore.appendMessages "img-session" [ClaudeMessage User [ImageBlock "image/png" bigB64]] Nothing
+        output <- renderMetrics store convStore newToolRegistry
+        let s = LBS8.unpack output
+            val = gaugeValue "img-session" s
+        assertBool "gauge present" (val >= 0)
+        assertBool ("image base64 must not be counted at full size (got " <> show val <> ")") (val < 5000)
     ]
+
+-- | Extract the integer value of the conversation-token gauge for a session
+-- from rendered Prometheus output, or -1 if absent.
+gaugeValue :: String -> String -> Int
+gaugeValue session haystack =
+  let prefix = "elwood_conversation_estimated_tokens{session=\"" <> session <> "\"} "
+   in case [drop (length prefix) l | l <- lines haystack, prefix `isPrefixOf` l] of
+        (v : _) -> read (takeWhile isDigit v)
+        [] -> -1
 
 metricsSourceTests :: TestTree
 metricsSourceTests =

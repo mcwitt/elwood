@@ -45,15 +45,18 @@ estimateTokensTests =
         estimateTokens twoMsgs > estimateTokens oneMsg @?= True,
       testCase "image payloads are counted flat, not as base64 text" $ do
         -- A 400KB base64 payload would be ~100k tokens under the text
-        -- heuristic; as an image it must count at the flat ~1.6k estimate.
+        -- heuristic; as an image it must count at the flat per-image estimate,
+        -- not its base64 length. On high-resolution-vision models (Opus 4.7+)
+        -- a single image costs ~2.5-3.3k tokens, so the flat estimate sits
+        -- well above the old ~1.6k cap but far below the base64 text cost.
         let bigB64 = T.replicate 400000 "A"
             toolResultImage =
               [ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultImage "image/jpeg" bigB64] False]]
             topLevelImage =
               [ClaudeMessage User [ImageBlock "image/jpeg" bigB64, TextBlock "look"]]
-        assertBool "tool result image stays near flat estimate" (estimateTokens toolResultImage < 2500)
-        assertBool "top-level image stays near flat estimate" (estimateTokens topLevelImage < 2500)
-        assertBool "image still costs more than bare text" (estimateTokens topLevelImage > 1600)
+        assertBool "tool result image counted flat, not as base64 text" (estimateTokens toolResultImage < 6000)
+        assertBool "top-level image counted flat, not as base64 text" (estimateTokens topLevelImage < 6000)
+        assertBool "image reflects high-res per-image cost" (estimateTokens topLevelImage > 2500)
     ]
 
 extractTextTests :: TestTree

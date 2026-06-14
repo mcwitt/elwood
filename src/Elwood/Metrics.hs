@@ -45,6 +45,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import Elwood.Claude.Compaction (estimateTokens)
 import Elwood.Claude.Conversation qualified as Claude
 import Elwood.Claude.Observer (AgentObserver (..))
 import Elwood.Claude.Types qualified as Claude
@@ -394,7 +395,7 @@ renderConversationGauges convs
         <> helpLine "elwood_conversation_estimated_tokens" "Estimated tokens in conversation"
         <> typeLine "elwood_conversation_estimated_tokens" "gauge"
         <> mconcat
-          [ metricLine "elwood_conversation_estimated_tokens" [("session", conv.sessionId)] (fromIntegral (estimateMessageTokens conv.messages))
+          [ metricLine "elwood_conversation_estimated_tokens" [("session", conv.sessionId)] (fromIntegral (estimateTokens conv.messages))
           | conv <- Map.elems convs
           ]
         <> helpLine "elwood_conversation_cache_expires_at" "Unix timestamp when prompt cache expires (0 = no cache)"
@@ -480,12 +481,6 @@ escapeLabelValue = T.concatMap escape
     escape '"' = "\\\""
     escape '\n' = "\\n"
     escape c = T.singleton c
-
--- | Estimate the number of tokens in a message list (JSON length / 4)
-estimateMessageTokens :: [Claude.ClaudeMessage] -> Int
-estimateMessageTokens msgs =
-  let jsonBytes = LBS.length $ encode msgs
-   in fromIntegral jsonBytes `div` 4
 
 -- | Pricing per model family (all rates in $/MTok)
 data ModelPricing = ModelPricing
