@@ -10,6 +10,7 @@ import Control.Monad (void)
 import Data.Aeson (Value (Null))
 import Data.Foldable (for_)
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -28,7 +29,7 @@ import Elwood.Approval
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Pruning (newPruneHorizons)
 import Elwood.Config
-import Elwood.Event (AppEnv (..), Event (..), EventSource (..), handleEvent)
+import Elwood.Event (AppEnv (..), DeliveryTarget (..), Event (..), EventSource (..), handleEvent)
 import Elwood.Logging
 import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
@@ -189,17 +190,21 @@ runApp config = do
             callbackStore = callbackStore_
           }
 
-  -- Telegram message handler: inject per-chat approval and overrides
-  let msgHandler msg =
-        let cid = msg.chat.id_
-            chatCfg = Map.lookup cid appEnv.telegramChatMap
+  -- Resolve the per-chat environment (profile overrides + interactive approval
+  -- channel) for a given chat id. Shared by the Telegram handler and the
+  -- scheduler's callback firing so a woken callback runs with the same model,
+  -- permissions, tool filter, and approval channel that were in effect when it
+  -- was scheduled.
+  let resolveChatEnv cid =
+        let chatCfg = Map.lookup cid appEnv.telegramChatMap
             chatProfile = resolveProfile (toOverrides appEnv.agentProfile <> maybe mempty (.overrides) chatCfg)
-            envForChat =
-              appEnv
-                { requestApproval = mkApprovalFn cid chatProfile.permissions.approvalTimeoutSeconds,
-                  agentProfile = chatProfile
-                }
-         in handleTelegramMessage envForChat msg
+         in appEnv
+              { requestApproval = mkApprovalFn cid chatProfile.permissions.approvalTimeoutSeconds,
+                agentProfile = chatProfile
+              }
+
+  -- Telegram message handler: inject per-chat approval and overrides
+  let msgHandler msg = handleTelegramMessage (resolveChatEnv msg.chat.id_) msg
 
   -- Log webhook configuration
   let webhookCfg = config.webhook
@@ -226,13 +231,19 @@ runApp config = do
 
         -- Start the scheduled-callback timer thread. When a callback is due it
         -- injects a turn via handleEvent, resuming the captured session and
-        -- delivering to the captured target.
-        let fireCallback cb =
+        -- delivering to the captured target. When that target is a single
+        -- known chat, the turn runs with that chat's resolved profile and
+        -- approval channel (so per-chat permissions/tool-filter are enforced
+        -- and `ask` tools can prompt); otherwise it falls back to the base env.
+        let envForCallback cb = case cb.deliveryTarget of
+              TelegramDelivery (cid :| []) | Map.member cid appEnv.telegramChatMap -> resolveChatEnv cid
+              _ -> appEnv
+            fireCallback cb =
               void $
                 handleEvent
-                  appEnv
+                  (envForCallback cb)
                   Event
-                    { source = WebhookSource "callback",
+                    { source = CallbackSource,
                       timestamp = cb.fireAt,
                       payload = Null,
                       prompt = cb.prompt,

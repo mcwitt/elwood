@@ -675,6 +675,7 @@ mkBeforeApiCallCallback env event =
 formatSource :: EventSource -> Text
 formatSource (WebhookSource n) = "webhook:" <> n
 formatSource (TelegramSource chatId_) = "telegram:" <> T.pack (show chatId_)
+formatSource CallbackSource = "callback"
 
 -- | Append a human-readable note about archived attachments to a prompt.
 -- Returns the prompt unchanged when there are no attachments.

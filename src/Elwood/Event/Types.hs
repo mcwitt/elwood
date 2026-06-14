@@ -33,6 +33,8 @@ data EventSource
     WebhookSource Text
   | -- | Telegram message from chat ID
     TelegramSource Int64
+  | -- | A due scheduled callback (one-shot self-wakeup) fired by the scheduler
+    CallbackSource
   deriving stock (Show, Eq)
 
 -- | Session configuration determines conversation persistence
