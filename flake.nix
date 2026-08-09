@@ -136,7 +136,7 @@
 
       # Overlay for adding elwood to pkgs
       overlays.default = final: prev: {
-        elwood = self.packages.${prev.system}.default;
+        elwood = self.packages.${prev.stdenv.hostPlatform.system}.default;
       };
     };
 }
