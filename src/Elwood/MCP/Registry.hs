@@ -9,7 +9,8 @@ module Elwood.MCP.Registry
     -- * Server Management
     startMCPServers,
 
-    -- * Schema augmentation
+    -- * Schema normalization and augmentation
+    normalizeInputSchema,
     extractTimeout,
     injectTimeoutProperty,
     schemaDeclaresTimeout,
@@ -18,11 +19,12 @@ module Elwood.MCP.Registry
 where
 
 import Control.Exception (SomeException, catch)
-import Data.Aeson (FromJSON (..), Result (..), Value (..), fromJSON, object, withObject, (.:), (.=))
+import Data.Aeson (FromJSON (..), Result (..), Value (..), fromJSON, object, toJSON, withObject, (.:), (.=))
 import Data.Aeson.Key (Key)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Maybe (fromMaybe)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
@@ -76,7 +78,7 @@ fromJSONValue v = case fromJSON v of
 -- Image-typed result content is converted to perceivable image parts.
 toTool :: Text -> MCPServer -> MCPTool -> Tool
 toTool serverName server mcpTool =
-  let baseSchema = ensureTypeObject mcpTool.inputSchema
+  let baseSchema = normalizeInputSchema mcpTool.inputSchema
       (schemaWithTimeout, extract)
         | schemaDeclaresTimeout mcpTool.inputSchema =
             (baseSchema, \v -> Right (defaultRequestTimeoutSeconds, v))
@@ -92,11 +94,135 @@ toTool serverName server mcpTool =
           execute = executeMCPTool server mcpTool extract
         }
 
--- | Ensure the input schema has type: "object" at the top level
-ensureTypeObject :: Value -> Value
-ensureTypeObject (Object obj) =
-  Object $ KM.insert "type" (String "object") obj
-ensureTypeObject v = v
+-- | Normalize an MCP input schema for the Anthropic tools API.
+--
+-- Anthropic requires an object schema and rejects @oneOf@, @allOf@, and
+-- @anyOf@ directly under @input_schema@. Some MCP servers emit root unions
+-- (for example, a discriminated union of actions), so merge their properties
+-- into one object. Conflicting property schemas retain the alternatives in a
+-- nested combinator, which Anthropic accepts. Local references are expanded
+-- first because they may point into a root combinator that is removed.
+normalizeInputSchema :: Value -> Value
+normalizeInputSchema schema = normalizeResolved (resolveLocalRefs schema schema)
+  where
+    normalizeResolved (Object obj) =
+      Object $
+        KM.insert "type" (String "object") $
+          foldl'
+            (\acc (key, propertyCombinator, requiredMode) -> flattenCombinator key propertyCombinator requiredMode acc)
+            obj
+            [ ("allOf", "allOf", RequiredUnion),
+              ("oneOf", "anyOf", RequiredIntersection),
+              ("anyOf", "anyOf", RequiredIntersection)
+            ]
+    normalizeResolved _ = object ["type" .= ("object" :: Text)]
+
+    flattenCombinator key propertyCombinator requiredMode obj =
+      case KM.lookup key obj of
+        Just (Array alternatives) ->
+          let branchObjects = map asObject (V.toList alternatives)
+              branchProperties = map propertiesOf branchObjects
+              combinedProperties = foldl' (KM.unionWith (combineSchemas propertyCombinator)) KM.empty branchProperties
+              rootProperties = propertiesOf obj
+              properties = KM.unionWith (combineSchemas "allOf") rootProperties combinedProperties
+              branchRequired = combineRequired requiredMode (map requiredOf branchObjects)
+              required = Set.union (requiredOf obj) branchRequired
+              withoutCombinator = KM.delete key obj
+              withProperties
+                | KM.null properties = withoutCombinator
+                | otherwise = KM.insert "properties" (Object properties) withoutCombinator
+              withRequired
+                | Set.null required = KM.delete "required" withProperties
+                | otherwise = KM.insert "required" (toJSON (Set.toList required)) withProperties
+           in retainCommonAdditionalProperties obj branchObjects withRequired
+        _ -> obj
+
+    asObject value = case normalizeResolved value of
+      Object obj -> obj
+      _ -> KM.empty
+
+-- | How required fields from combinator branches are combined. All fields
+-- required by an @allOf@ branch remain required; a field from a union is only
+-- unconditionally required when every branch requires it.
+data RequiredMode = RequiredUnion | RequiredIntersection
+
+combineRequired :: RequiredMode -> [Set.Set Text] -> Set.Set Text
+combineRequired RequiredUnion required = Set.unions required
+combineRequired RequiredIntersection [] = Set.empty
+combineRequired RequiredIntersection (required : rest) = foldl' Set.intersection required rest
+
+propertiesOf :: KM.KeyMap Value -> KM.KeyMap Value
+propertiesOf obj = case KM.lookup "properties" obj of
+  Just (Object properties) -> properties
+  _ -> KM.empty
+
+requiredOf :: KM.KeyMap Value -> Set.Set Text
+requiredOf obj = case KM.lookup "required" obj of
+  Just (Array required) -> Set.fromList [name | String name <- V.toList required]
+  _ -> Set.empty
+
+-- | Preserve @additionalProperties@ when every branch agrees. This is common
+-- for generated discriminated unions and keeps the flattened schema strict.
+retainCommonAdditionalProperties :: KM.KeyMap Value -> [KM.KeyMap Value] -> KM.KeyMap Value -> KM.KeyMap Value
+retainCommonAdditionalProperties original branches result
+  | KM.member "additionalProperties" original = result
+  | otherwise = case traverse (KM.lookup "additionalProperties") branches of
+      Just (value : values)
+        | all (== value) values -> KM.insert "additionalProperties" value result
+      _ -> result
+
+combineSchemas :: Key -> Value -> Value -> Value
+combineSchemas combinator left right
+  | left == right = left
+  | otherwise = object [combinator .= distinct (members left ++ members right)]
+  where
+    members (Object obj)
+      | Just (Array values) <- KM.lookup combinator obj,
+        KM.size obj == 1 =
+          V.toList values
+    members value = [value]
+
+    distinct = foldl' (\values value -> if value `elem` values then values else values ++ [value]) []
+
+-- | Expand local JSON references before root combinators are flattened.
+resolveLocalRefs :: Value -> Value -> Value
+resolveLocalRefs root = go Set.empty
+  where
+    go seen (Object obj) =
+      case KM.lookup "$ref" obj of
+        Just (String ref)
+          | "#/" `T.isPrefixOf` ref,
+            ref `Set.notMember` seen,
+            Just target <- resolvePointer root ref ->
+              let resolvedTarget = go (Set.insert ref seen) target
+                  siblings = KM.map (go seen) (KM.delete "$ref" obj)
+               in mergeRefSiblings resolvedTarget siblings
+        _ -> Object (KM.map (go seen) obj)
+    go seen (Array values) = Array (V.map (go seen) values)
+    go _ value = value
+
+mergeRefSiblings :: Value -> KM.KeyMap Value -> Value
+mergeRefSiblings target siblings
+  | KM.null siblings = target
+mergeRefSiblings (Object target) siblings = Object (KM.union siblings target)
+mergeRefSiblings target siblings = object ["allOf" .= [target, Object siblings]]
+
+resolvePointer :: Value -> Text -> Maybe Value
+resolvePointer root ref = foldl' step (Just root) segments
+  where
+    segments = map decodeSegment (T.splitOn "/" (T.drop 2 ref))
+    decodeSegment = T.replace "~0" "~" . T.replace "~1" "/"
+
+    step (Just (Object obj)) segment = KM.lookup (Key.fromText segment) obj
+    step (Just (Array values)) segment = do
+      index <- readMaybeInt segment
+      values V.!? index
+    step _ _ = Nothing
+
+readMaybeInt :: Text -> Maybe Int
+readMaybeInt text = case reads (T.unpack text) of
+  [(value, "")] | value >= 0 -> Just value
+  _ -> Nothing
 
 -- | True if the upstream tool's input schema already declares a property
 -- named @timeout_seconds@ — in which case we defer to the server's semantics

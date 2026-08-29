@@ -15,6 +15,7 @@ import Elwood.MCP.Registry
   ( extractTimeout,
     injectTimeoutProperty,
     maxRequestTimeoutSeconds,
+    normalizeInputSchema,
     schemaDeclaresTimeout,
     toolResultParts,
   )
@@ -33,8 +34,73 @@ tests =
       mcpErrorTests,
       mcpServerConfigTests,
       concurrentRequestTests,
+      schemaNormalizationTests,
       timeoutArgTests,
       toolResultPartsTests
+    ]
+
+schemaNormalizationTests :: TestTree
+schemaNormalizationTests =
+  testGroup
+    "schema normalization"
+    [ testCase "flattens a top-level action union" $ do
+        let schema =
+              object
+                [ "anyOf"
+                    .= [ object
+                           [ "type" .= ("object" :: T.Text),
+                             "properties"
+                               .= object
+                                 [ "action" .= object ["type" .= ("string" :: T.Text), "const" .= ("search" :: T.Text)],
+                                   "query" .= object ["type" .= ("string" :: T.Text)],
+                                   "groups" .= object ["type" .= ("array" :: T.Text), "items" .= object ["type" .= ("string" :: T.Text)]]
+                                 ],
+                             "required" .= (["action", "query"] :: [T.Text]),
+                             "additionalProperties" .= False
+                           ],
+                         object
+                           [ "type" .= ("object" :: T.Text),
+                             "properties"
+                               .= object
+                                 [ "action" .= object ["type" .= ("string" :: T.Text), "const" .= ("disable" :: T.Text)],
+                                   "groups" .= object ["type" .= ("array" :: T.Text), "items" .= object ["$ref" .= ("#/anyOf/0/properties/groups/items" :: T.Text)]]
+                                 ],
+                             "required" .= (["action"] :: [T.Text]),
+                             "additionalProperties" .= False
+                           ]
+                       ]
+                ]
+        case normalizeInputSchema schema of
+          Object normalized -> do
+            KM.lookup "type" normalized @?= Just (String "object")
+            mapM_ (\key -> assertBool ("top-level combinator was removed: " <> show key) (not (KM.member key normalized))) ["oneOf", "allOf", "anyOf"]
+            KM.lookup "required" normalized @?= Just (toJSON (["action"] :: [T.Text]))
+            KM.lookup "additionalProperties" normalized @?= Just (Bool False)
+            case KM.lookup "properties" normalized of
+              Just (Object properties) -> do
+                assertBool "query property retained" (KM.member "query" properties)
+                case KM.lookup "action" properties of
+                  Just (Object action) -> assertBool "action alternatives retained below the root" (KM.member "anyOf" action)
+                  _ -> assertFailure "Expected merged action property"
+                case KM.lookup "groups" properties of
+                  Just (Object groups) -> case KM.lookup "items" groups of
+                    Just (Object items) -> assertBool "local reference expanded" (not (KM.member "$ref" items))
+                    _ -> assertFailure "Expected groups item schema"
+                  _ -> assertFailure "Expected groups property"
+              _ -> assertFailure "Expected merged properties"
+          _ -> assertFailure "Expected object schema",
+      testCase "flattens all prohibited top-level combinators" $ do
+        let branch = object ["type" .= ("object" :: T.Text), "properties" .= object ["value" .= object ["type" .= ("string" :: T.Text)]]]
+        mapM_
+          ( \key -> case normalizeInputSchema (object [key .= [branch]]) of
+              Object normalized -> do
+                assertBool "combinator removed" (not (KM.member key normalized))
+                case KM.lookup "properties" normalized of
+                  Just (Object properties) -> assertBool "branch property retained" (KM.member "value" properties)
+                  _ -> assertFailure "Expected properties"
+              _ -> assertFailure "Expected object schema"
+          )
+          ["oneOf", "allOf", "anyOf"]
     ]
 
 -- | Tests for converting MCP tool results into tool result parts
