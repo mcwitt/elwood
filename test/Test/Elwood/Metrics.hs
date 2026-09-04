@@ -126,6 +126,24 @@ renderingTests =
         let s = LBS8.unpack output
         assertBool "has HELP line" ("# HELP elwood_tool_calls_total" `isIn` s)
         assertBool "has TYPE line" ("# TYPE elwood_tool_calls_total counter" `isIn` s),
+      testCase "Claude Fable 5.1 uses reduced cache read pricing" $ do
+        store <- newMetricsStore
+        let usage =
+              Usage
+                { inputTokens = 0,
+                  outputTokens = 0,
+                  cacheCreationInputTokens = 0,
+                  cacheReadInputTokens = 1000000,
+                  cacheCreation5mTokens = 0,
+                  cacheCreation1hTokens = 0
+                }
+        recordApiResponse store "claude-fable-5.1" "telegram" EndTurn usage
+        convStore <- newInMemoryConversationStore
+        output <- renderMetrics store convStore newToolRegistry
+        let s = LBS8.unpack output
+        assertBool
+          "one million cache read tokens cost $0.25"
+          ("elwood_cost_dollars{model=\"claude-fable-5.1\",source=\"telegram\"} 0.250000" `isIn` s),
       testCase "MCP server count is rendered" $ do
         store <- newMetricsStore
         setMCPServerCount store 3
