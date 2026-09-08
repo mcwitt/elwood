@@ -137,13 +137,13 @@ renderingTests =
                   cacheCreation5mTokens = 0,
                   cacheCreation1hTokens = 0
                 }
-        recordApiResponse store "claude-fable-5.1" "telegram" EndTurn usage
+        recordApiResponse store "claude-fable-5-1" "telegram" EndTurn usage
         convStore <- newInMemoryConversationStore
         output <- renderMetrics store convStore newToolRegistry
         let s = LBS8.unpack output
         assertBool
           "one million cache read tokens cost $0.25"
-          ("elwood_cost_dollars{model=\"claude-fable-5.1\",source=\"telegram\"} 0.250000" `isIn` s),
+          ("elwood_cost_dollars{model=\"claude-fable-5-1\",source=\"telegram\"} 0.250000" `isIn` s),
       testCase "Claude Opus 5 uses current pricing" $ do
         store <- newMetricsStore
         let usage =
