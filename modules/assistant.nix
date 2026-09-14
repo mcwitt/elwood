@@ -64,8 +64,28 @@ let
           '';
           example = "xhigh";
         };
+        options.display = lib.mkOption {
+          type = lib.types.nullOr (
+            lib.types.enum [
+              "omitted"
+              "summarized"
+              "updates"
+            ]
+          );
+          default = null;
+          description = ''
+            What the API returns in thinking blocks. Null uses the API
+            default ("omitted"). Fable-class models return the text the
+            model writes before a tool call as a progress-update thinking
+            block, which is empty under the default; "updates" returns it
+            so it is delivered to the user like any intermediate text
+            (beta; Fable 5 and later only). "summarized" also returns
+            reasoning summaries, which are never delivered.
+          '';
+          example = "updates";
+        };
       };
-      description = "Adaptive thinking with optional effort level.";
+      description = "Adaptive thinking with optional effort level and thinking display mode.";
     };
     fixed = lib.mkOption {
       type = lib.types.submodule {
@@ -449,6 +469,9 @@ let
           { }
           // lib.optionalAttrs (mode.adaptive.effort != null) {
             effort = mode.adaptive.effort;
+          }
+          // lib.optionalAttrs (mode.adaptive.display != null) {
+            display = mode.adaptive.display;
           };
       }
     else if mode ? fixed then

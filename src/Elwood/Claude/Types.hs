@@ -54,7 +54,7 @@ import Data.String (IsString)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (NominalDiffTime, UTCTime (..), addUTCTime, fromGregorian)
-import Elwood.Thinking (ThinkingEffort (..))
+import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..))
 import GHC.Generics (Generic)
 
 -- | Newtype for tool names, providing type safety
@@ -83,8 +83,9 @@ instance FromJSON Role where
 
 -- | Configuration for extended thinking
 data ThinkingConfig
-  = -- | Adaptive thinking with optional effort level (Nothing = API default)
-    ThinkingConfigAdaptive (Maybe ThinkingEffort)
+  = -- | Adaptive thinking with optional effort level and thinking display
+    -- mode (Nothing = API default for each)
+    ThinkingConfigAdaptive (Maybe ThinkingEffort) (Maybe ThinkingDisplay)
   | -- | Fixed budget_tokens for older models
     ThinkingConfigBudget Int
   deriving stock (Show, Eq, Generic)
@@ -480,12 +481,19 @@ instance ToJSON MessagesRequest where
       effortToText EffortXhigh = "xhigh"
       effortToText EffortMax = "max"
 
+      displayToText :: ThinkingDisplay -> Text
+      displayToText DisplayOmitted = "omitted"
+      displayToText DisplaySummarized = "summarized"
+      displayToText DisplayUpdates = "updates"
+
       -- "thinking" field (separate from output_config)
       thinkingField :: [Pair]
       thinkingField = case req.thinking of
         Nothing -> []
-        Just (ThinkingConfigAdaptive _) ->
-          ["thinking" .= object ["type" .= ("adaptive" :: Text)]]
+        Just (ThinkingConfigAdaptive _ display) ->
+          [ "thinking"
+              .= object ("type" .= ("adaptive" :: Text) : ["display" .= displayToText d | Just d <- [display]])
+          ]
         Just (ThinkingConfigBudget n) ->
           [ "thinking"
               .= object
@@ -498,7 +506,7 @@ instance ToJSON MessagesRequest where
       outputConfigField :: [Pair]
       outputConfigField =
         let effortPairs = case req.thinking of
-              Just (ThinkingConfigAdaptive (Just effort)) -> ["effort" .= effortToText effort]
+              Just (ThinkingConfigAdaptive (Just effort) _) -> ["effort" .= effortToText effort]
               _ -> []
             formatPairs = case req.outputFormat of
               Just fmt -> ["format" .= fmt]

@@ -1,22 +1,31 @@
 module Test.Elwood.Claude.AgentLoop (tests) where
 
 import Colog.Core (LogAction (..))
-import Control.Exception (SomeException, try)
+import Control.Concurrent (forkIO, killThread)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (SomeException, bracket, try)
+import Data.Aeson (Value, encode, object, (.=))
 import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
+import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Elwood.AgentSettings (AgentProfile (..), ModelRef (..), ToolFilter (..), ToolSearchConfig (..))
-import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), perceiveResultImages, runAgentTurn)
+import Elwood.Claude.AgentLoop (AgentAction (..), AgentConfig (..), AgentResult (..), classifyResponse, perceiveResultImages, runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient (..))
 import Elwood.Claude.Observer (AgentObserver (..))
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolResultPart (..))
+import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), StopReason (..), ToolName (..), ToolResultPart (..), ToolUseId (..))
 import Elwood.Permissions (resolvePermissions)
 import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ToolResultImageMode (..))
+import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..), ThinkingMode (..))
 import Elwood.Tools.Registry (newToolRegistry)
 import Elwood.Tools.Types (ToolResult (..), noApprovalChannel)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
+import Network.HTTP.Types (status200)
+import Network.Wai (responseLBS)
+import Network.Wai.Handler.Warp (defaultSettings, openFreePort, runSettingsSocket, setPort)
 import Test.Elwood.TestImage (mkPngBytes)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -26,6 +35,8 @@ tests =
   testGroup
     "Claude.AgentLoop"
     [ cancellationTests,
+      classifyResponseTests,
+      intermediateDeliveryTests,
       perceiveResultImagesTests
     ]
 
@@ -50,6 +61,118 @@ cancellationTests =
           Left _ -> pure () -- expected: dummy client connection refused
           Right AgentCancelled -> assertFailure "should not be cancelled"
           Right _ -> pure () -- any non-cancelled result is fine
+    ]
+
+-- | A tool-use response as Fable-class models return it: the text the
+-- model wrote before the tool call arrives as a progress-update thinking
+-- block (with text only when the request asked for @display: updates@),
+-- not as a text block.
+progressBlocks :: Text -> [ContentBlock]
+progressBlocks note =
+  [ ThinkingBlock "" "sig-reasoning",
+    ThinkingBlock note "sig-progress",
+    ToolUseBlock (ToolUseId "tu_1") (ToolName "run_command") (object ["command" .= ("git commit" :: Text)])
+  ]
+
+classifyResponseTests :: TestTree
+classifyResponseTests =
+  testGroup
+    "classifyResponse"
+    [ testCase "progress-update thinking text before a tool call is intermediate text when updates are requested" $ do
+        let blocks = progressBlocks "Here is your weekly plan. Two questions: ..."
+        case classifyResponse True ToolUse blocks [] of
+          ContinueWithTools toolUses intermediate _ -> do
+            length toolUses @?= 1
+            intermediate @?= "Here is your weekly plan. Two questions: ..."
+          other -> assertFailure $ "expected ContinueWithTools, got: " <> show other,
+      testCase "text blocks and progress updates are delivered in content order" $ do
+        let blocks = TextBlock "First" : progressBlocks "Then this"
+        case classifyResponse True ToolUse blocks [] of
+          ContinueWithTools _ intermediate _ -> intermediate @?= "First\nThen this"
+          other -> assertFailure $ "expected ContinueWithTools, got: " <> show other,
+      testCase "empty thinking blocks never contribute text" $ do
+        let blocks = [ThinkingBlock "" "sig", TextBlock "Only this", ToolUseBlock (ToolUseId "tu_1") (ToolName "t") (object [])]
+        case classifyResponse True ToolUse blocks [] of
+          ContinueWithTools _ intermediate _ -> intermediate @?= "Only this"
+          other -> assertFailure $ "expected ContinueWithTools, got: " <> show other,
+      testCase "thinking text is not user-facing unless updates were requested" $ do
+        -- Under display: summarized (or budget thinking) non-empty thinking
+        -- blocks are reasoning, which must never be sent to the user.
+        let blocks = [ThinkingBlock "The user probably wants..." "sig", TextBlock "Sure", ToolUseBlock (ToolUseId "tu_1") (ToolName "t") (object [])]
+        case classifyResponse False ToolUse blocks [] of
+          ContinueWithTools _ intermediate _ -> intermediate @?= "Sure"
+          other -> assertFailure $ "expected ContinueWithTools, got: " <> show other,
+      testCase "end_turn response text is unaffected" $ do
+        let blocks = [ThinkingBlock "" "sig", TextBlock "Done"]
+        case classifyResponse True EndTurn blocks [] of
+          Complete text _ -> text @?= "Done"
+          other -> assertFailure $ "expected Complete, got: " <> show other
+    ]
+
+-- | Canned API responses, served in order by the fake endpoint.
+fakeResponses :: [Value]
+fakeResponses =
+  [ apiResponse "tool_use" (progressBlocksJson "Filed the research; committing it now."),
+    apiResponse "end_turn" [object ["type" .= ("text" :: Text), "text" .= ("Committed." :: Text)]]
+  ]
+  where
+    apiResponse :: Text -> [Value] -> Value
+    apiResponse stop content =
+      object
+        [ "id" .= ("msg_1" :: Text),
+          "type" .= ("message" :: Text),
+          "role" .= ("assistant" :: Text),
+          "content" .= content,
+          "stop_reason" .= stop,
+          "usage" .= object ["input_tokens" .= (10 :: Int), "output_tokens" .= (5 :: Int)]
+        ]
+    progressBlocksJson :: Text -> [Value]
+    progressBlocksJson note =
+      [ object ["type" .= ("thinking" :: Text), "thinking" .= ("" :: Text), "signature" .= ("sig-reasoning" :: Text)],
+        object ["type" .= ("thinking" :: Text), "thinking" .= note, "signature" .= ("sig-progress" :: Text)],
+        object
+          [ "type" .= ("tool_use" :: Text),
+            "id" .= ("tu_1" :: Text),
+            "name" .= ("run_command" :: Text),
+            "input" .= object ["command" .= ("git commit" :: Text)]
+          ]
+      ]
+
+-- | Run an action against a fake Messages API that serves 'fakeResponses'
+-- in order, passing it the endpoint's base URL.
+withFakeApi :: (Text -> IO a) -> IO a
+withFakeApi action = do
+  queue <- newIORef fakeResponses
+  (port, socket) <- openFreePort
+  ready <- newEmptyMVar
+  let app _req respond = do
+        next <- atomicModifyIORef' queue $ \case
+          [] -> ([], Nothing)
+          (r : rest) -> (rest, Just r)
+        case next of
+          Nothing -> fail "fake API: no more canned responses"
+          Just r -> respond $ responseLBS status200 [("Content-Type", "application/json")] (encode r)
+      settings = setPort port defaultSettings
+  bracket
+    (forkIO $ putMVar ready () >> runSettingsSocket settings socket app)
+    killThread
+    (\_ -> takeMVar ready >> action ("http://127.0.0.1:" <> T.pack (show port)))
+
+intermediateDeliveryTests :: TestTree
+intermediateDeliveryTests =
+  testGroup
+    "intermediate delivery"
+    [ testCase "narration before a tool call reaches onText when display: updates is configured" $
+        withFakeApi $ \baseUrl -> do
+          delivered <- newIORef ([] :: [Text])
+          cfg <- mkTestConfigWith baseUrl (Just (Adaptive (Just EffortHigh) (Just DisplayUpdates))) (pure False)
+          let cfg' = cfg {onText = Just (\t -> modifyIORef' delivered (<> [t]))}
+          result <- runAgentTurn cfg' [] (ClaudeMessage User [TextBlock "What did you find?"])
+          case result of
+            AgentSuccess final _ -> final @?= "Committed."
+            other -> assertFailure $ "expected AgentSuccess, got: " <> show other
+          texts <- readIORef delivered
+          texts @?= ["Filed the research; committing it now."]
     ]
 
 perceiveResultImagesTests :: TestTree
@@ -88,17 +211,21 @@ perceiveResultImagesTests =
 -- | Build a minimal AgentConfig for testing cancellation.
 -- Uses a dummy ClaudeClient that will produce an HTTP error if called.
 mkTestConfig :: IO Bool -> IO AgentConfig
-mkTestConfig isCancelled = do
+mkTestConfig = mkTestConfigWith "http://localhost:1" Nothing
+
+-- | Build a minimal AgentConfig against the given provider base URL.
+mkTestConfigWith :: Text -> Maybe ThinkingMode -> IO Bool -> IO AgentConfig
+mkTestConfigWith baseUrl thinkingMode isCancelled = do
   mgr <- newManager defaultManagerSettings
   let client =
         ClaudeClient
           { manager = mgr,
-            providers = Map.singleton "anthropic" (ProviderConfig "anthropic" "http://localhost:1" (Just "test-key") AnthropicFormat ImagesEmbedded)
+            providers = Map.singleton "anthropic" (ProviderConfig "anthropic" baseUrl (Just "test-key") AnthropicFormat ImagesEmbedded)
           }
       profile =
         AgentProfile
           { model = ModelRef "anthropic" "test-model",
-            thinking = Nothing,
+            thinking = thinkingMode,
             maxIterations = 5,
             cache = Nothing,
             maxTokens = 1024,

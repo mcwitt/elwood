@@ -18,7 +18,8 @@ Elwood is inspired by [OpenClaw](https://github.com/openclaw/openclaw) but desig
 - **Scheduled tasks** — Recurring cron jobs via systemd timers that call webhooks; plus one-shot self-wakeups the agent can schedule itself via `schedule_callback` (persisted to disk, fired in-process)
 - **Tool approval flow** — Approve sensitive operations via inline keyboard (Telegram only; webhook-triggered runs deny `ask` tools)
 - **Image support** — Send photos and Claude can see them (auto-resized to save tokens); the agent can also view images on disk via `view_image` (workspace-relative or absolute paths) and perceive image-typed MCP tool results
-- **Extended thinking** — Configurable reasoning budget for complex tasks
+- **Extended thinking** — Configurable reasoning budget for complex tasks; on Fable-class models, `thinking.mode.adaptive.display: updates` also returns the model's between-tool-call narration so it is delivered mid-turn
+- **Mid-turn messages** — Text the model writes between tool calls is delivered as it happens, and the `send_message` tool delivers content verbatim before the turn finishes
 - **Task delegation** — Spawn sub-agents with isolated context for tool-heavy tasks
 - **Context compaction** — Automatic summarization for long conversations
 - **Configurable providers** — Mix Claude with local models (llama-swap / llama.cpp) via a `providers` map; per-instance `provider:` routing
@@ -320,6 +321,7 @@ Each agent runs as a separate systemd service (`assistant-<name>.service`) with 
 | `search_memory` | Search saved memories |
 | `view_image` | View an image file (png/jpg/gif/webp) so the model can see its content |
 | `queue_attachment` | Queue files to send as Telegram attachments |
+| `send_message` | Send a message to the user mid-turn, verbatim, before the turn finishes |
 | `delegate_task` | Spawn a sub-agent with isolated context for multi-step tasks |
 | `schedule_callback` | Schedule a one-shot wakeup at an absolute time; the woken turn resumes the current conversation and is delivered to the current chat |
 | `list_callbacks` | List pending scheduled callbacks |

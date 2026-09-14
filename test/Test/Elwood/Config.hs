@@ -26,7 +26,7 @@ import Elwood.Config
   )
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
 import Elwood.Provider (ProviderConfig (..))
-import Elwood.Thinking (ThinkingEffort (..), ThinkingMode (..), ThinkingOverrides (..))
+import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..), ThinkingMode (..), ThinkingOverrides (..))
 import Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..))
 import Paths_elwood (getDataFileName)
 import System.Environment (setEnv, unsetEnv)
@@ -73,13 +73,26 @@ thinkingModeTests =
     "ThinkingMode"
     [ testCase "parses adaptive with effort" $ do
         let json = object ["adaptive" .= object ["effort" .= ("low" :: String)]]
-        fromJSON json @?= Success (Adaptive (Just EffortLow)),
+        fromJSON json @?= Success (Adaptive (Just EffortLow) Nothing),
       testCase "parses adaptive without effort" $ do
         let json = object ["adaptive" .= object []]
-        fromJSON json @?= Success (Adaptive Nothing),
+        fromJSON json @?= Success (Adaptive Nothing Nothing),
       testCase "parses adaptive with null" $ do
         let json = object ["adaptive" .= Null]
-        fromJSON json @?= Success (Adaptive Nothing),
+        fromJSON json @?= Success (Adaptive Nothing Nothing),
+      testCase "parses adaptive with display" $ do
+        let json = object ["adaptive" .= object ["effort" .= ("high" :: String), "display" .= ("updates" :: String)]]
+        fromJSON json @?= Success (Adaptive (Just EffortHigh) (Just DisplayUpdates)),
+      testCase "rejects unknown display" $ do
+        let json = object ["adaptive" .= object ["display" .= ("verbose" :: String)]]
+        case fromJSON json :: Result ThinkingMode of
+          Error _ -> pure ()
+          Success _ -> assertFailure "Expected failure for unknown display",
+      testCase "rejects unknown adaptive key" $ do
+        let json = object ["adaptive" .= object ["budget_tokens" .= (4096 :: Int)]]
+        case fromJSON json :: Result ThinkingMode of
+          Error _ -> pure ()
+          Success _ -> assertFailure "Expected failure for unknown adaptive key",
       testCase "parses fixed with budget_tokens" $ do
         let json = object ["fixed" .= object ["budget_tokens" .= (4096 :: Int)]]
         fromJSON json @?= Success (Budget 4096),
@@ -99,11 +112,11 @@ thinkingModeTests =
           Error _ -> pure ()
           Success _ -> assertFailure "Expected failure for multi-key object",
       testCase "equality works" $ do
-        Adaptive (Just EffortLow) == Adaptive (Just EffortLow) @?= True
-        Adaptive Nothing == Adaptive Nothing @?= True
+        Adaptive (Just EffortLow) Nothing == Adaptive (Just EffortLow) Nothing @?= True
+        Adaptive Nothing Nothing == Adaptive Nothing Nothing @?= True
         Budget 1024 == Budget 1024 @?= True
         Budget 1024 == Budget 2048 @?= False
-        Adaptive (Just EffortHigh) == Budget 4096 @?= False
+        Adaptive (Just EffortHigh) Nothing == Budget 4096 @?= False
     ]
 
 thinkingOverridesTests :: TestTree
@@ -116,7 +129,7 @@ thinkingOverridesTests =
           Error err -> assertFailure $ "Parse failed: " <> err
           Success (ovr :: ThinkingOverrides) -> do
             ovr.enable @?= Last (Just True)
-            ovr.mode @?= Last (Just (Adaptive (Just EffortMedium))),
+            ovr.mode @?= Last (Just (Adaptive (Just EffortMedium) Nothing)),
       testCase "parses enable only" $ do
         let json = object ["enable" .= False]
         case fromJSON json of

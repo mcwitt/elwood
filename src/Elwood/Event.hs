@@ -305,10 +305,16 @@ handleEventCore env event callbacks = do
           Tools.registerTool awaitTaskTool $
             Tools.registerTool checkTaskTool $
               Tools.registerTool delegateTool registryWithPerms
+      -- send_message delivers through this event's intermediate-text callback.
+      -- It is added after the delegate tool is built from registryWithPerms so
+      -- sub-agents cannot message the user directly.
+      registryWithSend = case callbacks.onText of
+        Nothing -> registryWithDelegate
+        Just deliver -> Tools.registerTool (Tools.mkSendMessageTool lgr deliver) registryWithDelegate
       -- toolFilter governs the complete registry including meta-tools
       -- (delegate_task, check_task, ...); an OnlyTools allowlist must name them
       -- explicitly to retain them.
-      filteredRegistry = Tools.applyToolFilter prof.toolFilter registryWithDelegate
+      filteredRegistry = Tools.applyToolFilter prof.toolFilter registryWithSend
 
   -- Build cancellation check for this session (always False for isolated sessions)
   isCancelled_ <- case mConversationId of

@@ -9,6 +9,7 @@ module Elwood.Claude.Client
     -- * Exported for testing
     buildRequest,
     hoistToolResultImages,
+    requestBetas,
     isRetryableError,
     calculateRetryDelay,
     retryWithBackoff,
@@ -29,6 +30,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Elwood.Claude.Types
 import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ToolResultImageMode (..))
+import Elwood.Thinking (ThinkingDisplay (..))
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Header (hRetryAfter)
@@ -78,9 +80,9 @@ sendMessages client providerName req =
     Just provider -> do
       httpReq <- buildRequest provider
       let body = encode (adaptForProvider provider req)
-          betaHeaders = case req.cacheControl of
-            Just CacheTtl1Hour -> [("anthropic-beta", "extended-cache-ttl-2025-04-11")]
-            _ -> []
+          betaHeaders = case requestBetas req of
+            [] -> []
+            betas -> [("anthropic-beta", TE.encodeUtf8 (T.intercalate "," betas))]
           httpReq' =
             httpReq
               { method = "POST",
@@ -92,6 +94,13 @@ sendMessages client providerName req =
           respBody = responseBody response
           retryAfter = parseRetryAfter response
       pure $ parseResponse status respBody retryAfter
+
+-- | Beta feature flags a request depends on, in the order they are sent in
+-- the (single, comma-separated) @anthropic-beta@ header.
+requestBetas :: MessagesRequest -> [Text]
+requestBetas req =
+  ["extended-cache-ttl-2025-04-11" | Just CacheTtl1Hour <- [req.cacheControl]]
+    ++ ["thinking-display-updates-2026-08-18" | Just (ThinkingConfigAdaptive _ (Just DisplayUpdates)) <- [req.thinking]]
 
 -- | Check if an error is retryable (rate limits and overload)
 isRetryableError :: ClaudeError -> Bool

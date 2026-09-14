@@ -6,6 +6,8 @@ module Elwood.Claude.AgentLoop
     formatExhaustion,
 
     -- * Exported for testing
+    AgentAction (..),
+    classifyResponse,
     perceiveResultImages,
   )
 where
@@ -47,7 +49,7 @@ import Elwood.Logging (Logger, logError, logInfo, logWarn)
 import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Permissions (PermissionConfig, ToolPolicy (..), getToolPolicy)
 import Elwood.Positive (Positive (getPositive))
-import Elwood.Thinking (ThinkingMode (..))
+import Elwood.Thinking (ThinkingMode (..), progressUpdatesEnabled)
 import Elwood.Tools.Registry
   ( ToolRegistry,
     lookupTool,
@@ -117,7 +119,7 @@ data AgentConfig = AgentConfig
 -- | Convert a thinking mode to the API thinking config
 thinkingToConfig :: Maybe ThinkingMode -> Maybe ThinkingConfig
 thinkingToConfig Nothing = Nothing
-thinkingToConfig (Just (Adaptive effort)) = Just (ThinkingConfigAdaptive effort)
+thinkingToConfig (Just (Adaptive effort display)) = Just (ThinkingConfigAdaptive effort display)
 thinkingToConfig (Just (Budget n)) = Just (ThinkingConfigBudget n)
 
 -- | Run a complete agent turn, handling tool use loops.
@@ -279,11 +281,17 @@ data AgentAction
     ContinueWithTools [ContentBlock] Text [ClaudeMessage]
   | -- | Response truncated due to token limit
     TruncatedResponse Text [ClaudeMessage]
+  deriving stock (Show, Eq)
 
 -- | Pure classification of a response based on stop reason and content.
-classifyResponse :: StopReason -> [ContentBlock] -> [ClaudeMessage] -> AgentAction
-classifyResponse stopReason content_ msgs =
-  let responseText = extractTextContent content_
+--
+-- The first argument says whether the request asked for progress updates
+-- (@thinking.display: updates@): models that narrate between tool calls in
+-- thinking blocks rather than text blocks then return that narration as
+-- thinking-block text, which is user-facing and delivered like text.
+classifyResponse :: Bool -> StopReason -> [ContentBlock] -> [ClaudeMessage] -> AgentAction
+classifyResponse withProgressUpdates stopReason content_ msgs =
+  let responseText = extractUserText withProgressUpdates content_
       assistantMsg = ClaudeMessage Assistant content_
       allMessages = msgs ++ [assistantMsg]
    in case stopReason of
@@ -309,7 +317,7 @@ handleResponse ::
   Int ->
   IO AgentResult
 handleResponse cfg msgs response iteration =
-  case classifyResponse response.stopReason response.content msgs of
+  case classifyResponse (progressUpdatesEnabled cfg.agentProfile.thinking) response.stopReason response.content msgs of
     Complete responseText allMessages ->
       pure $ AgentSuccess responseText allMessages
     TruncatedResponse responseText allMessages -> do
@@ -375,6 +383,18 @@ executeToolUses lgr reg perms approve = mapConcurrently execSafe
 extractTextContent :: [ContentBlock] -> Text
 extractTextContent blocks =
   T.intercalate "\n" [t | TextBlock t <- blocks]
+
+-- | Extract the user-facing text of a response: text blocks, plus the
+-- progress-update thinking blocks when the request asked for them. Under
+-- any other display mode a non-empty thinking block is a reasoning summary
+-- (or the raw reasoning), which is never user-facing.
+extractUserText :: Bool -> [ContentBlock] -> Text
+extractUserText withProgressUpdates blocks =
+  T.intercalate "\n" [t | b <- blocks, Just t <- [userText b]]
+  where
+    userText (TextBlock t) = Just t
+    userText (ThinkingBlock t _) | withProgressUpdates && not (T.null t) = Just t
+    userText _ = Nothing
 
 -- | Extract tool use blocks
 extractToolUses :: [ContentBlock] -> [ContentBlock]

@@ -26,6 +26,7 @@ import Test.Elwood.Tools.AsyncTask qualified
 import Test.Elwood.Tools.Delegate qualified
 import Test.Elwood.Tools.Registry qualified
 import Test.Elwood.Tools.Schedule qualified
+import Test.Elwood.Tools.SendMessage qualified
 import Test.Elwood.Tools.ViewImage qualified
 import Test.Elwood.Webhook qualified
 import Test.Tasty
@@ -60,6 +61,7 @@ tests =
       Test.Elwood.Tools.Delegate.tests,
       Test.Elwood.Tools.Schedule.tests,
       Test.Elwood.Tools.Registry.tests,
+      Test.Elwood.Tools.SendMessage.tests,
       Test.Elwood.Tools.ViewImage.tests,
       Test.Elwood.Telegram.Client.tests,
       Test.Elwood.Telegram.Inbox.tests,
