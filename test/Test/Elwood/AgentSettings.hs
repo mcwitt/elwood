@@ -32,7 +32,7 @@ import Elwood.Permissions
   )
 import Elwood.Positive qualified as P
 import Elwood.Prompt (PromptInput (..))
-import Elwood.Thinking (ThinkingEffort (..), ThinkingMode (..), ThinkingOverrides (..))
+import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..), ThinkingMode (..), ThinkingOverrides (..))
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
@@ -60,10 +60,13 @@ tests =
 instance Arbitrary ThinkingEffort where
   arbitrary = elements [EffortLow, EffortMedium, EffortHigh, EffortXhigh, EffortMax]
 
+instance Arbitrary ThinkingDisplay where
+  arbitrary = elements [DisplayOmitted, DisplaySummarized, DisplayUpdates]
+
 instance Arbitrary ThinkingMode where
   arbitrary =
     oneof
-      [ Adaptive <$> arbitrary,
+      [ Adaptive <$> arbitrary <*> arbitrary,
         Budget . getPositive <$> arbitrary
       ]
 
@@ -231,13 +234,13 @@ resolveTests =
         s.maxIterations @?= 50
         s.maxTokens @?= 8192,
       testCase "thinking enable=true resolves to Just mode" $ do
-        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just True)) (Last (Just (Adaptive (Just EffortMedium)))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just True)) (Last (Just (Adaptive (Just EffortMedium) Nothing))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
-        s.thinking @?= Just (Adaptive (Just EffortMedium)),
+        s.thinking @?= Just (Adaptive (Just EffortMedium) Nothing),
       testCase "thinking enable=true without mode defaults to Adaptive Nothing" $ do
         let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just True)) (Last Nothing))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
-        s.thinking @?= Just (Adaptive Nothing),
+        s.thinking @?= Just (Adaptive Nothing Nothing),
       testCase "thinking enable=false resolves to Nothing" $ do
         let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just False)) (Last (Just (Budget 4096))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o

@@ -11,17 +11,22 @@ import Elwood.Claude.Client
     defaultRetryConfig,
     hoistToolResultImages,
     isRetryableError,
+    requestBetas,
     retryWithBackoff,
   )
 import Elwood.Claude.Types
-  ( ClaudeError (..),
+  ( CacheTtl (..),
+    ClaudeError (..),
     ClaudeMessage (..),
     ContentBlock (..),
+    MessagesRequest (..),
     Role (..),
+    ThinkingConfig (..),
     ToolResultPart (..),
     ToolUseId (..),
   )
 import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ToolResultImageMode (..))
+import Elwood.Thinking (ThinkingDisplay (..))
 import Network.HTTP.Client (host, path, port, requestHeaders)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
@@ -34,8 +39,45 @@ tests =
       testGroup "calculateRetryDelay" calculateDelayTests,
       testGroup "retryWithBackoff" retryTests,
       testGroup "buildRequest" buildRequestTests,
-      testGroup "hoistToolResultImages" hoistTests
+      testGroup "hoistToolResultImages" hoistTests,
+      testGroup "requestBetas" betaTests
     ]
+
+-- | Minimal request for beta-flag tests
+mkBetaRequest :: Maybe ThinkingConfig -> Maybe CacheTtl -> MessagesRequest
+mkBetaRequest thk ttl =
+  MessagesRequest
+    { model = "claude-fable-5-1",
+      maxTokens = 1024,
+      system = Nothing,
+      messages = [],
+      tools = [],
+      thinking = thk,
+      cacheControl = ttl,
+      toolSearch = Nothing,
+      outputFormat = Nothing
+    }
+
+-- | Tests for the beta flags derived from a request
+betaTests :: [TestTree]
+betaTests =
+  [ testCase "plain request needs no betas" $
+      assertEqual "betas" [] (requestBetas (mkBetaRequest Nothing Nothing)),
+    testCase "1h cache needs the extended-cache-ttl beta" $
+      assertEqual "betas" ["extended-cache-ttl-2025-04-11"] (requestBetas (mkBetaRequest Nothing (Just CacheTtl1Hour))),
+    testCase "display updates needs the thinking-display-updates beta" $
+      assertEqual
+        "betas"
+        ["thinking-display-updates-2026-08-18"]
+        (requestBetas (mkBetaRequest (Just (ThinkingConfigAdaptive Nothing (Just DisplayUpdates))) Nothing)),
+    testCase "display summarized needs no beta" $
+      assertEqual "betas" [] (requestBetas (mkBetaRequest (Just (ThinkingConfigAdaptive Nothing (Just DisplaySummarized))) Nothing)),
+    testCase "both betas are listed together" $
+      assertEqual
+        "betas"
+        ["extended-cache-ttl-2025-04-11", "thinking-display-updates-2026-08-18"]
+        (requestBetas (mkBetaRequest (Just (ThinkingConfigAdaptive Nothing (Just DisplayUpdates))) (Just CacheTtl1Hour)))
+  ]
 
 -- | Tests for the tool-result image hoisting transform
 hoistTests :: [TestTree]

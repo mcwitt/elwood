@@ -72,6 +72,7 @@ library
     Elwood.Tools.Memory
     Elwood.Tools.Registry
     Elwood.Tools.Schedule
+    Elwood.Tools.SendMessage
     Elwood.Tools.Types
     Elwood.Tools.ViewImage
     Elwood.Webhook
@@ -165,6 +166,7 @@ test-suite elwood-test
     Test.Elwood.Tools.Delegate
     Test.Elwood.Tools.Registry
     Test.Elwood.Tools.Schedule
+    Test.Elwood.Tools.SendMessage
     Test.Elwood.Tools.ViewImage
     Test.Elwood.Webhook
 
@@ -180,6 +182,7 @@ test-suite elwood-test
     , elwood
     , filepath           >=1.5  && <1.6
     , http-client        >=0.7  && <0.8
+    , http-types         >=0.12 && <0.13
     , JuicyPixels        >=3.3  && <3.5
     , stm                >=2.5  && <2.6
     , tasty              >=1.4  && <1.6
@@ -189,6 +192,8 @@ test-suite elwood-test
     , text               >=2.1  && <2.2
     , time               >=1.12 && <1.15
     , vector             >=0.13 && <0.14
+    , wai                >=3.2  && <3.3
+    , warp               >=3.3  && <3.5
 
   hs-source-dirs:     test
   default-language:   GHC2024

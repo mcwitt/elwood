@@ -43,6 +43,7 @@ import Control.Concurrent.STM (STM, TVar, atomically, newTVarIO, readTVar, readT
 import Control.Exception (SomeException, catch)
 import Control.Monad (filterM, unless)
 import Data.Aeson (Value (..))
+import Data.Either (lefts)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List.NonEmpty qualified as NE
@@ -146,6 +147,10 @@ data AppEnv = AppEnv
 -- | Callbacks wired into the agent loop for delivery during a turn
 data DeliveryCallbacks = DeliveryCallbacks
   { onText :: Maybe Claude.TextCallback,
+    -- | Delivery action for the @send_message@ tool, reporting failure to the
+    -- model; 'Nothing' when the event has no one to deliver to (the tool is
+    -- then not offered).
+    sendMessage :: Maybe (Text -> IO (Either Text ())),
     onToolUse :: Maybe Claude.ToolUseCallback,
     onRateLimit :: Maybe Claude.RateLimitCallback,
     onBeforeApiCall :: Maybe (IO ()),
@@ -196,6 +201,7 @@ eagerCallbacks :: AppEnv -> Event -> DeliveryCallbacks
 eagerCallbacks env event =
   DeliveryCallbacks
     { onText = Just (mkTextCallback env event),
+      sendMessage = mkSendMessageDelivery env event.deliveryTarget,
       onToolUse = Just (mkToolUseNotifier env event Nothing),
       onRateLimit = Just (mkRateLimitCallback env event),
       onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
@@ -305,10 +311,15 @@ handleEventCore env event callbacks = do
           Tools.registerTool awaitTaskTool $
             Tools.registerTool checkTaskTool $
               Tools.registerTool delegateTool registryWithPerms
+      -- send_message is added after the delegate tool is built from
+      -- registryWithPerms so sub-agents cannot message the user directly.
+      registryWithSend = case callbacks.sendMessage of
+        Nothing -> registryWithDelegate
+        Just deliver -> Tools.registerTool (Tools.mkSendMessageTool lgr deliver) registryWithDelegate
       -- toolFilter governs the complete registry including meta-tools
       -- (delegate_task, check_task, ...); an OnlyTools allowlist must name them
       -- explicitly to retain them.
-      filteredRegistry = Tools.applyToolFilter prof.toolFilter registryWithDelegate
+      filteredRegistry = Tools.applyToolFilter prof.toolFilter registryWithSend
 
   -- Build cancellation check for this session (always False for isolated sessions)
   isCancelled_ <- case mConversationId of
@@ -458,15 +469,19 @@ handleEventBuffered ::
 handleEventBuffered env event targets = do
   env' <- withLocalAttachmentQueue env
   bufRef <- newIORef ([] :: [BufferedItem])
-  let callbacks =
+  let bufferText t = do
+        -- Drain any attachments queued since the last text callback
+        atts <- atomically $ do
+          a <- readTVar env'.attachmentQueue
+          writeTVar env'.attachmentQueue []
+          pure a
+        bufferItem bufRef (BufferedText t atts)
+      callbacks =
         DeliveryCallbacks
-          { onText = Just $ \t -> do
-              -- Drain any attachments queued since the last text callback
-              atts <- atomically $ do
-                a <- readTVar env'.attachmentQueue
-                writeTVar env'.attachmentQueue []
-                pure a
-              bufferItem bufRef (BufferedText t atts),
+          { onText = Just bufferText,
+            -- Replayed by the flush action, so buffering is the delivery
+            -- that can be promised here.
+            sendMessage = Just (fmap Right . bufferText),
             onToolUse = Just $ \_iter calls ->
               bufferItem bufRef (BufferedToolUse Nothing calls),
             onRateLimit =
@@ -596,15 +611,35 @@ sendAttachmentSafe env chatId_ att = do
 -- On failure, logs the error and attempts to send a user-visible error
 -- notification to Telegram so the failure isn't completely silent.
 notifySafe :: AppEnv -> Int64 -> Text -> IO ()
-notifySafe env chatId_ msg = do
-  Telegram.notify env.logger env.telegram chatId_ msg
-    `catch` \(e :: SomeException) -> do
-      logError env.logger "Failed to send notification" [("chat_id", T.pack (show chatId_)), ("error", T.pack (show e))]
+notifySafe env chatId_ msg =
+  notifyEither env chatId_ msg >>= \case
+    Right () -> pure ()
+    Left err -> do
       -- Try to inform the user in Telegram; if this also fails, just log.
-      let errMsg = formatNotify Error $ "**Delivery failed:** `" <> sanitizeBackticks (T.pack (show e)) <> "`"
+      let errMsg = formatNotify Error $ "**Delivery failed:** `" <> sanitizeBackticks err <> "`"
       Telegram.notify env.logger env.telegram chatId_ errMsg
         `catch` \(_ :: SomeException) ->
           logError env.logger "Failed to send delivery-error notification" [("chat_id", T.pack (show chatId_))]
+
+-- | Send a notification, logging and returning any error instead of throwing.
+notifyEither :: AppEnv -> Int64 -> Text -> IO (Either Text ())
+notifyEither env chatId_ msg =
+  (Right <$> Telegram.notify env.logger env.telegram chatId_ msg)
+    `catch` \(e :: SomeException) -> do
+      logError env.logger "Failed to send notification" [("chat_id", T.pack (show chatId_)), ("error", T.pack (show e))]
+      pure (Left (T.pack (show e)))
+
+-- | Delivery action for the @send_message@ tool. Unlike the intermediate-text
+-- path, a failed send is reported to the model rather than only logged, so
+-- it can fall back to its final reply instead of assuming the user saw the
+-- message. A target with no chats (a log-only webhook or callback) gets no
+-- action: the tool would promise a delivery that cannot happen.
+mkSendMessageDelivery :: AppEnv -> DeliveryTarget -> Maybe (Text -> IO (Either Text ()))
+mkSendMessageDelivery env target = case targetChatIds env target of
+  [] -> Nothing
+  chatIds -> Just $ \msg -> do
+    errs <- lefts <$> mapM (\cid -> notifyEither env cid msg) chatIds
+    pure $ if null errs then Right () else Left (T.intercalate "; " errs)
 
 -- | Convert session config to conversation ID
 --

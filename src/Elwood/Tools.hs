@@ -31,6 +31,7 @@ module Elwood.Tools
     mkScheduleCallbackTool,
     mkListCallbacksTool,
     mkCancelCallbackTool,
+    mkSendMessageTool,
 
     -- * Async Task Store
     AsyncTaskStore,
@@ -45,5 +46,6 @@ import Elwood.Tools.Delegate (mkDelegateTaskTool)
 import Elwood.Tools.Memory (mkSaveMemoryTool, mkSearchMemoryTool)
 import Elwood.Tools.Registry
 import Elwood.Tools.Schedule (mkCancelCallbackTool, mkListCallbacksTool, mkScheduleCallbackTool)
+import Elwood.Tools.SendMessage (mkSendMessageTool)
 import Elwood.Tools.Types
 import Elwood.Tools.ViewImage (mkViewImageTool)

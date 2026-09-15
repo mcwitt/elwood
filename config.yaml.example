@@ -77,6 +77,16 @@ agent:
   #       adaptive:
   #         effort: medium       # low | medium | high | xhigh | max (omit for API default)
   #                              # xhigh requires Opus 4.7+; max requires Opus-tier (4.6+)
+  #         display: updates     # omitted | summarized | updates (omit for API default: omitted)
+  #                              # What the API returns in thinking blocks. Fable-class
+  #                              # models return the text the model writes before a tool
+  #                              # call as a progress-update thinking block, which is empty
+  #                              # under the default; `updates` returns it so the text is
+  #                              # delivered to the user like any intermediate text
+  #                              # (beta; Fable 5+ only). `summarized` returns reasoning
+  #                              # summaries too, which are never delivered. Sub-agents
+  #                              # do not inherit `display` (they have no user to update);
+  #                              # set it in `delegate` explicitly if wanted.
   #
   #   thinking:
   #     enable: true

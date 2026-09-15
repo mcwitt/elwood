@@ -7,7 +7,7 @@ import Data.Text (Text)
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Elwood.Claude.Conversation (ConversationStore (..), newInMemoryConversationStore)
 import Elwood.Claude.Types
-import Elwood.Thinking (ThinkingEffort (..))
+import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..))
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -21,6 +21,7 @@ tests =
       usageTests,
       roundTripTests,
       conversationCacheTests,
+      thinkingFieldTests,
       outputConfigTests
     ]
 
@@ -367,6 +368,26 @@ lookupField key req = case Aeson.decode (encode req) of
   Just (Object obj) -> KM.lookup key obj
   _ -> Nothing
 
+thinkingFieldTests :: TestTree
+thinkingFieldTests =
+  testGroup
+    "thinking serialization"
+    [ testCase "adaptive without display -> type only" $ do
+        let req = mkRequest (Just (ThinkingConfigAdaptive (Just EffortHigh) Nothing)) Nothing
+        lookupField "thinking" req @?= Just (Aeson.object ["type" Aeson..= ("adaptive" :: String)]),
+      testCase "adaptive with display updates -> display field" $ do
+        let req = mkRequest (Just (ThinkingConfigAdaptive Nothing (Just DisplayUpdates))) Nothing
+        lookupField "thinking" req
+          @?= Just (Aeson.object ["type" Aeson..= ("adaptive" :: String), "display" Aeson..= ("updates" :: String)]),
+      testCase "adaptive with display summarized -> display field" $ do
+        let req = mkRequest (Just (ThinkingConfigAdaptive Nothing (Just DisplaySummarized))) Nothing
+        lookupField "thinking" req
+          @?= Just (Aeson.object ["type" Aeson..= ("adaptive" :: String), "display" Aeson..= ("summarized" :: String)]),
+      testCase "display does not leak into output_config" $ do
+        let req = mkRequest (Just (ThinkingConfigAdaptive Nothing (Just DisplayUpdates))) Nothing
+        lookupField "output_config" req @?= Nothing
+    ]
+
 outputConfigTests :: TestTree
 outputConfigTests =
   testGroup
@@ -375,7 +396,7 @@ outputConfigTests =
         let req = mkRequest Nothing Nothing
         lookupField "output_config" req @?= Nothing,
       testCase "adaptive thinking, no format -> effort only" $ do
-        let req = mkRequest (Just (ThinkingConfigAdaptive (Just EffortHigh))) Nothing
+        let req = mkRequest (Just (ThinkingConfigAdaptive (Just EffortHigh) Nothing)) Nothing
         case lookupField "output_config" req of
           Just (Object oc) -> do
             KM.lookup "effort" oc @?= Just (Aeson.String "high")
@@ -391,18 +412,18 @@ outputConfigTests =
           other -> assertFailure $ "Expected output_config object, got: " <> show other,
       testCase "adaptive thinking + format -> both" $ do
         let schema = Aeson.object ["type" Aeson..= ("object" :: String)]
-            req = mkRequest (Just (ThinkingConfigAdaptive (Just EffortMedium))) (Just (jsonSchemaFormat schema))
+            req = mkRequest (Just (ThinkingConfigAdaptive (Just EffortMedium) Nothing)) (Just (jsonSchemaFormat schema))
         case lookupField "output_config" req of
           Just (Object oc) -> do
             KM.lookup "effort" oc @?= Just (Aeson.String "medium")
             KM.member "format" oc @?= True
           other -> assertFailure $ "Expected output_config object, got: " <> show other,
       testCase "adaptive thinking without effort -> no output_config" $ do
-        let req = mkRequest (Just (ThinkingConfigAdaptive Nothing)) Nothing
+        let req = mkRequest (Just (ThinkingConfigAdaptive Nothing Nothing)) Nothing
         lookupField "output_config" req @?= Nothing,
       testCase "adaptive thinking without effort + format -> format only" $ do
         let schema = Aeson.object ["type" Aeson..= ("object" :: String)]
-            req = mkRequest (Just (ThinkingConfigAdaptive Nothing)) (Just (jsonSchemaFormat schema))
+            req = mkRequest (Just (ThinkingConfigAdaptive Nothing Nothing)) (Just (jsonSchemaFormat schema))
         case lookupField "output_config" req of
           Just (Object oc) -> do
             KM.member "format" oc @?= True
