@@ -393,8 +393,16 @@ extractUserText withProgressUpdates blocks =
   T.intercalate "\n" [t | b <- blocks, Just t <- [userText b]]
   where
     userText (TextBlock t) = Just t
-    userText (ThinkingBlock t _) | withProgressUpdates && not (T.null t) = Just t
+    userText (ThinkingBlock t _)
+      | withProgressUpdates && not (T.null t) && t /= interruptedSentinel = Just t
     userText _ = Nothing
+
+-- | Progress-update text the API substitutes for work a response stopped in
+-- the middle of (e.g. on @max_tokens@ right after a tool call). It stands in
+-- for an update the model never wrote, so it is not delivered as one; the
+-- truncation notice in 'handleResponse' already tells the user what happened.
+interruptedSentinel :: Text
+interruptedSentinel = "This part of the response was interrupted before it finished."
 
 -- | Extract tool use blocks
 extractToolUses :: [ContentBlock] -> [ContentBlock]

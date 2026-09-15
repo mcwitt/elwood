@@ -106,7 +106,14 @@ classifyResponseTests =
         let blocks = [ThinkingBlock "" "sig", TextBlock "Done"]
         case classifyResponse True EndTurn blocks [] of
           Complete text _ -> text @?= "Done"
-          other -> assertFailure $ "expected Complete, got: " <> show other
+          other -> assertFailure $ "expected Complete, got: " <> show other,
+      testCase "the interrupted-response sentinel is not delivered as a progress update" $ do
+        -- A max_tokens stop soon after a tool call ends in a progress block
+        -- whose text is a fixed placeholder for the unfinished work.
+        let blocks = [TextBlock "Checking the calendar", ThinkingBlock "This part of the response was interrupted before it finished." "sig"]
+        case classifyResponse True MaxTokens blocks [] of
+          TruncatedResponse text _ -> text @?= "Checking the calendar"
+          other -> assertFailure $ "expected TruncatedResponse, got: " <> show other
     ]
 
 -- | Canned API responses, served in order by the fake endpoint.
