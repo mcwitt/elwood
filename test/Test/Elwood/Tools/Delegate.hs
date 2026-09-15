@@ -7,9 +7,12 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
-import Elwood.AgentSettings (AgentPreset (..))
+import Elwood.AgentSettings (AgentPreset (..), AgentProfile (..), ModelRef (..), ToolFilter (..), ToolSearchConfig (..), resolveProfile)
 import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
-import Elwood.Tools.Delegate (mkDelegateTaskTool)
+import Elwood.Permissions (defaultPermissionConfig)
+import Elwood.Prompt (PromptInput (InlineText))
+import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..), ThinkingMode (..))
+import Elwood.Tools.Delegate (inheritedOverrides, mkDelegateTaskTool)
 import Elwood.Tools.Types
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -28,6 +31,7 @@ tests =
       inputParsingTests,
       modelValidationTests,
       thinkingValidationTests,
+      inheritanceTests,
       maxIterationsValidationTests,
       agentSelectionTests,
       systemPromptValidationTests,
@@ -92,6 +96,33 @@ modelValidationTests =
         result <- tool.execute (object ["task" .= ("test" :: Text), "model" .= ("any-model" :: Text)])
         result @?= ToolError "Model selection is not enabled (configure delegate.allowed_models)"
     ]
+
+inheritanceTests :: TestTree
+inheritanceTests =
+  testGroup
+    "inheritedOverrides"
+    [ testCase "thinking display is not inherited by sub-agents" $ do
+        let parent = parentProfile (Just (Adaptive (Just EffortHigh) (Just DisplayUpdates)))
+        inheritedThinking parent @?= Just (Adaptive (Just EffortHigh) Nothing),
+      testCase "other thinking settings are inherited unchanged" $ do
+        let budget = parentProfile (Just (Budget 4096))
+            off = parentProfile Nothing
+        inheritedThinking budget @?= Just (Budget 4096)
+        inheritedThinking off @?= Nothing
+    ]
+  where
+    inheritedThinking = (.thinking) . resolveProfile . inheritedOverrides
+    parentProfile thinking =
+      AgentProfile
+        (ModelRef "anthropic" "model-x")
+        thinking
+        15
+        Nothing
+        32768
+        [InlineText "test"]
+        ToolSearchDisabled
+        AllTools
+        defaultPermissionConfig
 
 thinkingValidationTests :: TestTree
 thinkingValidationTests =

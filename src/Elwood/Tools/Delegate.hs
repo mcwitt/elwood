@@ -1,6 +1,9 @@
 module Elwood.Tools.Delegate
   ( mkDelegateTaskTool,
     labelMaxLen,
+
+    -- * Exported for testing
+    inheritedOverrides,
   )
 where
 
@@ -32,7 +35,7 @@ import Elwood.Metrics (MetricsStore, metricsObserver)
 import Elwood.Notify (truncateText)
 import Elwood.Positive (Positive (getPositive))
 import Elwood.Prompt (PromptInput (InlineText), assemblePrompt)
-import Elwood.Thinking (ThinkingOverrides (..))
+import Elwood.Thinking (ThinkingMode (..), ThinkingOverrides (..))
 import Elwood.Tools.AsyncTask (AsyncTaskStore, TaskId (..), insertTask, storeTtlSeconds, toMicroseconds)
 import Elwood.Tools.Command (mkRunCommandTool)
 import Elwood.Tools.Registry (ToolRegistry, applyToolFilter, registerTool)
@@ -45,9 +48,27 @@ labelMaxLen = 30
 
 -- | Default overrides for delegate sub-agents.
 -- Sets max_iterations to 10 (lower than the parent's default of 20).
--- Other fields (model, provider, thinking, system_prompt, tool_search, tools, permissions) inherit from parent.
+-- Other fields (model, provider, thinking, system_prompt, tool_search, tools, permissions)
+-- inherit from parent via 'inheritedOverrides'.
 delegateDefaults :: AgentOverrides
 delegateDefaults = AgentOverrides mempty Nothing (Last (Just 10)) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+
+-- | The parent profile as sub-agents inherit it.
+--
+-- Thinking display is a presentation setting for the parent's delivery
+-- channel, so it is not inherited: a sub-agent has no user to show progress
+-- updates to, and its final response goes back to the parent as a tool
+-- result (possibly parsed against an output schema), where narration would
+-- only get in the way. Not inheriting it also keeps the beta flag off
+-- requests to worker models that may not accept it. A delegate preset or
+-- tool parameter can still set @display@ explicitly.
+inheritedOverrides :: AgentProfile -> AgentOverrides
+inheritedOverrides parent = toOverrides parent <> withoutDisplay
+  where
+    withoutDisplay = case parent.thinking of
+      Just (Adaptive effort (Just _)) ->
+        AgentOverrides mempty (Just (ThinkingOverrides mempty (Last (Just (Adaptive effort Nothing))))) mempty Nothing mempty mempty mempty mempty Nothing
+      _ -> mempty
 
 -- | Parsed delegate_task input
 data DelegateInput = DelegateInput
@@ -122,7 +143,7 @@ mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning work
         | otherwise -> do
             -- Layering: parent profile < delegate defaults < config agent < extra agent < tool params
             let extraAgentOvr = maybe mempty (\n -> maybe mempty (.overrides) (Map.lookup n extraAgents)) di.agentName
-                baseOverrides = toOverrides parentProfile <> delegateDefaults <> delegateAgentPreset.overrides <> extraAgentOvr
+                baseOverrides = inheritedOverrides parentProfile <> delegateDefaults <> delegateAgentPreset.overrides <> extraAgentOvr
                 subProfile = resolveProfile (baseOverrides <> di.overrides)
 
             logInfo

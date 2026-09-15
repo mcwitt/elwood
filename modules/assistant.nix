@@ -80,7 +80,9 @@ let
             block, which is empty under the default; "updates" returns it
             so it is delivered to the user like any intermediate text
             (beta; Fable 5 and later only). "summarized" also returns
-            reasoning summaries, which are never delivered.
+            reasoning summaries, which are never delivered. Sub-agents do
+            not inherit this setting; set it under `delegate` explicitly
+            if wanted.
           '';
           example = "updates";
         };

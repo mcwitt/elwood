@@ -84,7 +84,9 @@ agent:
   #                              # under the default; `updates` returns it so the text is
   #                              # delivered to the user like any intermediate text
   #                              # (beta; Fable 5+ only). `summarized` returns reasoning
-  #                              # summaries too, which are never delivered.
+  #                              # summaries too, which are never delivered. Sub-agents
+  #                              # do not inherit `display` (they have no user to update);
+  #                              # set it in `delegate` explicitly if wanted.
   #
   #   thinking:
   #     enable: true
