@@ -19,11 +19,11 @@ import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Logging (Logger, logInfo)
 import Elwood.Tools.Types
 
--- | Construct the @send_message@ tool. The delivery action is the event's
--- intermediate-text callback, so a sent message takes the same path as text
--- the model writes between tool calls (immediate for chat turns, buffered
--- and replayed for webhook turns).
-mkSendMessageTool :: Logger -> (Text -> IO ()) -> Tool
+-- | Construct the @send_message@ tool. The delivery action sends to the
+-- event's chats (immediately for chat turns, buffered and replayed for
+-- webhook turns) and reports failure, which the tool passes on as an error so
+-- the model knows the user did not see the message.
+mkSendMessageTool :: Logger -> (Text -> IO (Either Text ())) -> Tool
 mkSendMessageTool logger deliver =
   Tool
     { schema =
@@ -40,10 +40,12 @@ mkSendMessageTool logger deliver =
           },
       execute = \input -> case parseInput input of
         Left err -> pure $ toolError err
-        Right msg -> do
-          deliver msg
-          logInfo logger "Message sent via tool" [("length", T.pack (show (T.length msg)))]
-          pure $ toolSuccess "{\"status\":\"sent\"}"
+        Right msg ->
+          deliver msg >>= \case
+            Left err -> pure $ toolError ("Delivery failed; the user has not seen this message: " <> err)
+            Right () -> do
+              logInfo logger "Message sent via tool" [("length", T.pack (show (T.length msg)))]
+              pure $ toolSuccess "{\"status\":\"sent\"}"
     }
 
 -- | JSON Schema for send_message input

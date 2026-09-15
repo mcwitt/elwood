@@ -321,7 +321,7 @@ Each agent runs as a separate systemd service (`assistant-<name>.service`) with 
 | `search_memory` | Search saved memories |
 | `view_image` | View an image file (png/jpg/gif/webp) so the model can see its content |
 | `queue_attachment` | Queue files to send as Telegram attachments |
-| `send_message` | Send a message to the user mid-turn, verbatim, before the turn finishes |
+| `send_message` | Send a message to the user mid-turn, verbatim, before the turn finishes; a failed send is reported to the model, and the tool is absent on turns with no chat to deliver to |
 | `delegate_task` | Spawn a sub-agent with isolated context for multi-step tasks |
 | `schedule_callback` | Schedule a one-shot wakeup at an absolute time; the woken turn resumes the current conversation and is delivered to the current chat |
 | `list_callbacks` | List pending scheduled callbacks |
