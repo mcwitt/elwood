@@ -162,6 +162,24 @@ renderingTests =
         assertBool
           "one million tokens of each priced type cost $46.75"
           ("elwood_cost_dollars{model=\"claude-opus-5\",source=\"telegram\"} 46.750000" `isIn` s),
+      testCase "Claude Opus 5.5 uses its own pricing, not the Opus 5 prefix" $ do
+        store <- newMetricsStore
+        let usage =
+              Usage
+                { inputTokens = 1000000,
+                  outputTokens = 1000000,
+                  cacheCreationInputTokens = 2000000,
+                  cacheReadInputTokens = 1000000,
+                  cacheCreation5mTokens = 1000000,
+                  cacheCreation1hTokens = 1000000
+                }
+        recordApiResponse store "claude-opus-5-5" "telegram" EndTurn usage
+        convStore <- newInMemoryConversationStore
+        output <- renderMetrics store convStore newToolRegistry
+        let s = LBS8.unpack output
+        assertBool
+          "one million tokens of each priced type cost $37.20"
+          ("elwood_cost_dollars{model=\"claude-opus-5-5\",source=\"telegram\"} 37.200000" `isIn` s),
       testCase "MCP server count is rendered" $ do
         store <- newMetricsStore
         setMCPServerCount store 3

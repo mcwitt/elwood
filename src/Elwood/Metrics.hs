@@ -497,6 +497,7 @@ pricingTable :: [(Text, ModelPricing)]
 pricingTable =
   [ ("claude-fable-5-1", ModelPricing 10 50 12.50 20 0.25),
     ("claude-fable-5", ModelPricing 10 50 12.50 20 1),
+    ("claude-opus-5-5", ModelPricing 4 20 5 8 0.20),
     ("claude-opus-5", ModelPricing 5 25 6.25 10 0.50),
     ("claude-opus-4-8", ModelPricing 5 25 6.25 10 0.50),
     ("claude-opus-4-7", ModelPricing 5 25 6.25 10 0.50),
@@ -504,6 +505,7 @@ pricingTable =
     ("claude-opus-4-5", ModelPricing 5 25 6.25 10 0.50),
     ("claude-opus-4-1", ModelPricing 15 75 18.75 30 1.50),
     ("claude-opus-4", ModelPricing 15 75 18.75 30 1.50),
+    ("claude-sonnet-5", ModelPricing 2 10 2.50 4 0.20),
     ("claude-sonnet-4", ModelPricing 3 15 3.75 6 0.30),
     ("claude-sonnet-3", ModelPricing 3 15 3.75 6 0.30),
     ("claude-haiku-4", ModelPricing 1 5 1.25 2 0.10),
