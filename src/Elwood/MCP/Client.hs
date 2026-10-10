@@ -1,277 +1,128 @@
-{-# LANGUAGE TupleSections #-}
+module Elwood.MCP.Client (spawnServer, stopServer, sendRequest, defaultRequestTimeoutSeconds) where
 
-module Elwood.MCP.Client
-  ( -- * Server Lifecycle
-    spawnServer,
-    stopServer,
-
-    -- * JSON-RPC Communication
-    sendRequest,
-    defaultRequestTimeoutSeconds,
-  )
-where
-
-import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar, tryPutMVar)
-import Control.Exception (SomeException, catch, try)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async qualified as Async
+import Control.Concurrent.MVar
+import Control.Concurrent.STM
+import Control.Exception (finally, mask, onException)
 import Control.Monad (forever, void, when)
-import Data.Aeson (Value (..), eitherDecode, encode, object, (.=))
+import Data.Aeson
 import Data.ByteString.Char8 qualified as BS
 import Data.ByteString.Lazy qualified as BL
-import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
+import Data.Text.Encoding qualified as T
 import Elwood.Config (MCPServerConfig (..))
-import Elwood.Logging (Logger, logDebug, logError, logInfo, logWarn)
+import Elwood.Exception (catchSync)
+import Elwood.Logging (Logger, logWarn)
 import Elwood.MCP.Types
 import System.Environment (getEnvironment)
-import System.IO (BufferMode (..), Handle, hClose, hFlush, hSetBuffering)
+import System.IO
+import System.Posix.Signals (sigKILL, sigTERM, signalProcessGroup)
+import System.Posix.Types (ProcessID)
 import System.Process
-  ( CreateProcess (..),
-    StdStream (..),
-    createProcess,
-    getProcessExitCode,
-    proc,
-    terminateProcess,
-    waitForProcess,
-  )
 import System.Timeout (timeout)
 
--- | Default response timeout in seconds when a caller doesn't specify one.
 defaultRequestTimeoutSeconds :: Int
 defaultRequestTimeoutSeconds = 30
 
--- | Spawn and initialize an MCP server
-spawnServer :: Logger -> MCPServerConfig -> IO (Either MCPError MCPServer)
-spawnServer logger cfg = do
-  logInfo logger "Spawning MCP server" [("name", cfg.name)]
-
-  -- Merge current environment with MCP server's custom vars
-  envPairs <- mergeEnv cfg.env
-
-  -- Create the process
-  let processConfig =
-        (proc (T.unpack cfg.command) (map T.unpack cfg.args))
-          { std_in = CreatePipe,
-            std_out = CreatePipe,
-            std_err = CreatePipe,
-            env = envPairs
-          }
-
-  spawnResult <- try $ createProcess processConfig
-  case spawnResult of
-    Left (e :: SomeException) -> do
-      logError logger "Failed to spawn MCP server" [("error", T.pack (show e))]
-      pure $ Left $ MCPSpawnError $ T.pack $ show e
-    Right (Just stdinH, Just stdoutH, Just stderrH, procHandle) -> do
-      -- Set buffering for communication
-      hSetBuffering stdinH NoBuffering
-      hSetBuffering stdoutH LineBuffering
-      hSetBuffering stderrH LineBuffering
-
-      -- Create request ID counter and pending requests map
-      requestIdRef <- newIORef 0
-      pendingRef <- newIORef Map.empty
-
-      let server =
-            MCPServer
-              { config = cfg,
-                process = procHandle,
-                stdin = stdinH,
-                stdout = stdoutH,
-                stderr = stderrH,
-                requestId = requestIdRef,
-                pendingRequests = pendingRef
-              }
-
-      -- Start background thread to log stderr output
-      void $ forkIO $ logStderr logger cfg.name stderrH
-
-      -- Start background thread to read and dispatch responses
-      void $ forkIO $ responseReader logger server
-
-      -- Optional startup delay for slow-starting servers (e.g., npx)
-      when (cfg.startupDelay > 0) $
-        threadDelay (cfg.startupDelay * 1000) -- Convert ms to μs
-
-      -- Check if process exited during startup
-      exitCode <- getProcessExitCode procHandle
-      case exitCode of
-        Just code -> do
-          logError
-            logger
-            "MCP server exited during startup"
-            [ ("name", cfg.name),
-              ("exit_code", T.pack (show code))
-            ]
-          stopServer server
-          pure $ Left $ MCPSpawnError $ "Server exited with code " <> T.pack (show code)
-        Nothing -> do
-          initResult <- initializeMCPServer logger server
-          case initResult of
-            Left err -> do
-              logError
-                logger
-                "MCP server initialization failed"
-                [ ("name", cfg.name),
-                  ("error", T.pack (show err))
-                ]
-              stopServer server
-              pure $ Left err
-            Right () -> do
-              logInfo logger "MCP server initialized" [("name", cfg.name)]
-              pure $ Right server
-    Right _ -> do
-      logError logger "Failed to create process pipes" []
-      pure $ Left $ MCPSpawnError "Failed to create process pipes"
-
--- | Merge custom environment variables with current environment
-mergeEnv :: Maybe [(Text, Text)] -> IO (Maybe [(String, String)])
-mergeEnv Nothing = pure Nothing -- Inherit current environment
-mergeEnv (Just customPairs) = do
-  currentEnv <- getEnvironment
-  let customEnv = [(T.unpack k, T.unpack v) | (k, v) <- customPairs]
-      customKeys = map fst customEnv
-      filteredCurrent = filter (\(k, _) -> k `notElem` customKeys) currentEnv
-  pure $ Just (filteredCurrent ++ customEnv)
-
--- | Initialize MCP server with handshake
-initializeMCPServer :: Logger -> MCPServer -> IO (Either MCPError ())
-initializeMCPServer logger server = do
-  let initParams =
-        object
-          [ "protocolVersion" .= ("2024-11-05" :: Text),
-            "capabilities" .= object [],
-            "clientInfo"
-              .= object
-                [ "name" .= ("elwood" :: Text),
-                  "version" .= ("0.1.0" :: Text)
-                ]
-          ]
-
-  initResult <- sendRequest server defaultRequestTimeoutSeconds "initialize" (Just initParams)
-  case initResult of
-    Left err -> pure $ Left err
-    Right _ -> do
-      sendNotification logger server "notifications/initialized" Nothing
-      pure $ Right ()
-
--- | Send a JSON-RPC notification (no response expected)
-sendNotification :: Logger -> MCPServer -> Text -> Maybe Value -> IO ()
-sendNotification logger server method_ params_ = do
-  let notification =
-        object $
-          ["jsonrpc" .= ("2.0" :: Text), "method" .= method_]
-            ++ maybe [] (\p -> ["params" .= p]) params_
-
-  let jsonLine = BL.toStrict (encode notification) <> "\n"
-  logDebug logger "Sending MCP notification" [("method", method_)]
-
-  BS.hPut server.stdin jsonLine
-  hFlush server.stdin
-
--- | Send a JSON-RPC request and wait for response, timing out after the
--- given number of seconds.
 sendRequest :: MCPServer -> Int -> Text -> Maybe Value -> IO (Either MCPError Value)
-sendRequest server timeoutSecs method_ params_ = do
-  reqId <- atomicModifyIORef' server.requestId (\n -> (n + 1, n + 1))
+sendRequest = (.request)
 
-  let request =
-        JsonRpcRequest
-          { jsonrpc = "2.0",
-            method = method_,
-            params = params_,
-            id_ = reqId
-          }
-
-  -- Create MVar and register in pending requests
-  mvar <- newEmptyMVar
-  atomicModifyIORef' server.pendingRequests (\m -> (Map.insert reqId mvar m, ()))
-
-  let reqBytes = BL.toStrict (encode request) <> "\n"
-  sendResult <- try $ do
-    BS.hPut server.stdin reqBytes
-    hFlush server.stdin
-
-  case sendResult of
-    Left (e :: SomeException) -> do
-      atomicModifyIORef' server.pendingRequests (\m -> (Map.delete reqId m, ()))
-      pure $ Left $ MCPRequestError $ "Failed to send request: " <> T.pack (show e)
-    Right () -> do
-      -- Wait for the reader thread to dispatch our response
-      result <- timeout (timeoutSecs * 1_000_000) (takeMVar mvar)
-      case result of
-        Nothing -> do
-          atomicModifyIORef' server.pendingRequests (\m -> (Map.delete reqId m, ()))
-          pure $ Left $ MCPRequestError $ "Response timeout (" <> T.pack (show timeoutSecs) <> "s)"
-        Just r -> pure r
-
--- | Background thread that reads JSON-RPC responses from stdout and dispatches
--- them to pending request MVars by ID. Terminates when stdout is closed.
-responseReader :: Logger -> MCPServer -> IO ()
-responseReader logger server =
-  forever readAndDispatch `catch` \(e :: SomeException) -> do
-    logDebug logger "MCP response reader exiting" [("reason", T.pack (show e))]
-    -- Signal all pending requests that the server is gone
-    pending <- atomicModifyIORef' server.pendingRequests (Map.empty,)
-    let err = Left $ MCPRequestError "MCP server connection closed"
-    mapM_ (\mv -> void $ tryPutMVar mv err) (Map.elems pending)
-  where
-    readAndDispatch = do
-      lineBytes <- BS.hGetLine server.stdout
-      when (isJsonLine lineBytes) $ do
-        let line = BL.fromStrict lineBytes
-        case eitherDecode line of
-          Left _ -> pure ()
-          Right response -> dispatchResponse response
-
-    dispatchResponse :: JsonRpcResponse -> IO ()
-    dispatchResponse response = case response.id_ of
-      Nothing -> pure () -- Notification, ignore
-      Just respId -> do
-        mMvar <- atomicModifyIORef' server.pendingRequests (\m -> (Map.delete respId m, Map.lookup respId m))
-        case mMvar of
-          Just mvar -> do
-            result <- handleResponse response
-            putMVar mvar result
-          Nothing ->
-            logWarn logger "MCP response for unknown request ID" [("id", T.pack (show respId))]
-
--- | Check if a line looks like it could be JSON (starts with '{')
-isJsonLine :: BS.ByteString -> Bool
-isJsonLine bs = case BS.uncons (BS.dropWhile (== ' ') bs) of
-  Just ('{', _) -> True
-  _ -> False
-
--- | Handle a parsed JSON-RPC response
-handleResponse :: JsonRpcResponse -> IO (Either MCPError Value)
-handleResponse response =
-  case response.error of
-    Just err -> pure $ Left $ MCPToolError err.code err.message
-    Nothing -> pure $ Right $ fromMaybe Null response.result
-
--- | Clean shutdown of an MCP server
 stopServer :: MCPServer -> IO ()
-stopServer server = do
-  hClose server.stdin `catch` ignoreException
-  hClose server.stdout `catch` ignoreException
-  hClose server.stderr `catch` ignoreException
-  terminateProcess server.process
-  _ <- waitForProcess server.process
-  pure ()
-  where
-    ignoreException :: SomeException -> IO ()
-    ignoreException _ = pure ()
+stopServer = (.close)
 
--- | Background thread that reads stderr from an MCP server and logs each line.
--- Terminates when the handle is closed or the server process exits.
-logStderr :: Logger -> Text -> Handle -> IO ()
-logStderr logger serverName h =
-  forever readAndLog `catch` \(_ :: SomeException) -> pure ()
+spawnServer :: Logger -> MCPServerConfig -> IO (Either MCPError MCPServer)
+spawnServer logger config = (Right <$> acquire) `catchSync` (pure . Left . MCPSpawnError . T.pack . show)
   where
-    readAndLog = do
-      line <- BS.hGetLine h
-      logWarn logger "MCP server stderr" [("server", serverName), ("message", TE.decodeUtf8Lenient line)]
+    acquire = mask $ \restore -> do
+      environment <- getEnvironment
+      let custom = [(T.unpack key, T.unpack value) | (key, value) <- fromMaybe [] config.env]
+          environment' = Map.toList (Map.union (Map.fromList custom) (Map.fromList environment))
+      process <- createProcess (proc (T.unpack config.command) (map T.unpack config.args)) {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe, env = Just environment', create_group = True}
+      case process of
+        (Just input, Just output, Just errors, handle) -> do
+          group <- getPid handle
+          stopped <- newMVar False
+          let stop = modifyMVar_ stopped $ \done -> if done then pure True else stopProcess handle group >> pure True
+              cleanup = stop >> mapM_ (\h -> hClose h `catchSync` const (pure ())) [input, output, errors]
+          ( do
+              hSetBuffering input NoBuffering
+              pending <- newTVarIO (Just Map.empty)
+              counter <- newTVarIO 0
+              writer <- newMVar ()
+              let closed = MCPRequestError "MCP server connection closed"
+                  closePending = atomically $ do
+                    entries <- readTVar pending
+                    writeTVar pending Nothing
+                    mapM_ (\box -> void (tryPutTMVar box (Left closed))) (maybe [] Map.elems entries)
+                  write value = withMVar writer $ \() -> do
+                    open <- readTVarIO pending
+                    case open of
+                      Nothing -> ioError (userError "MCP connection closed")
+                      Just _ -> (BL.hPut input (encode value <> "\n") >> hFlush input) `onException` (closePending >> stop)
+                  request seconds method params = mask $ \unmask -> do
+                    box <- newEmptyTMVarIO
+                    registration <- atomically $ do
+                      entries <- readTVar pending
+                      case entries of
+                        Nothing -> pure Nothing
+                        Just entries' -> do
+                          key <- (+ 1) <$> readTVar counter
+                          writeTVar counter key
+                          writeTVar pending (Just (Map.insert key box entries'))
+                          pure (Just key)
+                    case registration of
+                      Nothing -> pure (Left closed)
+                      Just key ->
+                        let cleanupRequest = atomically $ modifyTVar' pending (fmap (Map.delete key))
+                            exchange = do
+                              write (toJSON (JsonRpcRequest "2.0" method params key))
+                              atomically (readTMVar box)
+                            microseconds = fromInteger (max 1 (min (toInteger (maxBound :: Int)) (toInteger seconds * 1000000)))
+                         in ( unmask (fromMaybe (Left (MCPRequestError "Response timeout")) <$> timeout microseconds exchange)
+                                `catchSync` (pure . Left . MCPRequestError . T.pack . show)
+                            )
+                              `finally` cleanupRequest
+                  readResponse = do
+                    bytes <- BS.hGetLine output
+                    case eitherDecodeStrict @JsonRpcResponse bytes of
+                      Left _ -> pure ()
+                      Right response -> case response.id_ of
+                        Nothing -> pure ()
+                        Just key -> atomically $ do
+                          entries <- readTVar pending
+                          case entries >>= Map.lookup key of
+                            Nothing -> pure ()
+                            Just box -> do
+                              let result = case (response.error, response.result) of
+                                    (Just err, _) -> Left (MCPToolError err.code err.message)
+                                    (Nothing, Just value) -> Right value
+                                    _ -> Left (MCPProtocolError "Response has neither result nor error")
+                              void (tryPutTMVar box result)
+                              modifyTVar' pending (fmap (Map.delete key))
+                  report exception = logWarn logger "MCP worker stopped" [("reason", T.pack (show exception))]
+              reader <- Async.async (restore (forever readResponse `catchSync` report) `finally` closePending)
+              stderrWorker <- Async.async (restore (forever (BS.hGetLine errors >>= \line -> logWarn logger "MCP stderr" [("message", T.decodeUtf8Lenient line)]) `catchSync` report)) `onException` Async.cancel reader
+              let close = closePending >> stop >> mapM_ Async.cancel [reader, stderrWorker] >> mapM_ (\h -> hClose h `catchSync` const (pure ())) [input, output, errors]
+                  server = MCPServer request close
+                  initialize = do
+                    when (config.startupDelay > 0) (threadDelay (fromInteger (min (toInteger (maxBound :: Int)) (toInteger config.startupDelay * 1000))))
+                    response <- request 30 "initialize" (Just (object ["protocolVersion" .= ("2024-11-05" :: Text), "capabilities" .= object [], "clientInfo" .= object ["name" .= ("elwood" :: Text), "version" .= ("0.1.0" :: Text)]]))
+                    either (ioError . userError . show) (const (write (object ["jsonrpc" .= ("2.0" :: Text), "method" .= ("notifications/initialized" :: Text)]))) response
+              restore initialize `onException` close
+              pure server
+            )
+            `onException` cleanup
+        _ -> cleanupProcess process >> ioError (userError "MCP process pipes unavailable")
+
+stopProcess :: ProcessHandle -> Maybe ProcessID -> IO ()
+stopProcess handle group = do
+  mapM_ (\pid -> signalProcessGroup sigTERM pid `catchSync` const (pure ())) group
+  terminateProcess handle `catchSync` const (pure ())
+  void (timeout 1000000 (waitForProcess handle))
+  -- Reap the entire owned group even when its leader exited first.
+  mapM_ (\pid -> signalProcessGroup sigKILL pid `catchSync` const (pure ())) group
+  void (timeout 1000000 (waitForProcess handle))

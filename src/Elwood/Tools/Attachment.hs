@@ -1,96 +1,37 @@
-module Elwood.Tools.Attachment
-  ( mkQueueAttachmentTool,
-    isPhotoExtension,
-  )
-where
+module Elwood.Tools.Attachment (mkQueueAttachmentTool, isPhotoExtension) where
 
-import Control.Concurrent.STM (TVar, atomically, modifyTVar')
-import Data.Aeson (Value, object, (.=))
-import Data.Aeson qualified as Aeson
-import Data.Aeson.KeyMap qualified as KM
+import Control.Concurrent.STM
+import Data.Aeson (encode, object, withObject, (.!=), (.:!), (.=))
+import Data.ByteString.Lazy qualified as BL
 import Data.Char (toLower)
-import Data.Text (Text)
 import Data.Text qualified as T
-import Elwood.Claude.Types (ToolSchema (..))
-import Elwood.Logging (Logger, logInfo)
+import Data.Text.Encoding qualified as T
+import Elwood.Logging (Logger)
+import Elwood.Tools.Builder qualified as B
 import Elwood.Tools.Types
 import System.Directory (doesFileExist)
-import System.FilePath (takeExtension)
+import System.FilePath (isAbsolute, takeExtension)
 
--- | Construct a tool for queuing file attachments to send after the text response
 mkQueueAttachmentTool :: Logger -> TVar [Attachment] -> Tool
-mkQueueAttachmentTool logger queue =
-  Tool
-    { schema =
-        ToolSchema
-          { name = "queue_attachment",
-            description =
-              "Queue a file to be sent as a Telegram attachment after the text response. "
-                <> "Supports photos (png, jpg, jpeg, gif, webp) and documents (any file type). "
-                <> "The path must be an absolute path to an existing file.",
-            inputSchema = queueAttachmentSchema
-          },
-      execute = \input -> case parseInput input of
-        Left err -> pure $ toolError err
-        Right (p, attTy, cap) -> do
-          exists <- doesFileExist p
-          if not exists
-            then pure $ toolError $ "File not found: " <> T.pack p
-            else do
-              let attachment =
-                    Attachment
-                      { path = p,
-                        type_ = attTy,
-                        caption = cap
-                      }
-              atomically $ modifyTVar' queue (<> [attachment])
-              logInfo logger "Attachment queued" [("path", T.pack p)]
-              pure $ toolSuccess $ "{\"status\":\"queued\",\"path\":" <> T.pack (show p) <> "}"
-    }
+mkQueueAttachmentTool _ queue = B.tool "queue_attachment" "Queue an existing absolute file path for Telegram delivery after the response." fields parser $ \attachment -> do
+  exists <- doesFileExist attachment.path
+  if not exists
+    then pure (toolError ("File not found: " <> T.pack attachment.path))
+    else do
+      atomically (modifyTVar' queue (<> [attachment]))
+      pure (toolSuccess (T.decodeUtf8 (BL.toStrict (encode (object ["status" .= ("queued" :: T.Text), "path" .= attachment.path])))))
+  where
+    fields = B.schema [("path", B.field "string" "Absolute file path"), ("type", B.field "string" "photo, document or auto (default)"), ("caption", B.field "string" "Optional caption")] ["path"]
+    parser = withObject "queue_attachment" $ \value -> do
+      path <- T.unpack <$> B.nonempty value "path"
+      if isAbsolute path then pure () else fail "path must be absolute"
+      kind <- value .:! "type" .!= ("auto" :: T.Text)
+      attachmentType <- case kind of
+        "photo" -> pure AttachPhoto
+        "document" -> pure AttachDocument
+        "auto" -> pure AttachAuto
+        _ -> fail "type must be photo, document or auto"
+      Attachment path attachmentType <$> value .:! "caption"
 
--- | JSON Schema for queue_attachment input
-queueAttachmentSchema :: Value
-queueAttachmentSchema =
-  object
-    [ "type" .= ("object" :: Text),
-      "properties"
-        .= object
-          [ "path"
-              .= object
-                [ "type" .= ("string" :: Text),
-                  "description" .= ("Absolute path to the file to send" :: Text)
-                ],
-            "type"
-              .= object
-                [ "type" .= ("string" :: Text),
-                  "description" .= ("How to send: \"photo\", \"document\", or \"auto\" (default: auto)" :: Text),
-                  "enum" .= (["photo", "document", "auto"] :: [Text])
-                ],
-            "caption"
-              .= object
-                [ "type" .= ("string" :: Text),
-                  "description" .= ("Optional caption for the attachment" :: Text)
-                ]
-          ],
-      "required" .= (["path"] :: [Text])
-    ]
-
--- | Parse queue_attachment input
-parseInput :: Value -> Either Text (FilePath, AttachmentType, Maybe Text)
-parseInput (Aeson.Object obj) = do
-  p <- case KM.lookup "path" obj of
-    Just (Aeson.String pv) -> Right (T.unpack pv)
-    _ -> Left "Missing or invalid 'path' parameter"
-  let attTy = case KM.lookup "type" obj of
-        Just (Aeson.String "photo") -> AttachPhoto
-        Just (Aeson.String "document") -> AttachDocument
-        _ -> AttachAuto
-      cap = case KM.lookup "caption" obj of
-        Just (Aeson.String c) -> Just c
-        _ -> Nothing
-  Right (p, attTy, cap)
-parseInput _ = Left "Expected object input"
-
--- | Check if a file extension is a photo type supported by Telegram
 isPhotoExtension :: FilePath -> Bool
-isPhotoExtension p = map toLower (takeExtension p) `elem` [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+isPhotoExtension = (`elem` [".png", ".jpg", ".jpeg", ".gif", ".webp"]) . map toLower . takeExtension

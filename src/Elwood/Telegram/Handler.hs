@@ -1,361 +1,138 @@
--- | Telegram-specific message and command handling.
--- Dispatches slash commands and converts Telegram messages
--- into events for the generic pipeline.
-module Elwood.Telegram.Handler
-  ( handleTelegramMessage,
-  )
-where
+module Elwood.Telegram.Handler (handleTelegramMessage, parseCommand) where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent.STM (atomically, modifyTVar')
-import Control.Exception (SomeException, catch)
-import Data.Aeson (Value (..))
-import Data.Int (Int64)
-import Data.List (find)
+import Control.Concurrent.STM (atomically, modifyTVar', writeTVar)
+import Data.Aeson (Value (Null))
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (diffUTCTime, getCurrentTime)
 import Elwood.AgentSettings (AgentProfile (..), ModelRef (..))
-import Elwood.Claude qualified as Claude
+import Elwood.Claude qualified as C
 import Elwood.Claude.Compaction qualified as Compaction
-import Elwood.Claude.Types (epoch)
-import Elwood.Command qualified as Cmd
-import Elwood.Config (TelegramChatConfig (..))
-import Elwood.Event
-  ( AppEnv (..),
-    Event (..),
-    handleEvent,
-    lookupToolUseMessages,
-    sessionToConversationId,
-  )
+import Elwood.Command qualified as Command
+import Elwood.Config (CompactionConfig (..), TelegramChatConfig (..))
+import Elwood.Event (AppEnv (..), Event (..), handleEvent, lookupToolUseMessages, sessionToConversationId)
 import Elwood.Event.Types
-  ( DeliveryTarget (..),
-    EventSource (..),
-    SessionConfig (..),
-  )
-import Elwood.Logging (Logger, logError, logInfo, logWarn)
+import Elwood.Exception (catchSync)
 import Elwood.Metrics (estimateJsonTokens, estimateTextTokens, recordApiResponse, recordCompaction)
-import Elwood.Notify (Severity (..), formatNotify)
 import Elwood.Positive (Positive (getPositive))
-import Elwood.Session (cancelSession, withSessionLock)
-import Elwood.Telegram qualified as Telegram
+import Elwood.Session (sessionCancelFlag, withSessionLock)
 import Elwood.Telegram.Inbox qualified as Inbox
-import Elwood.Tools.AsyncTask (cancelAllTasks)
-import Numeric (showFFloat)
+import Elwood.Telegram.Types (Chat (..), Message (..))
+import Elwood.Tools.AsyncTask (cancelTurn)
 import System.Exit (ExitCode (..))
 
--- | Token count breakdown by category for /context display
-data TokenBreakdown = TokenBreakdown
-  { userTokens :: Int64,
-    assistantTokens :: Int64,
-    thinkingTokens :: Int64,
-    toolCallTokens :: Int64,
-    toolResultTokens :: Int64
-  }
-
-emptyBreakdown :: TokenBreakdown
-emptyBreakdown = TokenBreakdown 0 0 0 0 0
-
-breakdownTotal :: TokenBreakdown -> Int64
-breakdownTotal tb = tb.userTokens + tb.assistantTokens + tb.thinkingTokens + tb.toolCallTokens + tb.toolResultTokens
-
--- | How a command handles arguments.
-data CommandHandler
-  = -- | Command takes no arguments.
-    NoArgs (IO (Maybe Text))
-  | -- | Command requires an argument. The 'Text' is the arg label for help/usage.
-    WithArg Text (Text -> IO (Maybe Text))
-
--- | A slash command: name, help description, and handler.
-data Command = Command
-  { name :: Text,
-    description :: Text,
-    handler :: CommandHandler
-  }
-
--- | Parse a @/command args@ from message text.
--- Returns @(commandName, remainingArgs)@ with both stripped.
 parseCommand :: Text -> Maybe (Text, Text)
-parseCommand txt =
-  case T.stripPrefix "/" (T.strip txt) of
-    Nothing -> Nothing
-    Just rest ->
-      let (cmd, args) = T.break (== ' ') rest
-       in if T.null cmd then Nothing else Just (cmd, T.strip args)
+parseCommand text = do
+  rest <- T.stripPrefix "/" (T.strip text)
+  let (name, args) = T.break (== ' ') rest
+  if T.null name then Nothing else Just (name, T.strip args)
 
--- | Handle a Telegram message: commands, image fetching, and event dispatch.
---
--- Returns 'Nothing' on success (the event system delivers via Telegram),
--- or 'Just errorMsg' on failure (for the polling loop to send).
-handleTelegramMessage :: AppEnv -> Telegram.Message -> IO (Maybe Text)
-handleTelegramMessage env msg =
-  case msg.text of
-    -- Slash commands: dispatch via command list
-    Just txt
-      | Just (cmdName, args) <- parseCommand txt ->
-          case find (\c -> c.name == cmdName) commands of
-            Just cmd -> runCommand cmd args
-            Nothing -> pure Nothing -- unknown command, ignore
-      | T.isPrefixOf "/" (T.strip txt) -> pure Nothing -- ignore bare "/" or non-command slash input
-      -- Anything else (text, caption, and/or media) goes through the content path
-    _ -> handleContentMessage
+handleTelegramMessage :: AppEnv -> Message -> IO (Maybe Text)
+handleTelegramMessage env message = case message.text >>= parseCommand of
+  Just (command, argument) ->
+    Just <$> case command of
+      "help" -> pure "/help — commands\n/clear — clear history\n/compact — compact history\n/context — context usage\n/stop — stop this session\n/tools — toggle tool notifications\n/run <command> — execute a shell command"
+      "clear" -> inSession $ \sid ->
+        withSessionLock env.sessionLocks sid $
+          env.conversations.clearConversation sid >> pure "Conversation cleared"
+      "compact" -> inSession $ \sid -> withSessionLock env.sessionLocks sid $ compact sid
+      "context" -> inSession context
+      "stop" -> do
+        token <- maybe (pure Nothing) (sessionCancelFlag env.sessionLocks) sessionId
+        case token of
+          Nothing -> pure "Nothing to stop"
+          Just active -> do
+            atomically (writeTVar active True)
+            _ <- cancelTurn active env.asyncTaskStore
+            pure "Stopping..."
+      "tools" -> do
+        enabled <- atomically $ do
+          current <- lookupToolUseMessages env chat
+          modifyTVar' env.toolUseMessagesOverrides (Map.insert chat (not current))
+          pure (not current)
+        pure ("Tool-use notifications: " <> if enabled then "on" else "off")
+      "run"
+        | T.null argument -> pure "Usage: /run <command>"
+        | otherwise -> do
+            result <- Command.runCommandWithTimeout argument 30 env.workspace
+            let status = case result.exitCode of ExitSuccess -> ""; ExitFailure code -> "[exit " <> T.pack (show code) <> "]\n"
+            pure (status <> "```\n$ " <> argument <> "\n" <> result.output <> "\n```")
+      _ -> pure "Unknown command. Use /help."
+  Nothing | maybe False (T.isPrefixOf "/" . T.strip) message.text -> pure Nothing
+  Nothing -> do
+    let text = fromMaybe "" (message.text <|> message.caption)
+    inbound <- Inbox.processInbound env.logger env.telegram env.workspace env.maxImageDimension message
+    if T.null text && null inbound.saved
+      then pure Nothing
+      else do
+        now <- getCurrentTime
+        outcome <- handleEvent env (Event (TelegramSource chat) now Null text inbound.perception inbound.saved session (TelegramDelivery (pure chat)))
+        pure (either Just (const Nothing) outcome)
   where
-    lgr :: Logger
-    lgr = env.logger
+    chat = message.chat.id_
+    session = maybe Isolated (.session) (Map.lookup chat env.telegramChatMap)
+    sessionId = sessionToConversationId session
+    inSession action = maybe (pure "This chat has no persistent session") action sessionId
+    compact sid = case env.compaction of
+      Nothing -> pure "Compaction is disabled"
+      Just config -> do
+        conversation <- env.conversations.getConversation sid
+        let messages = conversation.messages
+        if length messages < 4
+          then pure "Conversation is too short to compact"
+          else
+            catchSync
+              ( do
+                  result <-
+                    Compaction.compactMessages
+                      env.logger
+                      env.claude
+                      config
+                      (recordCompaction env.metrics)
+                      (recordApiResponse env.metrics env.agentProfile.model.model "telegram")
+                      (env.conversations.replaceMessages sid)
+                      messages
+                  pure ("Compaction complete: ~" <> shown (Compaction.estimateTokens messages) <> " → ~" <> shown (Compaction.estimateTokens result) <> " tokens")
+              )
+              (const (pure "Compaction failed"))
+    context sid = do
+      conversation <- env.conversations.getConversation sid
+      now <- getCurrentTime
+      let messages = conversation.messages
+          counts = Map.fromListWith (+) (concatMap messageCounts messages)
+          total = sum (Map.elems counts)
+          percent value = if total == 0 then "0%" else shown (100 * value `div` total) <> "%"
+          remaining = diffUTCTime conversation.cacheExpiresAt now
+          cache
+            | conversation.cacheExpiresAt == C.epoch = "no cache"
+            | remaining <= 0 = "expired"
+            | otherwise = shown (ceiling remaining :: Int) <> " seconds"
+          threshold = maybe "" (\config -> " / " <> shown config.tokenThreshold.getPositive <> " threshold") env.compaction
+      pure $
+        if null messages
+          then "Conversation is empty"
+          else
+            T.unlines $
+              ["Context usage:", shown (length messages) <> " messages", "~" <> shown (Compaction.estimateTokens messages) <> " tokens" <> threshold]
+                <> [name <> ": " <> percent value | (name, value) <- Map.toList counts, value > 0]
+                <> ["Cache TTL: " <> cache]
 
-    chatIdVal :: Int64
-    chatIdVal = msg.chat.id_
+shown :: (Show a) => a -> Text
+shown = T.pack . show
 
-    chatConfig :: Maybe TelegramChatConfig
-    chatConfig = Map.lookup chatIdVal env.telegramChatMap
-
-    chatSession :: SessionConfig
-    chatSession = maybe Isolated (.session) chatConfig
-
-    -- All slash commands. Adding a command here automatically includes it in /help.
-    commands :: [Command]
-    commands =
-      [ Command "help" "List available commands" $ NoArgs handleHelp,
-        Command "clear" "Clear conversation history" $ NoArgs handleClear,
-        Command "compact" "Compact conversation to save context" $ NoArgs handleCompact,
-        Command "context" "Show token usage breakdown" $ NoArgs handleContext,
-        Command "stop" "Stop the running agent" $ NoArgs handleStop,
-        Command "tools" "Toggle tool-use notifications" $ NoArgs handleTools,
-        Command "run" "Execute a shell command" $ WithArg "command" handleRun
-      ]
-
-    runCommand :: Command -> Text -> IO (Maybe Text)
-    runCommand cmd args = case cmd.handler of
-      NoArgs action -> action
-      WithArg argLabel action
-        | T.null args -> pure (Just $ formatNotify Info $ "Usage: /" <> cmd.name <> " \\<" <> argLabel <> "\\>")
-        | otherwise -> action args
-
-    handleHelp :: IO (Maybe Text)
-    handleHelp = do
-      let formatCmd c = case c.handler of
-            NoArgs _ -> "/" <> c.name <> " — " <> c.description
-            WithArg argLabel _ -> "/" <> c.name <> " \\<" <> argLabel <> "\\> — " <> c.description
-      pure (Just $ formatNotify Info $ T.intercalate "\n" ("Available commands:" : map formatCmd commands))
-
-    handleClear :: IO (Maybe Text)
-    handleClear = do
-      case sessionToConversationId chatSession of
-        Nothing -> do
-          logInfo lgr "Clear requested for isolated chat" [("chat_id", T.pack (show chatIdVal))]
-          pure (Just $ formatNotify Info "This chat has no persistent session to clear")
-        Just cid -> do
-          env.conversations.clearConversation cid
-          logInfo lgr "Conversation cleared" [("chat_id", T.pack (show chatIdVal)), ("session", cid)]
-          pure (Just $ formatNotify Info "Conversation cleared")
-
-    handleCompact :: IO (Maybe Text)
-    handleCompact = do
-      case env.compaction of
-        Nothing -> do
-          logInfo lgr "Compact requested but compaction is disabled" [("chat_id", T.pack (show chatIdVal))]
-          pure (Just $ formatNotify Info "Compaction is disabled")
-        Just compactCfg ->
-          case sessionToConversationId chatSession of
-            Nothing -> do
-              logInfo lgr "Compact requested for isolated chat" [("chat_id", T.pack (show chatIdVal))]
-              pure (Just $ formatNotify Info "This chat has no persistent session to compact")
-            Just cid -> withSessionLock env.sessionLocks cid $ do
-              conv <- env.conversations.getConversation cid
-              let msgs = conv.messages
-                  msgCount = length msgs
-              if null msgs
-                then do
-                  logInfo lgr "Compact requested on empty conversation" [("chat_id", T.pack (show chatIdVal))]
-                  pure (Just $ formatNotify Info "Conversation is empty, nothing to compact")
-                else
-                  if msgCount < 4
-                    then do
-                      logInfo lgr "Compact requested on short conversation" [("chat_id", T.pack (show chatIdVal)), ("message_count", T.pack (show msgCount))]
-                      pure (Just $ formatNotify Info $ "Conversation is too short to compact (" <> T.pack (show msgCount) <> " messages)")
-                    else do
-                      let beforeTokens = Compaction.estimateTokens msgs
-                      result <-
-                        (Right <$> Compaction.compactMessages lgr env.claude compactCfg (recordCompaction env.metrics) (recordApiResponse env.metrics env.agentProfile.model.model "telegram") (env.conversations.replaceMessages cid) msgs)
-                          `catch` \(e :: SomeException) -> do
-                            logError lgr "Manual compaction failed" [("chat_id", T.pack (show chatIdVal)), ("error", T.pack (show e))]
-                            pure (Left e)
-                      case result of
-                        Left _ ->
-                          pure (Just $ formatNotify Error "Compaction failed")
-                        Right compacted -> do
-                          let afterTokens = Compaction.estimateTokens compacted
-                              afterCount = length compacted
-                          logInfo
-                            lgr
-                            "Manual compaction complete"
-                            [ ("chat_id", T.pack (show chatIdVal)),
-                              ("before_tokens", T.pack (show beforeTokens)),
-                              ("after_tokens", T.pack (show afterTokens)),
-                              ("before_messages", T.pack (show msgCount)),
-                              ("after_messages", T.pack (show afterCount))
-                            ]
-                          pure
-                            ( Just $
-                                formatNotify Info $
-                                  "Compaction complete: ~"
-                                    <> T.pack (show beforeTokens)
-                                    <> " → ~"
-                                    <> T.pack (show afterTokens)
-                                    <> " tokens ("
-                                    <> T.pack (show msgCount)
-                                    <> " → "
-                                    <> T.pack (show afterCount)
-                                    <> " messages)"
-                            )
-
-    handleContext :: IO (Maybe Text)
-    handleContext = do
-      case sessionToConversationId chatSession of
-        Nothing -> do
-          logInfo lgr "Context requested for isolated chat" [("chat_id", T.pack (show chatIdVal))]
-          pure (Just $ formatNotify Info "This chat has no persistent session")
-        Just cid -> do
-          conv <- env.conversations.getConversation cid
-          let msgs = conv.messages
-          if null msgs
-            then pure (Just $ formatNotify Info "Conversation is empty")
-            else do
-              now <- getCurrentTime
-              let msgCount = length msgs
-                  totalTokens = Compaction.estimateTokens msgs
-                  -- Walk all messages counting tokens per category
-                  tb = foldl' countMessage emptyBreakdown msgs
-                  catSum = breakdownTotal tb
-                  pct :: Int64 -> Text
-                  pct tok
-                    | catSum == 0 = "0%"
-                    | otherwise = T.pack (show ((tok * 100) `div` catSum)) <> "%"
-                  categories =
-                    filter
-                      (\(_, v) -> v > 0)
-                      [ ("User text" :: Text, tb.userTokens),
-                        ("Assistant text", tb.assistantTokens),
-                        ("Thinking", tb.thinkingTokens),
-                        ("Tool calls", tb.toolCallTokens),
-                        ("Tool results", tb.toolResultTokens)
-                      ]
-                  header = "Context usage:"
-                  thresholdInfo = case env.compaction of
-                    Just cc ->
-                      let tokenThreshold = cc.tokenThreshold.getPositive
-                          thresholdPct = (totalTokens * 100) `div` tokenThreshold
-                       in " (" <> T.pack (show thresholdPct) <> "% of compaction threshold)"
-                    Nothing -> ""
-                  summary =
-                    [ "• " <> T.pack (show msgCount) <> " messages",
-                      "• ~" <> formatKTok totalTokens <> " tokens" <> thresholdInfo
-                    ]
-                  catLines = map (\(label, tok) -> "• " <> label <> ": " <> pct tok) categories
-                  cacheTtl
-                    | conv.cacheExpiresAt == epoch = "no cache"
-                    | remaining <= 0 = "expired"
-                    | otherwise =
-                        let mins = (realToFrac remaining :: Double) / 60
-                         in T.pack (showFFloat (Just 1) mins "") <> " minutes"
-                    where
-                      remaining = diffUTCTime conv.cacheExpiresAt now
-              pure (Just $ formatNotify Info $ T.intercalate "\n" (header : summary <> [""] <> ["Context breakdown:"] <> catLines <> [""] <> ["Cache TTL: " <> cacheTtl]))
-
-    countMessage :: TokenBreakdown -> Claude.ClaudeMessage -> TokenBreakdown
-    countMessage acc msg_ = foldl' (countBlock msg_.role) acc msg_.content
-
-    countBlock :: Claude.Role -> TokenBreakdown -> Claude.ContentBlock -> TokenBreakdown
-    countBlock Claude.User tb (Claude.TextBlock t) = tb {userTokens = tb.userTokens + estimateTextTokens t}
-    countBlock Claude.Assistant tb (Claude.TextBlock t) = tb {assistantTokens = tb.assistantTokens + estimateTextTokens t}
-    countBlock _ tb (Claude.ThinkingBlock t _) = tb {thinkingTokens = tb.thinkingTokens + estimateTextTokens t}
-    countBlock _ tb (Claude.RedactedThinkingBlock d) = tb {thinkingTokens = tb.thinkingTokens + estimateTextTokens d}
-    countBlock _ tb (Claude.ToolUseBlock _ _ input) = tb {toolCallTokens = tb.toolCallTokens + estimateJsonTokens input}
-    countBlock _ tb (Claude.ServerToolUseBlock _ _ input) = tb {toolCallTokens = tb.toolCallTokens + estimateJsonTokens input}
-    countBlock _ tb (Claude.ToolResultBlock _ parts _) = tb {toolResultTokens = tb.toolResultTokens + estimateTextTokens (Claude.toolResultText parts)}
-    countBlock _ tb (Claude.ToolSearchResultBlock _ v) = tb {toolResultTokens = tb.toolResultTokens + estimateJsonTokens v}
-    countBlock _ tb _ = tb
-
-    formatKTok :: Int -> Text
-    formatKTok tokens = T.pack (show (round (fromIntegral tokens / 1e3 :: Double) :: Int)) <> "k"
-
-    handleStop :: IO (Maybe Text)
-    handleStop = do
-      sessionCancelled <- case sessionToConversationId chatSession of
-        Nothing -> pure False
-        Just sid -> cancelSession env.sessionLocks sid
-      tasksCancelled <- cancelAllTasks env.asyncTaskStore
-      if sessionCancelled || tasksCancelled > 0
-        then do
-          logInfo lgr "Stop requested" [("chat_id", T.pack (show chatIdVal)), ("tasks_cancelled", T.pack (show tasksCancelled))]
-          pure (Just $ formatNotify Info "Stopping...")
-        else
-          pure (Just $ formatNotify Info "Nothing to stop")
-
-    handleTools :: IO (Maybe Text)
-    handleTools = do
-      next <- atomically $ do
-        current <- lookupToolUseMessages env chatIdVal
-        let n = not current
-        modifyTVar' env.toolUseMessagesOverrides (Map.insert chatIdVal n)
-        pure n
-      logInfo
-        lgr
-        "Tool-use notifications toggled"
-        [("chat_id", T.pack (show chatIdVal)), ("enabled", T.pack (show next))]
-      let stateText = if next then "on" else "off"
-      pure (Just $ formatNotify Info $ "Tool-use notifications: " <> stateText)
-
-    handleRun :: Text -> IO (Maybe Text)
-    handleRun cmd = do
-      logInfo lgr "Running command from Telegram" [("chat_id", T.pack (show chatIdVal)), ("command", cmd)]
-      result <- Cmd.runCommandWithTimeout cmd 30 env.workspace
-      let prefix = case result.exitCode of
-            ExitSuccess -> ""
-            ExitFailure code -> "[exit " <> T.pack (show code) <> "] "
-      pure (Just $ formatNotify Info $ prefix <> "\n```\n$ " <> cmd <> "\n" <> result.output <> "\n```")
-
-    handleContentMessage :: IO (Maybe Text)
-    handleContentMessage = do
-      let effectiveText = fromMaybe "" (msg.text <|> msg.caption)
-      result <- Inbox.processInbound lgr env.telegram env.workspace env.maxImageDimension msg
-      logInfo
-        lgr
-        "Processing message"
-        [ ("chat_id", T.pack (show chatIdVal)),
-          ("text_length", T.pack (show (T.length effectiveText))),
-          ("saved_attachments", T.pack (show (length result.saved)))
-        ]
-      if T.null effectiveText && null result.saved
-        then pure Nothing
-        else do
-          now <- getCurrentTime
-          let evt =
-                Event
-                  { source = TelegramSource chatIdVal,
-                    timestamp = now,
-                    payload = Null,
-                    prompt = effectiveText,
-                    image = result.perception,
-                    attachments = result.saved,
-                    session = chatSession,
-                    deliveryTarget = TelegramDelivery (pure chatIdVal)
-                  }
-          handleResult <- handleEvent env evt
-          case handleResult of
-            Right responseText -> do
-              logInfo
-                lgr
-                "Agent turn completed"
-                [ ("chat_id", T.pack (show chatIdVal)),
-                  ("response_length", T.pack (show (T.length responseText)))
-                ]
-              pure Nothing
-            Left errorMsg -> do
-              logWarn
-                lgr
-                "Agent turn failed"
-                [("chat_id", T.pack (show chatIdVal)), ("error", errorMsg)]
-              pure (Just errorMsg)
+messageCounts :: C.ClaudeMessage -> [(Text, Integer)]
+messageCounts message = concatMap block message.content
+  where
+    text kind value = [(kind, fromIntegral (estimateTextTokens value))]
+    json kind value = [(kind, fromIntegral (estimateJsonTokens value))]
+    block (C.TextBlock value) = text (if message.role == C.User then "User text" else "Assistant text") value
+    block (C.ThinkingBlock value _) = text "Thinking" value
+    block (C.RedactedThinkingBlock value) = text "Thinking" value
+    block (C.ToolUseBlock _ _ value) = json "Tool calls" value
+    block (C.ServerToolUseBlock _ _ value) = json "Tool calls" value
+    block (C.ToolResultBlock _ parts _) = text "Tool results" (C.toolResultText parts)
+    block (C.ToolSearchResultBlock _ value) = json "Tool results" value
+    block _ = []

@@ -16,7 +16,22 @@ tests :: TestTree
 tests =
   testGroup
     "Image"
-    [ resizeTests,
+    [ testCase "WebP requires a complete supported container header" $ do
+        mapM_
+          ( \bytes -> case perceiveImageBytes Nothing bytes of
+              Left _ -> pure ()
+              Right _ -> assertFailure "accepted malformed WebP"
+          )
+          ["RIFF....WEBP", "RIFF\\0\\0\\0\\0WEBPVP8X"],
+      testCase "truncated rasters are rejected with or without resizing" $ do
+        let broken = BS.take 24 (mkPngBytes 10 10)
+        mapM_
+          ( \limit -> case perceiveImageBytes limit broken of
+              Left _ -> pure ()
+              Right _ -> assertFailure "accepted truncated PNG"
+          )
+          [Nothing, Just 100],
+      resizeTests,
       perceiveTests,
       sniffTests,
       mediaTypeTests

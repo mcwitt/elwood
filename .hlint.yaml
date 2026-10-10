@@ -1,1 +1,1 @@
-[]
+- arguments: [-XOverloadedRecordDot, -XNoFieldSelectors]

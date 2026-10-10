@@ -3,6 +3,7 @@ module Main (main) where
 import Elwood.Telegram.Markdown (warmupMarkdown)
 import Test.Elwood.AgentSettings qualified
 import Test.Elwood.Attachment qualified
+import Test.Elwood.Boundary qualified
 import Test.Elwood.Claude.AgentLoop qualified
 import Test.Elwood.Claude.Client qualified
 import Test.Elwood.Claude.Compaction qualified
@@ -18,6 +19,7 @@ import Test.Elwood.Permissions qualified
 import Test.Elwood.Provider qualified
 import Test.Elwood.Scheduler qualified
 import Test.Elwood.Session qualified
+import Test.Elwood.State qualified
 import Test.Elwood.Telegram.Client qualified
 import Test.Elwood.Telegram.Inbox qualified
 import Test.Elwood.Telegram.Markdown qualified
@@ -40,7 +42,8 @@ tests :: TestTree
 tests =
   testGroup
     "Elwood Tests"
-    [ Test.Elwood.AgentSettings.tests,
+    [ Test.Elwood.Boundary.tests,
+      Test.Elwood.AgentSettings.tests,
       Test.Elwood.Memory.tests,
       Test.Elwood.Permissions.tests,
       Test.Elwood.Provider.tests,
@@ -67,5 +70,6 @@ tests =
       Test.Elwood.Telegram.Inbox.tests,
       Test.Elwood.Telegram.Markdown.tests,
       Test.Elwood.Telegram.ToolUse.tests,
+      Test.Elwood.State.tests,
       Test.Elwood.Session.tests
     ]

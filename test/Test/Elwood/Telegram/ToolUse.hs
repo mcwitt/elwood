@@ -12,7 +12,10 @@ tests :: TestTree
 tests =
   testGroup
     "Telegram.ToolUse"
-    [ testCase "single call renders header and expandable blockquote" $ do
+    [ testCase "long labels and names cannot overflow the first note" $ do
+        let note = formatToolUseNote (Just (T.replicate 5000 "😀")) [(T.replicate 5000 "😀", object ["data" .= T.replicate 2000 "😀"])]
+        assertBool "bounded UTF-16 fallback" (utf16Len note.plain <= 4096),
+      testCase "single call renders header and expandable blockquote" $ do
         let note = formatToolUseNote Nothing [("run_command", object ["command" .= ("git status" :: Text)])]
         assertBool "has tool name in code tags" ("\128295 <code>run_command</code>" `T.isInfixOf` note.html)
         assertBool "has expandable blockquote" ("<blockquote expandable>" `T.isInfixOf` note.html)

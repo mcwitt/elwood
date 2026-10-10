@@ -1,53 +1,33 @@
 module Elwood.Claude.Types
-  ( -- * Message Types
-    Role (..),
+  ( Role (..),
     ClaudeMessage (..),
     Conversation (..),
-
-    -- * Message utilities
     turnBoundaryIndices,
-
-    -- * Content Blocks
     ContentBlock (..),
     ToolResultPart (..),
     toolResultText,
-
-    -- * Newtypes
     ToolName (..),
     ToolUseId (..),
-
-    -- * Thinking
     ThinkingConfig (..),
-
-    -- * Stop Reason
     StopReason (..),
     stopReasonToText,
-
-    -- * Cache Control
     CacheTtl (..),
     cacheTtlSeconds,
-    cacheTtlLabel,
     epoch,
     extendCacheExpiry,
-
-    -- * Structured Output
     OutputFormat (..),
     jsonSchemaFormat,
-
-    -- * API Request/Response
     MessagesRequest (..),
     MessagesResponse (..),
     ToolSchema (..),
     Usage (..),
-
-    -- * Errors
     ClaudeError (..),
   )
 where
 
 import Control.Exception (Exception)
 import Data.Aeson
-import Data.Aeson.Types (Pair)
+import Data.Aeson.Types (Pair, Parser)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.String (IsString)
@@ -55,471 +35,225 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (NominalDiffTime, UTCTime (..), addUTCTime, fromGregorian)
 import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..))
-import GHC.Generics (Generic)
 
--- | Newtype for tool names, providing type safety
 newtype ToolName = ToolName {unToolName :: Text}
   deriving stock (Show, Eq, Ord)
   deriving newtype (FromJSON, ToJSON, FromJSONKey, ToJSONKey, IsString)
 
--- | Newtype for tool use IDs, providing type safety
 newtype ToolUseId = ToolUseId {unToolUseId :: Text}
   deriving stock (Show, Eq, Ord)
   deriving newtype (FromJSON, ToJSON)
 
--- | Role in a conversation
-data Role = User | Assistant
-  deriving stock (Show, Eq, Generic)
+data Role = User | Assistant deriving stock (Show, Eq)
 
 instance ToJSON Role where
-  toJSON User = "user"
-  toJSON Assistant = "assistant"
+  toJSON =
+    String . \case
+      User -> "user"
+      Assistant -> "assistant"
 
 instance FromJSON Role where
   parseJSON = withText "Role" $ \case
     "user" -> pure User
     "assistant" -> pure Assistant
-    other -> fail $ "Unknown role: " <> show other
+    other -> fail ("Unknown role: " <> show other)
 
--- | Configuration for extended thinking
-data ThinkingConfig
-  = -- | Adaptive thinking with optional effort level and thinking display
-    -- mode (Nothing = API default for each)
-    ThinkingConfigAdaptive (Maybe ThinkingEffort) (Maybe ThinkingDisplay)
-  | -- | Fixed budget_tokens for older models
-    ThinkingConfigBudget Int
-  deriving stock (Show, Eq, Generic)
+data ThinkingConfig = ThinkingConfigAdaptive (Maybe ThinkingEffort) (Maybe ThinkingDisplay) | ThinkingConfigBudget Int
+  deriving stock (Show, Eq)
 
--- | One part of a tool result's content: text, or an image the model can
--- perceive. Mirrors the Anthropic API, which accepts text and image blocks
--- inside @tool_result@ content.
-data ToolResultPart
-  = -- | Plain text content
-    ToolResultText Text
-  | -- | Image content (media type, base64-encoded data); same wire shape as 'ImageBlock'
-    ToolResultImage Text Text
-  deriving stock (Show, Eq, Generic)
+data ToolResultPart = ToolResultText Text | ToolResultImage Text Text deriving stock (Show, Eq)
 
--- | Concatenate the text parts of a tool result (image parts are elided).
+data ContentBlock
+  = TextBlock Text
+  | ImageBlock Text Text
+  | ToolUseBlock ToolUseId ToolName Value
+  | ToolResultBlock ToolUseId [ToolResultPart] Bool
+  | ThinkingBlock Text Text
+  | RedactedThinkingBlock Text
+  | ServerToolUseBlock ToolUseId ToolName Value
+  | ToolSearchResultBlock ToolUseId Value
+  | OpaqueBlock Object
+  deriving stock (Show, Eq)
+
 toolResultText :: [ToolResultPart] -> Text
-toolResultText parts = T.intercalate "\n" [t | ToolResultText t <- parts]
+toolResultText parts = T.intercalate "\n" [text | ToolResultText text <- parts]
+
+-- Wire tags are explicit; unknown objects survive exactly as JSON objects.
+blockObject :: Text -> [Pair] -> Value
+blockObject tag fields = object ("type" .= tag : fields)
+
+imageObject :: Text -> Text -> Value
+imageObject media bytes = blockObject "image" ["source" .= blockObject "base64" ["media_type" .= media, "data" .= bytes]]
+
+parseImage :: (Text -> Text -> a) -> Object -> Parser a
+parseImage make object_ = do
+  source <- object_ .: "source"
+  kind <- source .: "type"
+  if kind /= ("base64" :: Text) then fail "image source must be base64" else make <$> source .: "media_type" <*> source .: "data"
 
 instance ToJSON ToolResultPart where
-  toJSON (ToolResultText t) =
-    object
-      [ "type" .= ("text" :: Text),
-        "text" .= t
-      ]
-  toJSON (ToolResultImage mt imageData) =
-    object
-      [ "type" .= ("image" :: Text),
-        "source"
-          .= object
-            [ "type" .= ("base64" :: Text),
-              "media_type" .= mt,
-              "data" .= imageData
-            ]
-      ]
+  toJSON (ToolResultText text) = blockObject "text" ["text" .= text]
+  toJSON (ToolResultImage media bytes) = imageObject media bytes
 
 instance FromJSON ToolResultPart where
-  parseJSON = withObject "ToolResultPart" $ \v -> do
-    partType <- v .: "type"
-    case partType :: Text of
-      "text" -> ToolResultText <$> v .: "text"
-      "image" -> do
-        source <- v .: "source"
-        ToolResultImage
-          <$> source .: "media_type"
-          <*> source .: "data"
-      other -> fail $ "Unknown tool result part type: " <> show other
-
--- | Content block in a message - can be text, image, tool use, or tool result
-data ContentBlock
-  = -- | Plain text content
-    TextBlock Text
-  | -- | Image content (media type, base64-encoded data)
-    ImageBlock Text Text
-  | -- | Tool use request (tool use ID, tool name, JSON arguments)
-    ToolUseBlock ToolUseId ToolName Value
-  | -- | Tool use result (tool use ID, result content parts, is error)
-    ToolResultBlock ToolUseId [ToolResultPart] Bool
-  | -- | Extended thinking (thinking text, signature)
-    ThinkingBlock Text Text
-  | -- | Redacted thinking (opaque data)
-    RedactedThinkingBlock Text
-  | -- | Server-side tool use (tool use ID, tool name, JSON arguments)
-    ServerToolUseBlock ToolUseId ToolName Value
-  | -- | Result from server-side tool search (tool use ID, search result)
-    ToolSearchResultBlock ToolUseId Value
-  deriving stock (Show, Eq, Generic)
+  parseJSON = withObject "ToolResultPart" $ \v ->
+    v .: "type" >>= \case
+      ("text" :: Text) -> ToolResultText <$> v .: "text"
+      "image" -> parseImage ToolResultImage v
+      other -> fail ("Unknown tool result part type: " <> show other)
 
 instance ToJSON ContentBlock where
-  toJSON (TextBlock t) =
-    object
-      [ "type" .= ("text" :: Text),
-        "text" .= t
-      ]
-  toJSON (ImageBlock mt imageData) =
-    object
-      [ "type" .= ("image" :: Text),
-        "source"
-          .= object
-            [ "type" .= ("base64" :: Text),
-              "media_type" .= mt,
-              "data" .= imageData
-            ]
-      ]
-  toJSON (ToolUseBlock tid n inp) =
-    object
-      [ "type" .= ("tool_use" :: Text),
-        "id" .= tid,
-        "name" .= n,
-        "input" .= inp
-      ]
-  toJSON (ToolResultBlock tid parts isErr) =
-    object $
-      [ "type" .= ("tool_result" :: Text),
-        "tool_use_id" .= tid,
-        "content" .= partsValue
-      ]
-        ++ ["is_error" .= True | isErr]
+  toJSON = \case
+    TextBlock text -> toJSON (ToolResultText text)
+    ImageBlock media bytes -> imageObject media bytes
+    ToolUseBlock ident name input -> call "tool_use" ident name input
+    ServerToolUseBlock ident name input -> call "server_tool_use" ident name input
+    ToolResultBlock ident parts isError ->
+      blockObject
+        "tool_result"
+        (["tool_use_id" .= ident, "content" .= resultContent parts] <> ["is_error" .= True | isError])
+    ThinkingBlock text signature -> blockObject "thinking" ["thinking" .= text, "signature" .= signature]
+    RedactedThinkingBlock bytes -> blockObject "redacted_thinking" ["data" .= bytes]
+    ToolSearchResultBlock ident content -> blockObject "tool_search_tool_result" ["tool_use_id" .= ident, "content" .= content]
+    OpaqueBlock value -> Object value
     where
-      -- Text-only results serialize as a plain string (the historical wire
-      -- shape, also used in persisted sessions); anything with images uses
-      -- the content-block array form.
-      partsValue
-        | all isTextPart parts = String (toolResultText parts)
+      call tag ident name input = blockObject tag ["id" .= ident, "name" .= name, "input" .= input]
+      resultContent parts
+        | all isText parts = String (toolResultText parts)
         | otherwise = toJSON parts
-      isTextPart (ToolResultText _) = True
-      isTextPart _ = False
-  toJSON (ThinkingBlock t sig) =
-    object
-      [ "type" .= ("thinking" :: Text),
-        "thinking" .= t,
-        "signature" .= sig
-      ]
-  toJSON (RedactedThinkingBlock d) =
-    object
-      [ "type" .= ("redacted_thinking" :: Text),
-        "data" .= d
-      ]
-  toJSON (ServerToolUseBlock tid n inp) =
-    object
-      [ "type" .= ("server_tool_use" :: Text),
-        "id" .= tid,
-        "name" .= n,
-        "input" .= inp
-      ]
-  toJSON (ToolSearchResultBlock tid sr) =
-    object
-      [ "type" .= ("tool_search_tool_result" :: Text),
-        "tool_use_id" .= tid,
-        "content" .= sr
-      ]
+      isText (ToolResultText _) = True
+      isText _ = False
 
 instance FromJSON ContentBlock where
-  parseJSON = withObject "ContentBlock" $ \v -> do
-    blockType <- v .: "type"
-    case blockType :: Text of
-      "text" -> TextBlock <$> v .: "text"
-      "image" -> do
-        source <- v .: "source"
-        ImageBlock
-          <$> source .: "media_type"
-          <*> source .: "data"
-      "tool_use" ->
-        ToolUseBlock
-          <$> v .: "id"
-          <*> v .: "name"
-          <*> v .: "input"
+  parseJSON = withObject "ContentBlock" $ \v ->
+    v .: "type" >>= \case
+      ("text" :: Text) -> TextBlock <$> v .: "text"
+      "image" -> parseImage ImageBlock v
+      "tool_use" -> ToolUseBlock <$> v .: "id" <*> v .: "name" <*> v .: "input"
+      "server_tool_use" -> ServerToolUseBlock <$> v .: "id" <*> v .: "name" <*> v .: "input"
       "tool_result" -> do
-        c <- v .: "content"
-        parts <- case c of
-          String t -> pure [ToolResultText t]
-          Array _ -> parseJSON c
-          _ -> fail "tool_result content must be a string or an array of content blocks"
-        ToolResultBlock
-          <$> v .: "tool_use_id"
-          <*> pure parts
-          <*> v .:? "is_error" .!= False
-      "thinking" ->
-        ThinkingBlock
-          <$> v .: "thinking"
-          <*> v .: "signature"
-      "redacted_thinking" ->
-        RedactedThinkingBlock
-          <$> v .: "data"
-      "server_tool_use" ->
-        ServerToolUseBlock
-          <$> v .: "id"
-          <*> v .: "name"
-          <*> v .: "input"
-      "tool_search_tool_result" ->
-        ToolSearchResultBlock
-          <$> v .: "tool_use_id"
-          <*> v .: "content"
-      other -> fail $ "Unknown content block type: " <> show other
+        content <- v .: "content"
+        parts <- case content of
+          String text -> pure [ToolResultText text]
+          Array _ -> parseJSON content
+          _ -> fail "tool_result content must be a string or array"
+        ToolResultBlock <$> v .: "tool_use_id" <*> pure parts <*> v .:? "is_error" .!= False
+      "thinking" -> ThinkingBlock <$> v .: "thinking" <*> v .: "signature"
+      "redacted_thinking" -> RedactedThinkingBlock <$> v .: "data"
+      "tool_search_tool_result" -> ToolSearchResultBlock <$> v .: "tool_use_id" <*> v .: "content"
+      _ -> pure (OpaqueBlock v)
 
--- | A message in a Claude conversation
-data ClaudeMessage = ClaudeMessage
-  { role :: Role,
-    content :: [ContentBlock]
-  }
-  deriving stock (Show, Eq, Generic)
+data ClaudeMessage = ClaudeMessage {role :: Role, content :: [ContentBlock]} deriving stock (Show, Eq)
 
 instance ToJSON ClaudeMessage where
-  toJSON msg =
-    object
-      [ "role" .= msg.role,
-        "content" .= msg.content
-      ]
+  toJSON message = object ["role" .= message.role, "content" .= message.content]
 
 instance FromJSON ClaudeMessage where
-  parseJSON = withObject "ClaudeMessage" $ \v ->
-    ClaudeMessage
-      <$> v .: "role"
-      <*> v .: "content"
+  parseJSON = withObject "Message" $ \v -> ClaudeMessage <$> v .: "role" <*> v .: "content"
 
--- | A conversation with history
-data Conversation = Conversation
-  { -- | Session identifier (e.g. chat ID or named session)
-    sessionId :: Text,
-    -- | Message history (oldest first)
-    messages :: [ClaudeMessage],
-    -- | When the prompt cache expires (max of all contributing TTLs)
-    cacheExpiresAt :: UTCTime
-  }
-  deriving stock (Show, Generic)
+data Conversation = Conversation {sessionId :: Text, messages :: [ClaudeMessage], cacheExpiresAt :: UTCTime} deriving stock (Show)
 
--- | The epoch, used as a sentinel for "no cache exists yet".
+instance ToJSON Conversation where
+  toJSON conversation = object ["sessionId" .= conversation.sessionId, "messages" .= conversation.messages, "cacheExpiresAt" .= conversation.cacheExpiresAt]
+
+instance FromJSON Conversation where
+  parseJSON = withObject "Conversation" $ \v -> Conversation <$> v .: "sessionId" <*> v .: "messages" <*> v .:? "cacheExpiresAt" .!= epoch
+
 epoch :: UTCTime
 epoch = UTCTime (fromGregorian 1970 1 1) 0
 
--- | Compute the new cache expiry: never shrink, only extend.
 extendCacheExpiry :: UTCTime -> CacheTtl -> UTCTime -> UTCTime
-extendCacheExpiry now ttl oldExpiry = max oldExpiry (addUTCTime (cacheTtlSeconds ttl) now)
+extendCacheExpiry now ttl = max (addUTCTime (cacheTtlSeconds ttl) now)
 
-instance ToJSON Conversation where
-  toJSON conv =
-    object
-      [ "sessionId" .= conv.sessionId,
-        "messages" .= conv.messages,
-        "cacheExpiresAt" .= conv.cacheExpiresAt
-      ]
+data StopReason = EndTurn | ToolUse | MaxTokens | StopReasonOther Text deriving stock (Show, Eq)
 
-instance FromJSON Conversation where
-  parseJSON = withObject "Conversation" $ \v ->
-    Conversation
-      <$> v .: "sessionId"
-      <*> v .: "messages"
-      <*> v .:? "cacheExpiresAt" .!= epoch
-
--- | Why the model stopped generating
-data StopReason
-  = -- | Normal completion
-    EndTurn
-  | -- | Model wants to use a tool
-    ToolUse
-  | -- | Hit the max_tokens limit
-    MaxTokens
-  | -- | Unknown or new stop reason
-    StopReasonOther Text
-  deriving stock (Show, Eq, Generic)
-
--- | Convert a stop reason to its API text representation
 stopReasonToText :: StopReason -> Text
-stopReasonToText EndTurn = "end_turn"
-stopReasonToText ToolUse = "tool_use"
-stopReasonToText MaxTokens = "max_tokens"
-stopReasonToText (StopReasonOther t) = t
+stopReasonToText = \case
+  EndTurn -> "end_turn"
+  ToolUse -> "tool_use"
+  MaxTokens -> "max_tokens"
+  StopReasonOther text -> text
 
--- | Parse a stop reason from API text
-parseStopReason :: Text -> StopReason
-parseStopReason "end_turn" = EndTurn
-parseStopReason "tool_use" = ToolUse
-parseStopReason "max_tokens" = MaxTokens
-parseStopReason other = StopReasonOther other
+parseStop :: Text -> StopReason
+parseStop = \case
+  "end_turn" -> EndTurn
+  "tool_use" -> ToolUse
+  "max_tokens" -> MaxTokens
+  other -> StopReasonOther other
 
--- | Tool schema for API requests
-data ToolSchema = ToolSchema
-  { -- | Tool name
-    name :: ToolName,
-    -- | Tool description
-    description :: Text,
-    -- | JSON Schema for input parameters
-    inputSchema :: Value
-  }
-  deriving stock (Show, Eq, Generic)
+data ToolSchema = ToolSchema {name :: ToolName, description :: Text, inputSchema :: Value} deriving stock (Show, Eq)
 
 instance ToJSON ToolSchema where
-  toJSON ts =
-    object
-      [ "name" .= ts.name,
-        "description" .= ts.description,
-        "input_schema" .= ts.inputSchema
-      ]
+  toJSON schema = object ["name" .= schema.name, "description" .= schema.description, "input_schema" .= schema.inputSchema]
 
--- | Cache TTL for prompt caching
-data CacheTtl
-  = -- | 5-minute ephemeral cache (default)
-    CacheTtl5Min
-  | -- | 1-hour extended cache
-    CacheTtl1Hour
-  deriving stock (Show, Eq, Ord, Generic)
+data CacheTtl = CacheTtl5Min | CacheTtl1Hour deriving stock (Show, Eq, Ord)
 
--- | Convert a cache TTL to its duration in seconds
 cacheTtlSeconds :: CacheTtl -> NominalDiffTime
 cacheTtlSeconds CacheTtl5Min = 300
 cacheTtlSeconds CacheTtl1Hour = 3600
-
--- | Short label for a cache TTL (matches the Anthropic API \"ttl\" string).
-cacheTtlLabel :: CacheTtl -> Text
-cacheTtlLabel CacheTtl5Min = "5m"
-cacheTtlLabel CacheTtl1Hour = "1h"
 
 instance FromJSON CacheTtl where
   parseJSON = withText "CacheTtl" $ \case
     "5m" -> pure CacheTtl5Min
     "1h" -> pure CacheTtl1Hour
-    other -> fail $ "Invalid cache_ttl: " <> show other <> ". Expected \"5m\" or \"1h\""
+    other -> fail ("Invalid cache_ttl: " <> show other)
 
--- | Structured output format for the Claude Messages API.
--- Currently only json_schema is supported, but this is left as
--- an opaque Value to accommodate future API format types.
 newtype OutputFormat = OutputFormat {unOutputFormat :: Value}
   deriving stock (Show)
   deriving newtype (ToJSON)
 
--- | Construct a JSON schema output format constraint.
 jsonSchemaFormat :: Value -> OutputFormat
-jsonSchemaFormat schema = OutputFormat (object ["type" .= ("json_schema" :: Text), "schema" .= schema])
+jsonSchemaFormat schema = OutputFormat (blockObject "json_schema" ["schema" .= schema])
 
--- | Request to the Claude Messages API
 data MessagesRequest = MessagesRequest
-  { -- | Model to use (e.g., "claude-sonnet-4-20250514")
-    model :: Text,
-    -- | Maximum tokens in response
+  { model :: Text,
     maxTokens :: Int,
-    -- | System prompt (optional)
     system :: Maybe Text,
-    -- | Conversation messages
     messages :: [ClaudeMessage],
-    -- | Available tools
     tools :: [ToolSchema],
-    -- | Extended thinking configuration (optional)
     thinking :: Maybe ThinkingConfig,
-    -- | Prompt caching TTL (Nothing = disabled)
     cacheControl :: Maybe CacheTtl,
-    -- | Tool search (Nothing = disabled, Just neverDefer = enabled with deferred loading)
     toolSearch :: Maybe (Set ToolName),
-    -- | Structured output format (e.g., JSON schema constraint)
     outputFormat :: Maybe OutputFormat
   }
-  deriving stock (Show, Generic)
+  deriving stock (Show)
 
 instance ToJSON MessagesRequest where
   toJSON req =
     object $
-      [ "model" .= req.model,
-        "max_tokens" .= req.maxTokens,
-        "messages" .= req.messages
-      ]
-        ++ systemField
-        ++ toolsField
-        ++ thinkingField
-        ++ outputConfigField
-        ++ maybe [] (\ttl -> ["cache_control" .= cacheTtlObj ttl]) req.cacheControl
+      ["model" .= req.model, "max_tokens" .= req.maxTokens, "messages" .= req.messages]
+        <> ["system" .= systemValue text | Just text <- [req.system]]
+        <> ["tools" .= toolValues | not (null req.tools)]
+        <> ["cache_control" .= cache ttl | Just ttl <- [req.cacheControl]]
+        <> ["thinking" .= value | Just value <- [thinkingValue req.thinking]]
+        <> ["output_config" .= object output | not (null output)]
     where
-      -- When caching is enabled, send system as array of content blocks with
-      -- an explicit cache breakpoint.  This ensures the system prompt is
-      -- cached even immediately after compaction, while the top-level
-      -- cache_control still caches the longest possible prefix automatically.
-      systemField :: [Pair]
-      systemField = case (req.system, req.cacheControl) of
-        (Nothing, _) -> []
-        (Just s, Nothing) -> ["system" .= s]
-        (Just s, Just ttl) ->
-          [ "system"
-              .= [ object
-                     [ "type" .= ("text" :: Text),
-                       "text" .= s,
-                       "cache_control" .= cacheTtlObj ttl
-                     ]
-                 ]
-          ]
+      cache ttl = blockObject "ephemeral" ["ttl" .= ("1h" :: Text) | ttl == CacheTtl1Hour]
+      systemValue text = case req.cacheControl of
+        Nothing -> String text
+        Just ttl -> toJSON [blockObject "text" ["text" .= text, "cache_control" .= cache ttl]]
+      toolValues = case req.toolSearch of
+        Nothing -> map toJSON req.tools
+        Just immediate ->
+          blockObject "tool_search_tool_bm25_20251119" ["name" .= ("tool_search_tool_bm25" :: Text)]
+            : [object ["name" .= tool.name, "description" .= tool.description, "input_schema" .= tool.inputSchema, "defer_loading" .= Set.notMember tool.name immediate] | tool <- req.tools]
+      thinkingValue Nothing = Nothing
+      thinkingValue (Just (ThinkingConfigBudget tokens)) = Just (blockObject "enabled" ["budget_tokens" .= tokens])
+      thinkingValue (Just (ThinkingConfigAdaptive _ display)) = Just (blockObject "adaptive" ["display" .= displayText d | Just d <- [display]])
+      output =
+        ["format" .= format | Just format <- [req.outputFormat]]
+          <> ["effort" .= effortText effort | Just (ThinkingConfigAdaptive (Just effort) _) <- [req.thinking]]
+      displayText = \case
+        DisplayOmitted -> "omitted" :: Text
+        DisplaySummarized -> "summarized"
+        DisplayUpdates -> "updates"
+      effortText = \case
+        EffortLow -> "low" :: Text
+        EffortMedium -> "medium"
+        EffortHigh -> "high"
+        EffortXhigh -> "xhigh"
+        EffortMax -> "max"
 
-      cacheTtlObj :: CacheTtl -> Value
-      cacheTtlObj CacheTtl5Min = object ["type" .= ("ephemeral" :: Text)]
-      cacheTtlObj CacheTtl1Hour = object ["type" .= ("ephemeral" :: Text), "ttl" .= ("1h" :: Text)]
-
-      toolsField :: [Pair]
-      toolsField
-        | null req.tools = []
-        | otherwise = case req.toolSearch of
-            Nothing ->
-              ["tools" .= req.tools]
-            Just neverDefer ->
-              let searchTool =
-                    object
-                      [ "type" .= ("tool_search_tool_bm25_20251119" :: Text),
-                        "name" .= ("tool_search_tool_bm25" :: Text)
-                      ]
-                  addDefer ts =
-                    object
-                      [ "name" .= ts.name,
-                        "description" .= ts.description,
-                        "input_schema" .= ts.inputSchema,
-                        "defer_loading" .= not (Set.member ts.name neverDefer)
-                      ]
-                  toolValues = map addDefer req.tools
-               in ["tools" .= (searchTool : toolValues)]
-
-      effortToText :: ThinkingEffort -> Text
-      effortToText EffortLow = "low"
-      effortToText EffortMedium = "medium"
-      effortToText EffortHigh = "high"
-      effortToText EffortXhigh = "xhigh"
-      effortToText EffortMax = "max"
-
-      displayToText :: ThinkingDisplay -> Text
-      displayToText DisplayOmitted = "omitted"
-      displayToText DisplaySummarized = "summarized"
-      displayToText DisplayUpdates = "updates"
-
-      -- "thinking" field (separate from output_config)
-      thinkingField :: [Pair]
-      thinkingField = case req.thinking of
-        Nothing -> []
-        Just (ThinkingConfigAdaptive _ display) ->
-          [ "thinking"
-              .= object ("type" .= ("adaptive" :: Text) : ["display" .= displayToText d | Just d <- [display]])
-          ]
-        Just (ThinkingConfigBudget n) ->
-          [ "thinking"
-              .= object
-                [ "type" .= ("enabled" :: Text),
-                  "budget_tokens" .= n
-                ]
-          ]
-
-      -- Merged output_config from thinking effort + structured output format
-      outputConfigField :: [Pair]
-      outputConfigField =
-        let effortPairs = case req.thinking of
-              Just (ThinkingConfigAdaptive (Just effort) _) -> ["effort" .= effortToText effort]
-              _ -> []
-            formatPairs = case req.outputFormat of
-              Just fmt -> ["format" .= fmt]
-              Nothing -> []
-            fields = effortPairs ++ formatPairs
-         in ["output_config" .= object fields | not (null fields)]
-
--- | Token usage information.
---
--- 'cacheCreation5mTokens' and 'cacheCreation1hTokens' partition
--- 'cacheCreationInputTokens' by cache TTL. When the API response omits the
--- @cache_creation@ sub-object (only 5m caching, or no caching), all
--- cache-creation tokens are attributed to the 5m bucket.
 data Usage = Usage
   { inputTokens :: Int,
     outputTokens :: Int,
@@ -528,73 +262,34 @@ data Usage = Usage
     cacheCreation5mTokens :: Int,
     cacheCreation1hTokens :: Int
   }
-  deriving stock (Show, Eq, Generic)
+  deriving stock (Show, Eq)
 
 instance FromJSON Usage where
   parseJSON = withObject "Usage" $ \v -> do
-    input <- v .: "input_tokens"
-    output <- v .: "output_tokens"
-    cacheCreate <- v .:? "cache_creation_input_tokens" .!= 0
-    cacheRead <- v .:? "cache_read_input_tokens" .!= 0
-    -- The cache_creation sub-object only appears when 1h caching is used (or
-    -- mixed TTLs). When absent, attribute all cache-creation tokens to 5m.
-    sub <- v .:? "cache_creation"
-    (c5m, c1h) <- case sub of
-      Nothing -> pure (cacheCreate, 0)
-      Just o -> do
-        a <- o .:? "ephemeral_5m_input_tokens" .!= 0
-        b <- o .:? "ephemeral_1h_input_tokens" .!= 0
-        pure (a, b)
-    pure $ Usage input output cacheCreate cacheRead c5m c1h
+    created <- v .:? "cache_creation_input_tokens" .!= 0
+    split <- v .:? "cache_creation"
+    (short, long) <- maybe (pure (created, 0)) (\s -> (,) <$> s .:? "ephemeral_5m_input_tokens" .!= 0 <*> s .:? "ephemeral_1h_input_tokens" .!= 0) split
+    Usage <$> v .: "input_tokens" <*> v .: "output_tokens" <*> pure created <*> v .:? "cache_read_input_tokens" .!= 0 <*> pure short <*> pure long
 
--- | Response from the Claude Messages API
-data MessagesResponse = MessagesResponse
-  { -- | Unique message ID
-    id_ :: Text,
-    -- | Response content blocks
-    content :: [ContentBlock],
-    -- | Why the model stopped
-    stopReason :: StopReason,
-    -- | Token usage
-    usage :: Usage
-  }
-  deriving stock (Show, Generic)
+data MessagesResponse = MessagesResponse {id_ :: Text, content :: [ContentBlock], stopReason :: StopReason, usage :: Usage} deriving stock (Show)
 
 instance FromJSON MessagesResponse where
-  parseJSON = withObject "MessagesResponse" $ \v ->
-    MessagesResponse
-      <$> v .: "id"
-      <*> v .: "content"
-      <*> (maybe (StopReasonOther "null") parseStopReason <$> v .:? "stop_reason")
-      <*> v .: "usage"
+  parseJSON = withObject "MessagesResponse" $ \v -> MessagesResponse <$> v .: "id" <*> v .: "content" <*> (maybe (StopReasonOther "null") parseStop <$> v .:? "stop_reason") <*> v .: "usage"
 
--- | Errors from Claude API
 data ClaudeError
-  = -- | HTTP error with status code and body
-    ClaudeHttpError Int Text
-  | -- | Failed to parse response JSON
-    ClaudeParseError String
-  | -- | API error with type and message
-    ClaudeApiError Text Text
-  | -- | Rate limited by the API (with optional retry-after seconds)
-    ClaudeRateLimited (Maybe Int)
-  | -- | API is overloaded (with optional retry-after seconds)
-    ClaudeOverloaded (Maybe Int)
-  | -- | Referenced provider name is not defined
-    ClaudeUnknownProvider Text
+  = ClaudeHttpError Int Text
+  | ClaudeParseError String
+  | ClaudeApiError Text Text
+  | ClaudeRateLimited (Maybe Int)
+  | ClaudeOverloaded (Maybe Int)
+  | ClaudeUnknownProvider Text
   deriving stock (Show, Eq)
 
 instance Exception ClaudeError
 
--- | Indices of user messages that contain a 'TextBlock' (turn boundaries).
--- A turn boundary marks human-initiated input, as opposed to user messages
--- that contain only 'ToolResultBlock' (tool results within an agent loop).
+-- Legacy history is canonical: image hoisting is restricted to HTTP projection.
 turnBoundaryIndices :: [ClaudeMessage] -> [Int]
-turnBoundaryIndices msgs =
-  [ i
-  | (i, ClaudeMessage User blocks) <- zip [0 ..] msgs,
-    any isTextBlock blocks
-  ]
+turnBoundaryIndices messages_ = [index | (index, ClaudeMessage User blocks) <- zip [0 ..] messages_, any input blocks]
   where
-    isTextBlock (TextBlock _) = True
-    isTextBlock _ = False
+    input (ToolResultBlock {}) = False
+    input _ = True

@@ -1,27 +1,26 @@
-module Elwood.Positive
-  ( Positive (getPositive),
-  )
-where
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DataKinds #-}
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
 
-import Data.Aeson (FromJSON (..), withScientific)
+-- | Bounded positive integers. Runtime input is parsed; static bounds are proved.
+module Elwood.Positive (Positive (getPositive), positive, literal) where
 
--- | A positive integer (>= 1). Use numeric literals (via the 'Num' instance).
-newtype Positive = UnsafePositive {getPositive :: Int}
+import Data.Aeson (FromJSON (..), ToJSON)
+import Data.Proxy (Proxy (..))
+import GHC.TypeNats (KnownNat, natVal, type (<=))
+
+newtype Positive = Positive {getPositive :: Int}
   deriving stock (Show, Eq, Ord)
+  deriving newtype (ToJSON)
 
-instance Num Positive where
-  fromInteger n
-    | n >= 1 = UnsafePositive (fromInteger n)
-    | otherwise = error $ "Positive.fromInteger: expected >= 1, got " <> show n
-  (+) = error "Positive: (+) not supported"
-  (*) = error "Positive: (*) not supported"
-  abs = error "Positive: abs not supported"
-  signum = error "Positive: signum not supported"
-  negate = error "Positive: negate not supported"
+positive :: Int -> Maybe Positive
+positive n
+  | n > 0 = Just (Positive n)
+  | otherwise = Nothing
+
+-- | Portable checked constants, with no partial Num instance.
+literal :: forall n. (KnownNat n, 1 <= n, n <= 2147483647) => Positive
+literal = Positive (fromIntegral (natVal (Proxy @n)))
 
 instance FromJSON Positive where
-  parseJSON = withScientific "Positive" $ \s ->
-    let n = round s
-     in if n >= 1
-          then pure (UnsafePositive n)
-          else fail $ "Expected positive integer (>= 1), got " <> show n
+  parseJSON value = parseJSON @Int value >>= maybe (fail "Expected positive integer") pure . positive

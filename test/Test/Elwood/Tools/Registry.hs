@@ -1,3 +1,8 @@
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Monoid law, left identity" #-}
+{-# HLINT ignore "Monoid law, right identity" #-}
+
 module Test.Elwood.Tools.Registry (tests) where
 
 import Data.Aeson (object, (.=))
@@ -29,7 +34,8 @@ tests =
   testGroup
     "Tools.Registry"
     [ registryBasicsTests,
-      filterTests
+      filterTests,
+      algebraTests
     ]
 
 registryBasicsTests :: TestTree
@@ -77,4 +83,24 @@ filterTests =
         let reg = registerTool (mkTestTool "a") newToolRegistry
             kept = applyToolFilter (OnlyTools (Set.fromList ["a", "ghost"])) reg
         map (.schema.name) (allTools kept) @?= ["a"]
+    ]
+
+algebraTests :: TestTree
+algebraTests =
+  testGroup
+    "Registry algebra"
+    [ testCase "composition has identity and is associative" $ do
+        let singleton name = registerTool (mkTestTool name) mempty
+            a = singleton "a"
+            b = singleton "b"
+            c = singleton "c"
+        toolSchemas (mempty <> a) @?= toolSchemas a
+        toolSchemas (a <> mempty) @?= toolSchemas a
+        toolSchemas ((a <> b) <> c) @?= toolSchemas (a <> (b <> c)),
+      testCase "later registry replaces a colliding tool" $ do
+        let old = registerTool (mkTestTool "a") mempty
+            replacement = (mkTestTool "a") {execute = const (pure (toolSuccess "replacement"))}
+        case lookupTool "a" (old <> registerTool replacement mempty) of
+          Nothing -> assertFailure "missing tool"
+          Just tool -> tool.execute (object []) >>= (@?= toolSuccess "replacement")
     ]

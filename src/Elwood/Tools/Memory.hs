@@ -1,133 +1,22 @@
-module Elwood.Tools.Memory
-  ( mkSaveMemoryTool,
-    mkSearchMemoryTool,
-  )
-where
+module Elwood.Tools.Memory (mkSaveMemoryTool, mkSearchMemoryTool) where
 
-import Data.Aeson (Value, object, (.=))
-import Data.Aeson qualified as Aeson
-import Data.Aeson.KeyMap qualified as KM
-import Data.Text (Text)
+import Data.Aeson (withObject)
 import Data.Text qualified as T
-import Elwood.Claude.Types (ToolSchema (..))
 import Elwood.Logging (Logger, logInfo)
-import Elwood.Memory (MemoryResult (..), MemoryStore, saveMemory, searchMemory)
+import Elwood.Memory qualified as Memory
+import Elwood.Tools.Builder qualified as B
 import Elwood.Tools.Types
 
--- | Construct a tool for saving memories
-mkSaveMemoryTool :: Logger -> MemoryStore -> Tool
-mkSaveMemoryTool logger memStore =
-  Tool
-    { schema =
-        ToolSchema
-          { name = "save_memory",
-            description =
-              "Save information to persistent memory for future reference. "
-                <> "Use this to remember important facts, preferences, or information "
-                <> "that should persist across conversations. "
-                <> "The key should be a short, descriptive identifier.",
-            inputSchema = saveMemorySchema
-          },
-      execute = \input -> case parseSaveInput input of
-        Left err -> pure $ toolError err
-        Right (k, c) -> do
-          logInfo logger "Saving memory" [("key", k)]
-          result <- saveMemory memStore k c
-          case result of
-            Left err -> pure $ toolError err
-            Right () -> pure $ toolSuccess $ "Memory saved with key: " <> k
-    }
-
--- | Construct a tool for searching memories
-mkSearchMemoryTool :: Logger -> MemoryStore -> Tool
-mkSearchMemoryTool logger memStore =
-  Tool
-    { schema =
-        ToolSchema
-          { name = "search_memory",
-            description =
-              "Search persistent memory for previously saved information. "
-                <> "Use this to recall facts, preferences, or context from past conversations. "
-                <> "The query can contain multiple keywords.",
-            inputSchema = searchMemorySchema
-          },
-      execute = \input -> case parseSearchInput input of
-        Left err -> pure $ toolError err
-        Right query -> do
-          logInfo logger "Searching memory" [("query", query)]
-          results <- searchMemory memStore query
-          if null results
-            then pure $ toolSuccess "No memories found matching the query."
-            else pure $ toolSuccess $ formatResults results
-    }
-
--- | JSON Schema for save_memory input
-saveMemorySchema :: Value
-saveMemorySchema =
-  object
-    [ "type" .= ("object" :: Text),
-      "properties"
-        .= object
-          [ "key"
-              .= object
-                [ "type" .= ("string" :: Text),
-                  "description" .= ("Short identifier for this memory (e.g., 'user-birthday', 'project-goals')" :: Text)
-                ],
-            "content"
-              .= object
-                [ "type" .= ("string" :: Text),
-                  "description" .= ("The information to remember" :: Text)
-                ]
-          ],
-      "required" .= (["key", "content"] :: [Text])
-    ]
-
--- | JSON Schema for search_memory input
-searchMemorySchema :: Value
-searchMemorySchema =
-  object
-    [ "type" .= ("object" :: Text),
-      "properties"
-        .= object
-          [ "query"
-              .= object
-                [ "type" .= ("string" :: Text),
-                  "description" .= ("Keywords to search for in memories" :: Text)
-                ]
-          ],
-      "required" .= (["query"] :: [Text])
-    ]
-
--- | Parse save_memory input
-parseSaveInput :: Value -> Either Text (Text, Text)
-parseSaveInput (Aeson.Object obj) = do
-  k <- case KM.lookup "key" obj of
-    Just (Aeson.String kv) -> Right kv
-    _ -> Left "Missing or invalid 'key' parameter"
-  c <- case KM.lookup "content" obj of
-    Just (Aeson.String cv) -> Right cv
-    _ -> Left "Missing or invalid 'content' parameter"
-  Right (k, c)
-parseSaveInput _ = Left "Expected object input"
-
--- | Parse search_memory input
-parseSearchInput :: Value -> Either Text Text
-parseSearchInput (Aeson.Object obj) =
-  case KM.lookup "query" obj of
-    Just (Aeson.String q) -> Right q
-    _ -> Left "Missing or invalid 'query' parameter"
-parseSearchInput _ = Left "Expected object input"
-
--- | Format search results for display
-formatResults :: [MemoryResult] -> Text
-formatResults results =
-  T.intercalate "\n\n" $ map formatResult results
+mkSaveMemoryTool :: Logger -> Memory.MemoryStore -> Tool
+mkSaveMemoryTool logger store = B.tool "save_memory" "Save persistent information under a key of 1–100 letters, digits, hyphens or underscores." fields parser $ \(key, content) -> do
+  logInfo logger "Saving memory" [("key", key)]
+  either toolError (const (toolSuccess ("Memory saved with key: " <> key))) <$> Memory.saveMemory store key content
   where
-    formatResult :: MemoryResult -> Text
-    formatResult r =
-      "**" <> r.key <> "**\n" <> limitContent r.content
+    fields = B.schema [("key", B.field "string" "Memory identifier"), ("content", B.field "string" "Information to remember")] ["key", "content"]
+    parser = withObject "save_memory" $ \value -> (,) <$> B.nonempty value "key" <*> B.text value "content"
 
-    limitContent :: Text -> Text
-    limitContent t
-      | T.length t > 500 = T.take 500 t <> "..."
-      | otherwise = t
+mkSearchMemoryTool :: Logger -> Memory.MemoryStore -> Tool
+mkSearchMemoryTool logger store = B.tool "search_memory" "Search persistent memory by keywords." (B.schema [("query", B.field "string" "Keywords")] ["query"]) (withObject "search_memory" (`B.text` "query")) $ \query -> do
+  logInfo logger "Searching memory" [("query", query)]
+  results <- Memory.searchMemory store query
+  pure $ toolSuccess $ if null results then "No memories found matching the query." else T.intercalate "\n\n" ["**" <> r.key <> "**\n" <> T.take 500 r.content <> if T.length r.content > 500 then "..." else "" | r <- results]

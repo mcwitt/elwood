@@ -1,115 +1,53 @@
-module Elwood.Webhook.Types
-  ( -- * Configuration Types
-    WebhookConfig (..),
-    WebhookServerConfig (..),
-
-    -- * Configuration File Types (for YAML parsing)
-    WebhookServerConfigFile (..),
-    WebhookConfigFile (..),
-    DeliveryTargetFile (..),
-  )
-where
+module Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..)) where
 
 import Data.Aeson
 import Data.Aeson.Types (Parser)
-import Data.Int (Int64)
-import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
-import Data.Text qualified as T
+import Data.Text qualified as Text
 import Elwood.Aeson (rejectUnknownKeys)
-import Elwood.AgentSettings (AgentOverrides (..))
+import Elwood.AgentSettings (AgentOverrides)
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
-import Elwood.Prompt (PromptInput (..))
-import GHC.Generics (Generic)
+import Elwood.Prompt (PromptInput)
 
--- | Configuration for a single webhook endpoint
 data WebhookConfig = WebhookConfig
-  { -- | Route name: /webhook/<name>
-    name :: Text,
-    -- | Prompt inputs (assembled at request time)
-    prompt :: [PromptInput],
-    -- | Session mode: isolated or named:<id>
-    session :: SessionConfig,
-    -- | Where to deliver responses
-    deliveryTarget :: DeliveryTarget,
-    -- | Suppress notification if response contains this string
-    suppressIfContains :: Maybe Text,
-    -- | Per-endpoint agent overrides (model, thinking, maxIterations)
-    overrides :: AgentOverrides
-  }
-  deriving stock (Show, Eq, Generic)
-
--- | Configuration for the webhook server
-data WebhookServerConfig = WebhookServerConfig
-  { -- | Whether webhook server is enabled
-    enabled :: Bool,
-    -- | Port to listen on (default: 8080)
-    port :: Int,
-    -- | Webhook secret (header: X-Webhook-Secret); per-endpoint secret takes precedence
-    secret :: Maybe Text,
-    -- | Configured webhook endpoints
-    webhooks :: [WebhookConfig]
-  }
-  deriving stock (Show, Eq, Generic)
-
--- | YAML file configuration for webhook server
-data WebhookServerConfigFile = WebhookServerConfigFile
-  { enabled :: Maybe Bool,
-    port :: Maybe Int,
-    secret :: Maybe Text,
-    endpoints :: Maybe [WebhookConfigFile]
-  }
-  deriving stock (Show, Generic)
-
--- | YAML file configuration for a webhook endpoint
-data WebhookConfigFile = WebhookConfigFile
   { name :: Text,
-    prompt :: Maybe [PromptInput],
-    session :: Maybe Text,
-    deliveryTarget :: Maybe DeliveryTargetFile,
+    prompt :: [PromptInput],
+    session :: SessionConfig,
+    deliveryTarget :: DeliveryTarget,
     suppressIfContains :: Maybe Text,
     overrides :: AgentOverrides
   }
-  deriving stock (Show, Generic)
+  deriving stock (Show, Eq)
 
--- | YAML file configuration for a delivery target
-data DeliveryTargetFile
-  = DeliveryTargetFileTelegram (NonEmpty Int64)
-  | DeliveryTargetFileBroadcast
-  | DeliveryTargetFileLog
-  deriving stock (Show, Generic)
+data WebhookServerConfig = WebhookServerConfig
+  {enabled :: Bool, port :: Int, secret :: Maybe Text, webhooks :: [WebhookConfig]}
+  deriving stock (Show, Eq)
 
-instance FromJSON DeliveryTargetFile where
-  parseJSON = withObject "DeliveryTargetFile" $ \v -> do
-    t <- v .: "type" :: Parser Text
-    case T.toLower t of
-      "telegram" -> do
-        rejectUnknownKeys "DeliveryTargetFile" ["type", "chat_ids"] v
-        DeliveryTargetFileTelegram <$> v .: "chat_ids"
-      "telegram_broadcast" -> do
-        rejectUnknownKeys "DeliveryTargetFile" ["type"] v
-        pure DeliveryTargetFileBroadcast
-      "log_only" -> do
-        rejectUnknownKeys "DeliveryTargetFile" ["type"] v
-        pure DeliveryTargetFileLog
-      other -> fail $ "Unknown delivery target type: " <> T.unpack other
-
-instance FromJSON WebhookServerConfigFile where
-  parseJSON = withObject "WebhookServerConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookServerConfigFile" ["enabled", "port", "secret", "endpoints"] v
-    WebhookServerConfigFile
-      <$> v .:? "enabled"
-      <*> v .:? "port"
+instance FromJSON WebhookServerConfig where
+  parseJSON = withObject "webhook" $ \v -> do
+    rejectUnknownKeys "webhook" ["enabled", "port", "secret", "endpoints"] v
+    WebhookServerConfig
+      <$> v .:? "enabled" .!= False
+      <*> v .:? "port" .!= 8080
       <*> v .:? "secret"
-      <*> v .:? "endpoints"
+      <*> v .:? "endpoints" .!= []
 
-instance FromJSON WebhookConfigFile where
-  parseJSON = withObject "WebhookConfigFile" $ \v -> do
-    rejectUnknownKeys "WebhookConfigFile" ["name", "prompt", "session", "delivery_target", "suppress_if_contains", "agent"] v
-    WebhookConfigFile
+instance FromJSON WebhookConfig where
+  parseJSON = withObject "webhook endpoint" $ \v -> do
+    rejectUnknownKeys "webhook endpoint" ["name", "prompt", "session", "delivery_target", "suppress_if_contains", "agent"] v
+    WebhookConfig
       <$> v .: "name"
-      <*> v .:? "prompt"
-      <*> v .:? "session"
-      <*> v .:? "delivery_target"
+      <*> v .:? "prompt" .!= []
+      <*> (maybe Isolated Named <$> v .:? "session")
+      <*> (v .:? "delivery_target" >>= maybe (pure TelegramBroadcast) delivery)
       <*> v .:? "suppress_if_contains"
       <*> v .:? "agent" .!= mempty
+    where
+      delivery = withObject "delivery target" $ \v -> do
+        kind <- Text.toLower <$> v .: "type" :: Parser Text
+        rejectUnknownKeys "delivery target" (["type"] <> ["chat_ids" | kind == "telegram"]) v
+        case kind of
+          "telegram" -> TelegramDelivery <$> v .: "chat_ids"
+          "telegram_broadcast" -> pure TelegramBroadcast
+          "log_only" -> pure LogOnly
+          _ -> fail ("Unknown delivery target type: " <> Text.unpack kind)

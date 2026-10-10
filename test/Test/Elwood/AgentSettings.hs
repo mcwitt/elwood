@@ -5,6 +5,7 @@ module Test.Elwood.AgentSettings (tests) where
 import Data.Aeson (eitherDecode)
 import Data.Either (isLeft)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Monoid (Last (..))
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -23,6 +24,7 @@ import Elwood.AgentSettings
     toOverrides,
   )
 import Elwood.Claude.Types (CacheTtl (..), ToolName (..))
+import Elwood.Pattern qualified as Pattern
 import Elwood.Permissions
   ( PermissionConfig (..),
     PermissionConfigFile (..),
@@ -30,6 +32,7 @@ import Elwood.Permissions
     defaultPermissionConfig,
     resolvePermissions,
   )
+import Elwood.Positive (literal)
 import Elwood.Positive qualified as P
 import Elwood.Prompt (PromptInput (..))
 import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..), ThinkingMode (..), ThinkingOverrides (..))
@@ -67,7 +70,7 @@ instance Arbitrary ThinkingMode where
   arbitrary =
     oneof
       [ Adaptive <$> arbitrary <*> arbitrary,
-        Budget . getPositive <$> arbitrary
+        Budget <$> arbitrary
       ]
 
 instance Arbitrary ThinkingOverrides where
@@ -80,7 +83,7 @@ instance Arbitrary CacheOverrides where
   arbitrary = CacheOverrides . Last <$> arbitrary <*> (Last <$> arbitrary)
 
 instance Arbitrary P.Positive where
-  arbitrary = fromIntegral . getPositive @Int <$> arbitrary
+  arbitrary = fromMaybe (literal @1) . P.positive . getPositive @Int <$> arbitrary
 
 instance Arbitrary PromptInput where
   arbitrary =
@@ -161,9 +164,9 @@ overrideTests =
               AgentOverrides
                 (ModelRefOverrides (Last Nothing) (Last (Just "model-a")))
                 (Just (ThinkingOverrides (Last (Just False)) (Last Nothing)))
-                (Last (Just 10))
+                (Last (Just (literal @10)))
                 (Just (CacheOverrides (Last (Just True)) (Last (Just CacheTtl5Min))))
-                (Last (Just 8192))
+                (Last (Just (literal @8192)))
                 (Last (Just [WorkspaceFile "SOUL.md"]))
                 (Last (Just ToolSearchDisabled))
                 (Last Nothing)
@@ -174,10 +177,10 @@ overrideTests =
         let s =
               AgentProfile
                 (ModelRef "anthropic" "model-x")
-                (Just (Budget 4096))
-                15
+                (Just (Budget (literal @4096)))
+                (literal @15)
                 (Just CacheTtl1Hour)
-                32768
+                (literal @32768)
                 [InlineText "test"]
                 (ToolSearchEnabled ["run_command"])
                 AllTools
@@ -188,9 +191,9 @@ overrideTests =
               AgentProfile
                 (ModelRef "anthropic" "model-x")
                 Nothing
-                15
+                (literal @15)
                 Nothing
-                32768
+                (literal @32768)
                 [InlineText "test"]
                 ToolSearchDisabled
                 AllTools
@@ -210,8 +213,8 @@ resolveTests =
         let s = resolveProfile mempty
         s.model @?= ModelRef "anthropic" "claude-sonnet-4-20250514"
         s.thinking @?= Nothing
-        s.maxIterations @?= 20
-        s.maxTokens @?= 16384
+        s.maxIterations @?= literal @20
+        s.maxTokens @?= literal @16384
         s.systemPrompt @?= [WorkspaceFile "SOUL.md"]
         s.toolSearch @?= ToolSearchDisabled
         s.toolFilter @?= AllTools
@@ -227,12 +230,12 @@ resolveTests =
             s = resolveProfile o
         s.cache @?= Just CacheTtl1Hour,
       testCase "overrides are applied" $ do
-        let o = agentDefaults <> AgentOverrides (ModelRefOverrides (Last Nothing) (Last (Just "custom-model"))) Nothing (Last (Just 50)) Nothing (Last (Just 8192)) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = agentDefaults <> AgentOverrides (ModelRefOverrides (Last Nothing) (Last (Just "custom-model"))) Nothing (Last (Just (literal @50))) Nothing (Last (Just (literal @8192))) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.model @?= ModelRef "anthropic" "custom-model"
         s.thinking @?= Nothing
-        s.maxIterations @?= 50
-        s.maxTokens @?= 8192,
+        s.maxIterations @?= literal @50
+        s.maxTokens @?= literal @8192,
       testCase "thinking enable=true resolves to Just mode" $ do
         let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just True)) (Last (Just (Adaptive (Just EffortMedium) Nothing))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
@@ -242,7 +245,7 @@ resolveTests =
             s = resolveProfile o
         s.thinking @?= Just (Adaptive Nothing Nothing),
       testCase "thinking enable=false resolves to Nothing" $ do
-        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just False)) (Last (Just (Budget 4096))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
+        let o = AgentOverrides mempty (Just (ThinkingOverrides (Last (Just False)) (Last (Just (Budget (literal @4096)))))) (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
             s = resolveProfile o
         s.thinking @?= Nothing,
       testCase "toolFilter defaults to AllTools" $ do
@@ -265,13 +268,13 @@ permissionsMergeTests =
     "Permissions merge"
     [ testCase "permissions use field-level merge" $ do
         let a = AgentOverrides mempty Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) (Just (PermissionConfigFile (Last Nothing) (Last Nothing) (Last (Just (Map.singleton "run_command" PolicyDeny))) (Last Nothing) (Last Nothing)))
-            b = AgentOverrides mempty Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) (Just (PermissionConfigFile (Last (Just ["^ls\\b"])) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing)))
+            b = AgentOverrides mempty Nothing (Last Nothing) Nothing (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) (Just (PermissionConfigFile (Last (Just [compiled "^ls\\b"])) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing)))
         -- b's safePatterns should merge with a's toolPolicies (not replace)
         let merged = a <> b
         case merged.permissions of
           Nothing -> assertFailure "Expected Just permissions"
           Just pcf -> do
-            pcf.safePatterns @?= Last (Just ["^ls\\b"])
+            pcf.safePatterns @?= Last (Just [compiled "^ls\\b"])
             pcf.toolPolicies @?= Last (Just (Map.singleton "run_command" PolicyDeny)),
       testCase "permissions: both Nothing stays Nothing" $ do
         let a = mempty :: AgentOverrides
@@ -280,19 +283,19 @@ permissionsMergeTests =
       testCase "roundtrip permissions through toPermissionConfigFile" $ do
         let pc =
               PermissionConfig
-                { safePatterns = ["^ls\\b"],
-                  dangerousPatterns = ["\\brm\\b"],
+                { safePatterns = [compiled "^ls\\b"],
+                  dangerousPatterns = [compiled "\\brm\\b"],
                   toolPolicies = Map.singleton "run_command" PolicyAsk,
                   defaultPolicy = PolicyAllow,
-                  approvalTimeoutSeconds = 120
+                  approvalTimeoutSeconds = literal @120
                 }
             profile =
               AgentProfile
                 (ModelRef "anthropic" "model")
                 Nothing
-                20
+                (literal @20)
                 (Just CacheTtl5Min)
-                16384
+                (literal @16384)
                 [WorkspaceFile "SOUL.md"]
                 ToolSearchDisabled
                 AllTools
@@ -336,7 +339,14 @@ toolFilterParseTests =
           @?= Right (OnlyTools Set.empty),
       testCase "a number is rejected" $
         assertBool "should fail" (isLeft (eitherDecode "5" :: Either String ToolFilter)),
-      testCase "non-string array elements are dropped" $
-        (eitherDecode "[\"run_command\", 42]" :: Either String ToolFilter)
-          @?= Right (OnlyTools (Set.fromList [ToolName "run_command"]))
+      testCase "non-string array elements are rejected" $
+        assertBool "malformed tools array" (isLeft (eitherDecode "[\"run_command\", 42]" :: Either String ToolFilter)),
+      testCase "non-string tool_search elements are rejected" $
+        assertBool "malformed tool search array" (isLeft (eitherDecode "[\"run_command\", 42]" :: Either String ToolSearchConfig))
     ]
+
+compiled :: Text -> Pattern.Pattern
+compiled = either error id . Pattern.parse
+
+instance Arbitrary Pattern.Pattern where
+  arbitrary = compiled <$> elements ["^ls", "rm", ".*", "[a-z]+"]

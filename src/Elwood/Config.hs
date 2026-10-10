@@ -8,13 +8,7 @@ module Elwood.Config
     ThinkingPruningConfig (..),
     ToolPruningConfig (..),
     ToolDirectionConfig (..),
-    PruningConfigFile (..),
-    ThinkingPruningConfigFile (..),
-    ToolPruningConfigFile (..),
-    ToolDirectionConfigFile (..),
-    resolveCompaction,
     resolvePruning,
-    isEnabled,
     MCPServerConfig (..),
     PermissionConfig (..),
     PermissionConfigFile (..),
@@ -22,12 +16,11 @@ module Elwood.Config
   )
 where
 
--- Note: PermissionConfig and PermissionConfigFile are re-exported from Elwood.Permissions
-
 import Control.Applicative ((<|>))
 import Control.Monad (forM_, unless, when)
 import Data.Aeson
-import Data.Aeson.KeyMap qualified as KM
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Aeson.Types (Parser, parseEither)
 import Data.Int (Int64)
 import Data.List (nub)
 import Data.Map.Strict (Map)
@@ -36,653 +29,244 @@ import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Monoid (Last (..))
 import Data.Set qualified as Set
 import Data.Text (Text)
-import Data.Text qualified as T
+import Data.Text qualified as Text
 import Data.Yaml qualified as Yaml
 import Elwood.Aeson (rejectUnknownKeys)
 import Elwood.AgentSettings
-  ( AgentOverrides (..),
-    AgentPreset (..),
-    AgentProfile (..),
-    ModelRef (..),
-    ModelRefOverrides (..),
-    parseModelRefOverrides,
-    resolveModelRef,
-    resolveProfile,
-  )
-import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
+import Elwood.Event.Types (SessionConfig (..))
 import Elwood.Permissions (PermissionConfig (..), PermissionConfigFile (..))
-import Elwood.Positive (Positive)
-import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ProviderConfigFile (..), ToolResultImageMode (..))
+import Elwood.Positive (Positive, literal)
+import Elwood.Provider
 import Elwood.Webhook.Types
-  ( DeliveryTargetFile (..),
-    WebhookConfig (..),
-    WebhookConfigFile (..),
-    WebhookServerConfig (..),
-    WebhookServerConfigFile (..),
-  )
-import GHC.Generics (Generic, Generically (..))
+import GHC.Generics (Generic)
+import Network.HTTP.Client (parseRequest)
 import Numeric.Natural (Natural)
 import System.Environment (lookupEnv)
 
--- | Strategy for pruning: how many recent turns to protect from modification.
--- 'KeepTurns 0' is valid (protect nothing).
 data PruningStrategy
-  = -- | Keep last N turns
-    KeepTurns Natural
-  | -- | Keep a fraction of total turns
-    KeepFraction Double
+  = KeepTurns Natural
+  | KeepFraction Double
   deriving stock (Show, Eq, Generic)
 
-instance FromJSON PruningStrategy where
-  parseJSON = withObject "PruningStrategy" $ \v ->
-    case KM.keys v of
-      ["keep_turns"] -> KeepTurns <$> v .: "keep_turns"
-      ["keep_fraction"] -> do
-        f <- v .: "keep_fraction"
-        when (f <= 0 || f > 1) $ fail "keep_fraction must be in (0, 1]"
-        pure (KeepFraction f)
-      _ -> fail "PruningStrategy must have exactly one key: keep_turns or keep_fraction"
-
--- | Strategy for compaction: how many recent turns to keep verbatim.
--- 'CKeepTurns' uses 'Positive' because compaction must always keep at least
--- one turn (keeping zero turns would discard the entire conversation).
 data CompactionStrategy
-  = -- | Keep last N turns (N > 0)
-    CKeepTurns Positive
-  | -- | Keep a fraction of total turns (converted via ceiling, like pruning)
-    CKeepFraction Double
+  = CKeepTurns Positive
+  | CKeepFraction Double
   deriving stock (Show, Eq, Generic)
 
-instance FromJSON CompactionStrategy where
-  parseJSON = withObject "CompactionStrategy" $ \v ->
-    case KM.keys v of
-      ["keep_turns"] -> CKeepTurns <$> v .: "keep_turns"
-      ["keep_fraction"] -> do
-        f <- v .: "keep_fraction"
-        when (f <= 0 || f > 1) $ fail "keep_fraction must be in (0, 1]"
-        pure (CKeepFraction f)
-      _ -> fail "CompactionStrategy must have exactly one key: keep_turns or keep_fraction"
-
--- | Main configuration for Elwood
 data Config = Config
-  { -- | Directory for persistent state
-    stateDir :: FilePath,
-    -- | Directory containing SOUL.md, AGENTS.md, etc.
+  { stateDir :: FilePath,
     workspace :: FilePath,
-    -- | Telegram bot token (loaded from environment)
     telegramToken :: Text,
-    -- | Resolved LLM provider endpoints, keyed by name
     providers :: Map Text ProviderConfig,
-    -- | Telegram chat configurations (ID + session)
     telegramChats :: [TelegramChatConfig],
-    -- | Resolved agent profile (model, thinking, permissions, etc.)
     agentProfile :: AgentProfile,
-    -- | Context compaction configuration (Nothing = disabled)
     compaction :: Maybe CompactionConfig,
-    -- | Tool result pruning configuration (Nothing = disabled)
     pruning :: Maybe PruningConfig,
-    -- | MCP server configurations
     mcpServers :: [MCPServerConfig],
-    -- | Webhook server configuration
     webhook :: WebhookServerConfig,
-    -- | Send notification messages when the agent uses tools
     toolUseMessages :: Bool,
-    -- | Delegate sub-agent preset (overrides + optional description)
     delegateAgent :: AgentPreset,
-    -- | Named agent presets for delegate_task
     delegateExtraAgents :: Map Text AgentPreset,
-    -- | Allowed models for delegate_task tool parameter
     delegateAllowedModels :: [Text],
-    -- | Maximum image dimension (Nothing = disabled, Just n = resize to n)
     maxImageDimension :: Maybe Int
   }
   deriving stock (Show, Generic)
 
--- | Configuration for context compaction
 data CompactionConfig = CompactionConfig
-  { -- | Compact when estimated tokens exceed this
-    tokenThreshold :: Positive,
-    -- | Model to use for summarization (e.g., "claude-3-5-haiku-20241022")
+  { tokenThreshold :: Positive,
     model :: ModelRef,
-    -- | Custom compaction prompt (Nothing = use built-in structured default)
     prompt :: Maybe Text,
-    -- | Strategy for splitting messages into compact vs keep regions
     strategy :: CompactionStrategy
   }
   deriving stock (Show, Generic)
 
--- | Configuration for tool result pruning
 data PruningConfig = PruningConfig
-  { -- | Global default retention strategy for pruning
-    strategy :: PruningStrategy,
-    -- | Thinking block pruning (Nothing = keep all thinking blocks)
+  { strategy :: PruningStrategy,
     thinking :: Maybe ThinkingPruningConfig,
-    -- | Tool result/input pruning configuration (Nothing = disabled)
     tools :: Maybe ToolPruningConfig
   }
   deriving stock (Show, Eq, Generic)
 
--- | Configuration for thinking block pruning
 newtype ThinkingPruningConfig = ThinkingPruningConfig
-  { -- | Retention strategy for thinking block pruning
-    strategy :: PruningStrategy
+  { strategy :: PruningStrategy
   }
   deriving stock (Show, Eq, Generic)
 
--- | Configuration for tool content pruning (head/tail chars, per-direction overrides)
 data ToolPruningConfig = ToolPruningConfig
-  { -- | Characters to keep from the start of pruned content
-    headChars :: Int,
-    -- | Characters to keep from the end of pruned content
+  { headChars :: Int,
     tailChars :: Int,
-    -- | Retention strategy for tools (cascaded to directions as default)
     strategy :: PruningStrategy,
-    -- | Resolved configuration for tool inputs
     input :: ToolDirectionConfig,
-    -- | Resolved configuration for tool outputs
     output :: ToolDirectionConfig
   }
   deriving stock (Show, Eq, Generic)
 
--- | Per-direction (input/output) pruning configuration
 data ToolDirectionConfig = ToolDirectionConfig
-  { -- | Retention strategy for this direction
-    strategy :: PruningStrategy,
-    -- | Characters to keep from the start
+  { strategy :: PruningStrategy,
     headChars :: Int,
-    -- | Characters to keep from the end
     tailChars :: Int
   }
   deriving stock (Show, Eq, Generic)
 
--- | Configuration for an MCP server
 data MCPServerConfig = MCPServerConfig
-  { -- | Server identifier for namespacing tools
-    name :: Text,
-    -- | Command to run (e.g., "npx")
+  { name :: Text,
     command :: Text,
-    -- | Command arguments
     args :: [Text],
-    -- | Optional environment variables
     env :: Maybe [(Text, Text)],
-    -- | Milliseconds to wait after spawning before sending initialize (default: 0)
     startupDelay :: Int
   }
   deriving stock (Show, Generic)
 
--- | Telegram chat configuration from YAML file
-data TelegramChatConfigFile = TelegramChatConfigFile
-  { id_ :: Int64,
-    session :: Maybe Text,
-    -- | Per-chat tool-use-notification default. Seeds the runtime @/tools@
-    -- override at startup, so a value here persists across restarts; the
-    -- @/tools@ command still toggles it for the running session. Nothing
-    -- falls back to the global 'ConfigFile' default.
-    toolUseMessages :: Maybe Bool,
-    overrides :: AgentOverrides
-  }
-  deriving stock (Show, Generic)
-
--- | Resolved telegram chat configuration
 data TelegramChatConfig = TelegramChatConfig
   { id_ :: Int64,
     session :: SessionConfig,
-    -- | Per-chat tool-use-notification default (Nothing = use global default).
     toolUseMessages :: Maybe Bool,
     overrides :: AgentOverrides
   }
   deriving stock (Show, Eq, Generic)
 
--- | Channels configuration from YAML file
-newtype ChannelsConfigFile = ChannelsConfigFile
-  { telegram :: Maybe [TelegramChatConfigFile]
-  }
-  deriving stock (Show, Generic)
+-- A retention strategy is a single alternative, never two competing knobs.
+retention :: (Natural -> a) -> (Double -> a) -> Value -> Parser a
+retention turns fraction = withObject "retention" $ \v -> case KeyMap.keys v of
+  ["keep_turns"] -> turns <$> v .: "keep_turns"
+  ["keep_fraction"] -> do
+    n <- v .: "keep_fraction"
+    if n > 0 && n <= 1 then pure (fraction n) else fail "keep_fraction must be in (0, 1]"
+  _ -> fail "retention requires exactly one of keep_turns or keep_fraction"
 
--- | YAML file configuration (without secrets)
-data ConfigFile = ConfigFile
-  { stateDir :: Maybe FilePath,
-    workspace :: Maybe FilePath,
-    channels :: Maybe ChannelsConfigFile,
-    agentOverrides :: AgentOverrides,
-    compaction :: Maybe CompactionConfigFile,
-    pruning :: Maybe PruningConfigFile,
-    mcpServers :: Maybe (Map Text MCPServerConfigFile),
-    providers :: Maybe (Map Text ProviderConfigFile),
-    webhook :: Maybe WebhookServerConfigFile,
-    toolUseMessages :: Maybe Bool,
-    delegate :: Maybe DelegateConfigFile,
-    -- | Outer Nothing = absent (use default); Just Nothing = explicit null (disabled);
-    -- Just (Just n) = explicit value
-    maxImageDimension :: Maybe (Maybe Int)
-  }
-  deriving stock (Show, Generic)
+instance FromJSON PruningStrategy where
+  parseJSON = retention KeepTurns KeepFraction
 
--- | Delegate sub-agent configuration from YAML file
-data DelegateConfigFile = DelegateConfigFile
-  { agent :: AgentPreset,
-    extraAgents :: Map Text AgentPreset,
-    allowedModels :: Maybe [Text]
-  }
-  deriving stock (Show, Generic)
+instance FromJSON CompactionStrategy where
+  parseJSON = withObject "compaction retention" $ \v -> case KeyMap.keys v of
+    ["keep_turns"] -> CKeepTurns <$> v .: "keep_turns"
+    _ -> retention (const (CKeepTurns (literal @1))) CKeepFraction (Object v)
 
--- | Compaction configuration from YAML file
-data CompactionConfigFile = CompactionConfigFile
-  { enable :: Last Bool,
-    tokenThreshold :: Last Positive,
-    model :: ModelRefOverrides,
-    prompt :: Last Text,
-    strategy :: Last CompactionStrategy
-  }
-  deriving stock (Show, Generic)
-  deriving (Semigroup, Monoid) via Generically CompactionConfigFile
+parseCompaction :: Value -> Parser (Maybe CompactionConfig)
+parseCompaction = withObject "compaction" $ \v -> do
+  rejectUnknownKeys "compaction" ["enable", "token_threshold", "model", "provider", "prompt", "strategy"] v
+  enabled <- v .:? "enable" .!= True
+  config <-
+    CompactionConfig
+      <$> v .:? "token_threshold" .!= literal @50000
+      <*> (resolveModelRef "claude-3-5-haiku-20241022" <$> parseModelRefOverrides v)
+      <*> v .:? "prompt"
+      <*> v .:? "strategy" .!= CKeepTurns (literal @10)
+  pure (if enabled then Just config else Nothing)
 
--- | @isEnabled (Last Nothing) == True@; only an explicit @Last (Just False)@ disables.
-isEnabled :: Last Bool -> Bool
-isEnabled = fromMaybe True . getLast
-
--- | Resolve a partial compaction config against hardcoded defaults.
--- Returns 'Nothing' when @enable = False@.
-resolveCompaction :: CompactionConfigFile -> Maybe CompactionConfig
-resolveCompaction ccf
-  | isEnabled ccf.enable =
-      Just
-        CompactionConfig
-          { tokenThreshold = fromMaybe 50000 (getLast ccf.tokenThreshold),
-            model = resolveModelRef "claude-3-5-haiku-20241022" ccf.model,
-            prompt = getLast ccf.prompt,
-            strategy = fromMaybe (CKeepTurns 10) (getLast ccf.strategy)
-          }
-  | otherwise = Nothing
-
--- | Pruning configuration from YAML file.
---
--- Double-'Maybe' fields use 'Last': @Last Nothing@ = absent (inherit
--- defaults), @Last (Just Nothing)@ = explicit null (disable),
--- @Last (Just (Just cfg))@ = explicit configuration.
-data PruningConfigFile = PruningConfigFile
-  { enable :: Last Bool,
-    strategy :: Last PruningStrategy,
-    thinking :: Last (Maybe ThinkingPruningConfigFile),
-    tools :: Last (Maybe ToolPruningConfigFile)
-  }
-  deriving stock (Show, Generic)
-  deriving (Semigroup, Monoid) via Generically PruningConfigFile
-
--- | Thinking pruning configuration from YAML file
-data ThinkingPruningConfigFile = ThinkingPruningConfigFile
-  { enable :: Last Bool,
-    strategy :: Last PruningStrategy
-  }
-  deriving stock (Show, Eq, Generic)
-  deriving (Semigroup, Monoid) via Generically ThinkingPruningConfigFile
-
--- | Tool pruning configuration from YAML file
-data ToolPruningConfigFile = ToolPruningConfigFile
-  { enable :: Last Bool,
-    headChars :: Last Int,
-    tailChars :: Last Int,
-    strategy :: Last PruningStrategy,
-    input :: Maybe ToolDirectionConfigFile,
-    output :: Maybe ToolDirectionConfigFile
-  }
-  deriving stock (Show, Eq, Generic)
-  deriving (Semigroup, Monoid) via Generically ToolPruningConfigFile
-
--- | Per-direction tool pruning configuration from YAML file
-data ToolDirectionConfigFile = ToolDirectionConfigFile
-  { strategy :: Last PruningStrategy,
-    headChars :: Last Int,
-    tailChars :: Last Int
-  }
-  deriving stock (Show, Eq, Generic)
-  deriving (Semigroup, Monoid) via Generically ToolDirectionConfigFile
-
--- | Resolve a partial pruning config against hardcoded defaults.
--- Returns 'Nothing' when @enable = False@.  Sub-component enable flags
--- cascade from the top-level enable and collapse into 'Maybe' wrappers.
-resolvePruning :: PruningConfigFile -> Maybe PruningConfig
-resolvePruning pcf
-  | not (isEnabled pcf.enable) = Nothing
-  | otherwise =
-      Just
-        PruningConfig
-          { strategy = globalStrategy,
-            thinking = thinkingCfg,
-            tools = toolsCfg
-          }
+-- Resolve inherited values while parsing, rather than constructing a second
+-- hierarchy of optional runtime records. Missing children inherit; null disables.
+resolvePruning :: Value -> Parser (Maybe PruningConfig)
+resolvePruning = component "pruning" ["strategy", "thinking", "tools"] $ \v -> do
+  strategy <- v .:? "strategy" .!= KeepTurns 3
+  thinking <-
+    component
+      "thinking pruning"
+      ["strategy"]
+      (\o -> ThinkingPruningConfig <$> o .:? "strategy" .!= strategy)
+      (child "thinking" v)
+  tools <- component "tool pruning" ["head_chars", "tail_chars", "strategy", "input", "output"] (parseTools strategy) (child "tools" v)
+  pure (PruningConfig strategy thinking tools)
   where
-    globalStrategy = fromMaybe (KeepTurns 3) (getLast pcf.strategy)
+    child key = fromMaybe (Object mempty) . KeyMap.lookup key
+    parseTools inherited v = do
+      headChars <- nonnegative 500 v "head_chars"
+      tailChars <- nonnegative 500 v "tail_chars"
+      strategy <- v .:? "strategy" .!= inherited
+      let direction = withObject "pruning direction" $ \o -> do
+            rejectUnknownKeys "pruning direction" ["strategy", "head_chars", "tail_chars"] o
+            ToolDirectionConfig <$> o .:? "strategy" .!= strategy <*> nonnegative headChars o "head_chars" <*> nonnegative tailChars o "tail_chars"
+      ToolPruningConfig headChars tailChars strategy
+        <$> (v .:? "input" .!= Object mempty >>= direction)
+        <*> (v .:? "output" .!= Object mempty >>= direction)
 
-    -- Thinking: Last Nothing = absent (enable with defaults),
-    -- Last (Just Nothing) = null (disable),
-    -- Last (Just (Just tcf)) = explicit config
-    thinkingCfg = case getLast pcf.thinking of
-      Nothing ->
-        Just ThinkingPruningConfig {strategy = globalStrategy}
-      Just Nothing -> Nothing
-      Just (Just tcf)
-        | isEnabled tcf.enable ->
-            Just ThinkingPruningConfig {strategy = fromMaybe globalStrategy (getLast tcf.strategy)}
-        | otherwise -> Nothing
+component :: String -> [Key] -> (Object -> Parser a) -> Value -> Parser (Maybe a)
+component name keys parse value = case value of
+  Null -> pure Nothing
+  _ ->
+    withObject
+      name
+      ( \v -> do
+          rejectUnknownKeys name ("enable" : keys) v
+          enabled <- v .:? "enable" .!= True
+          parsed <- parse v
+          pure (if enabled then Just parsed else Nothing)
+      )
+      value
 
-    -- Tools: same three-state semantics as thinking
-    toolsCfg = case getLast pcf.tools of
-      Nothing -> Just (defaultTools globalStrategy)
-      Just Nothing -> Nothing
-      Just (Just toolsCf)
-        | isEnabled toolsCf.enable ->
-            let toolsHeadChars = fromMaybe 500 (getLast toolsCf.headChars)
-                toolsTailChars = fromMaybe 500 (getLast toolsCf.tailChars)
-                toolsStrategy = fromMaybe globalStrategy (getLast toolsCf.strategy)
-                mkDirection dcf =
-                  let dc = fromMaybe mempty dcf
-                   in ToolDirectionConfig
-                        { strategy = fromMaybe toolsStrategy (getLast dc.strategy),
-                          headChars = fromMaybe toolsHeadChars (getLast dc.headChars),
-                          tailChars = fromMaybe toolsTailChars (getLast dc.tailChars)
-                        }
-             in Just
-                  ToolPruningConfig
-                    { headChars = toolsHeadChars,
-                      tailChars = toolsTailChars,
-                      strategy = toolsStrategy,
-                      input = mkDirection toolsCf.input,
-                      output = mkDirection toolsCf.output
-                    }
-        | otherwise -> Nothing
+nonnegative :: Int -> Object -> Key -> Parser Int
+nonnegative fallback v key = do
+  n <- v .:? key .!= fallback
+  when (n < 0) (fail (show key <> " must be nonnegative"))
+  pure n
 
--- | Default tool pruning config for the absent-tools case.
-defaultTools :: PruningStrategy -> ToolPruningConfig
-defaultTools strat =
-  let dir = ToolDirectionConfig {strategy = strat, headChars = 500, tailChars = 500}
-   in ToolPruningConfig {headChars = 500, tailChars = 500, strategy = strat, input = dir, output = dir}
+-- Parse the full file before resolving secrets. Optional nested records are
+-- interpreted once; no second tree of transport-specific configuration mirrors.
+parseConfig :: Value -> Parser (Config, Map Text ProviderConfigFile)
+parseConfig = withObject "Config" $ \v -> do
+  rejectUnknownKeys "Config" ["state_dir", "workspace", "channels", "agent", "compaction", "pruning", "mcp_servers", "providers", "webhook", "tool_use_messages", "delegate", "max_image_dimension"] v
+  stateDir <- v .:? "state_dir" .!= "/var/lib/assistant"
+  workspace <- v .:? "workspace" .!= "/var/lib/assistant/workspace"
+  channels <- v .:? "channels" .!= mempty
+  rejectUnknownKeys "channels" ["telegram"] channels
+  chats <- channels .:? "telegram" .!= [] >>= traverse (withObject "telegram chat" parseChat)
+  when (nub (map (.id_) chats) /= map (.id_) chats) (fail "channels.telegram contains duplicate chat IDs")
+  profile <- resolveProfile <$> v .:? "agent" .!= mempty
+  compact <- v .:? "compaction" .!= Object mempty >>= parseCompaction
+  pruning <- v .:? "pruning" .!= Object mempty >>= resolvePruning
+  servers <- v .:? "mcp_servers" .!= mempty >>= Map.traverseWithKey (withObject "MCP server" . parseServer)
+  providers <- v .:? "providers" .!= mempty
+  webhookConfig <- v .:? "webhook" .!= WebhookServerConfig False 8080 Nothing []
+  unless (webhookConfig.port >= 1 && webhookConfig.port <= 65535) (fail "webhook port must be in [1, 65535]")
+  toolMessages <- v .:? "tool_use_messages" .!= False
+  delegate <- v .:? "delegate" .!= mempty
+  rejectUnknownKeys "delegate" ["agent", "extra_agents", "allowed_models"] delegate
+  delegateAgent <- delegate .:? "agent" .!= AgentPreset Nothing mempty
+  extraAgents <- delegate .:? "extra_agents" .!= mempty
+  allowedModels <- delegate .:? "allowed_models" .!= []
+  imageDimension <- v .:! "max_image_dimension" .!= Just 1568
+  when (maybe False (< 50) imageDimension) (fail "max_image_dimension must be >= 50")
+  pure (Config stateDir workspace "" mempty chats profile compact pruning (Map.elems servers) webhookConfig toolMessages delegateAgent extraAgents allowedModels imageDimension, providers)
+  where
+    parseChat v = do
+      rejectUnknownKeys "telegram chat" ["id", "session", "tool_use_messages", "agent"] v
+      TelegramChatConfig <$> v .: "id" <*> (maybe Isolated Named <$> v .:? "session") <*> v .:? "tool_use_messages" <*> v .:? "agent" .!= mempty
+    parseServer name v = do
+      rejectUnknownKeys "MCP server" ["command", "args", "env", "startup_delay"] v
+      MCPServerConfig name <$> v .: "command" <*> v .:? "args" .!= [] <*> (fmap Map.toList <$> v .:? "env") <*> nonnegative 0 v "startup_delay"
 
--- | MCP server configuration from YAML file
-data MCPServerConfigFile = MCPServerConfigFile
-  { command :: Text,
-    args :: Maybe [Text],
-    env :: Maybe (Map Text Text),
-    startupDelay :: Maybe Int
-  }
-  deriving stock (Show, Generic)
-
-instance FromJSON TelegramChatConfigFile where
-  parseJSON = withObject "TelegramChatConfigFile" $ \v -> do
-    rejectUnknownKeys "TelegramChatConfigFile" ["id", "session", "tool_use_messages", "agent"] v
-    TelegramChatConfigFile
-      <$> v .: "id"
-      <*> v .:? "session"
-      <*> v .:? "tool_use_messages"
-      <*> v .:? "agent" .!= mempty
-
-instance FromJSON ChannelsConfigFile where
-  parseJSON = withObject "ChannelsConfigFile" $ \v -> do
-    rejectUnknownKeys "ChannelsConfigFile" ["telegram"] v
-    ChannelsConfigFile <$> v .:? "telegram"
-
-instance FromJSON ConfigFile where
-  parseJSON = withObject "ConfigFile" $ \v -> do
-    rejectUnknownKeys "ConfigFile" ["state_dir", "workspace", "channels", "agent", "compaction", "pruning", "mcp_servers", "providers", "webhook", "tool_use_messages", "delegate", "max_image_dimension"] v
-    ConfigFile
-      <$> v .:? "state_dir"
-      <*> v .:? "workspace"
-      <*> v .:? "channels"
-      <*> v .:? "agent" .!= mempty
-      <*> v .:? "compaction"
-      <*> v .:? "pruning"
-      <*> v .:? "mcp_servers"
-      <*> v .:? "providers"
-      <*> v .:? "webhook"
-      <*> v .:? "tool_use_messages"
-      <*> v .:? "delegate"
-      <*> v .:? "max_image_dimension"
-
-instance FromJSON CompactionConfigFile where
-  parseJSON = withObject "CompactionConfigFile" $ \v -> do
-    rejectUnknownKeys "CompactionConfigFile" ["enable", "token_threshold", "model", "provider", "prompt", "strategy"] v
-    CompactionConfigFile . Last
-      <$> v .:? "enable"
-      <*> (Last <$> v .:? "token_threshold")
-      <*> parseModelRefOverrides v
-      <*> (Last <$> v .:? "prompt")
-      <*> (Last <$> v .:? "strategy")
-
-instance FromJSON PruningConfigFile where
-  parseJSON = withObject "PruningConfigFile" $ \v -> do
-    rejectUnknownKeys "PruningConfigFile" ["enable", "strategy", "thinking", "tools"] v
-    PruningConfigFile . Last
-      <$> v .:? "enable"
-      <*> (Last <$> v .:? "strategy")
-      <*> (Last <$> v .:! "thinking")
-      <*> (Last <$> v .:! "tools")
-
-instance FromJSON ThinkingPruningConfigFile where
-  parseJSON = withObject "ThinkingPruningConfigFile" $ \v -> do
-    rejectUnknownKeys "ThinkingPruningConfigFile" ["enable", "strategy"] v
-    ThinkingPruningConfigFile . Last
-      <$> v .:? "enable"
-      <*> (Last <$> v .:? "strategy")
-
-instance FromJSON ToolPruningConfigFile where
-  parseJSON = withObject "ToolPruningConfigFile" $ \v -> do
-    rejectUnknownKeys "ToolPruningConfigFile" ["enable", "head_chars", "tail_chars", "strategy", "input", "output"] v
-    ToolPruningConfigFile . Last
-      <$> v .:? "enable"
-      <*> (Last <$> v .:? "head_chars")
-      <*> (Last <$> v .:? "tail_chars")
-      <*> (Last <$> v .:? "strategy")
-      <*> v .:? "input"
-      <*> v .:? "output"
-
-instance FromJSON ToolDirectionConfigFile where
-  parseJSON = withObject "ToolDirectionConfigFile" $ \v -> do
-    rejectUnknownKeys "ToolDirectionConfigFile" ["strategy", "head_chars", "tail_chars"] v
-    ToolDirectionConfigFile . Last
-      <$> v .:? "strategy"
-      <*> (Last <$> v .:? "head_chars")
-      <*> (Last <$> v .:? "tail_chars")
-
-instance FromJSON DelegateConfigFile where
-  parseJSON = withObject "DelegateConfigFile" $ \v -> do
-    rejectUnknownKeys "DelegateConfigFile" ["agent", "extra_agents", "allowed_models"] v
-    DelegateConfigFile
-      <$> v .:? "agent" .!= AgentPreset Nothing mempty
-      <*> v .:? "extra_agents" .!= Map.empty
-      <*> v .:? "allowed_models"
-
-instance FromJSON MCPServerConfigFile where
-  parseJSON = withObject "MCPServerConfigFile" $ \v -> do
-    rejectUnknownKeys "MCPServerConfigFile" ["command", "args", "env", "startup_delay"] v
-    MCPServerConfigFile
-      <$> v .: "command"
-      <*> v .:? "args"
-      <*> v .:? "env"
-      <*> v .:? "startup_delay"
-
--- | Load configuration from a YAML file and environment variables
 loadConfig :: FilePath -> IO Config
 loadConfig path = do
-  -- Load YAML file
-  configFile <- Yaml.decodeFileThrow path :: IO ConfigFile
-
-  -- Load Telegram token from environment (required)
-  telegramToken_ <-
-    lookupEnv "TELEGRAM_BOT_TOKEN" >>= \case
-      Nothing -> fail "TELEGRAM_BOT_TOKEN environment variable is required"
-      Just t -> pure (T.pack t)
-
-  -- Load Anthropic API key from environment (optional: only required if the
-  -- built-in "anthropic" provider is actually referenced). An empty string is
-  -- treated as absent.
-  anthropicApiKey_ <-
-    lookupEnv "ANTHROPIC_API_KEY" >>= \case
-      Just k | not (null k) -> pure (Just (T.pack k))
-      _ -> pure Nothing
-
-  -- Load webhook secret from environment (optional, overrides config file)
-  webhookSecretEnv <- fmap T.pack <$> lookupEnv "WEBHOOK_SECRET"
-
-  -- Resolve sub-configs via monoid layering
-  let compact = resolveCompaction (fromMaybe mempty configFile.compaction)
-  let prune = resolvePruning (fromMaybe mempty configFile.pruning)
-  let profile = resolveProfile configFile.agentOverrides
-
-  let servers = case configFile.mcpServers of
-        Nothing -> []
-        Just serverMap ->
-          [ MCPServerConfig
-              { name = n,
-                command = mcf.command,
-                args = fromMaybe [] mcf.args,
-                env = Map.toList <$> mcf.env,
-                startupDelay = fromMaybe 0 mcf.startupDelay
-              }
-          | (n, mcf) <- Map.toList serverMap
-          ]
-
-  -- Resolve a user-defined provider entry (api_key inline, else api_key_env).
-  let resolveProviderEntry :: Text -> ProviderConfigFile -> IO ProviderConfig
-      resolveProviderEntry n pcf = do
-        when (T.null (T.strip pcf.baseUrl)) $
-          fail $
-            "provider '" <> T.unpack n <> "': base_url must not be empty"
-        when (isJust pcf.apiKey && isJust pcf.apiKeyEnv) $
-          fail $
-            "provider '" <> T.unpack n <> "': set either api_key or api_key_env, not both"
-        key <- case (pcf.apiKey, pcf.apiKeyEnv) of
-          (Just k, _) -> pure (Just k)
-          (Nothing, Just envVar) ->
-            lookupEnv (T.unpack envVar) >>= \case
-              Just v | not (null v) -> pure (Just (T.pack v))
-              _ -> fail $ "provider '" <> T.unpack n <> "': api_key_env names environment variable '" <> T.unpack envVar <> "' which is not set"
-          (Nothing, Nothing) -> pure Nothing
-        pure
-          ProviderConfig
-            { name = n,
-              baseUrl = pcf.baseUrl,
-              apiKey = key,
-              format = fromMaybe AnthropicFormat pcf.format,
-              toolResultImages = fromMaybe ImagesEmbedded pcf.toolResultImages
-            }
-
-  userProviders <-
-    maybe (pure Map.empty) (Map.traverseWithKey resolveProviderEntry) configFile.providers
-
-  let builtinAnthropic =
-        ProviderConfig "anthropic" "https://api.anthropic.com" anthropicApiKey_ AnthropicFormat ImagesEmbedded
-      -- left-biased: a user-defined "anthropic" overrides the built-in
-      providersMap = Map.union userProviders (Map.singleton "anthropic" builtinAnthropic)
-      anthropicUserDefined = "anthropic" `Map.member` userProviders
-
-  -- Helper to resolve delivery targets from file objects
-  let resolveDeliveryTarget :: DeliveryTargetFile -> DeliveryTarget
-      resolveDeliveryTarget (DeliveryTargetFileTelegram ids) = TelegramDelivery ids
-      resolveDeliveryTarget DeliveryTargetFileBroadcast = TelegramBroadcast
-      resolveDeliveryTarget DeliveryTargetFileLog = LogOnly
-
-  let workspace_ = fromMaybe "/var/lib/assistant/workspace" configFile.workspace
-      telegramChatFiles = fromMaybe [] $ configFile.channels >>= (.telegram)
-
-  -- Webhook secret: env var takes precedence over config file
-  let webhookSecret = webhookSecretEnv <|> (configFile.webhook >>= (.secret))
-
-  let webhookCfg = case configFile.webhook of
-        Nothing ->
-          WebhookServerConfig
-            { enabled = False,
-              port = 8080,
-              secret = webhookSecret,
-              webhooks = []
-            }
-        Just wscf ->
-          WebhookServerConfig
-            { enabled = fromMaybe False wscf.enabled,
-              port = fromMaybe 8080 wscf.port,
-              secret = webhookSecret,
-              webhooks = case wscf.endpoints of
-                Nothing -> []
-                Just eps ->
-                  [ WebhookConfig
-                      { name = ep.name,
-                        prompt = fromMaybe [] ep.prompt,
-                        session = maybe Isolated Named ep.session,
-                        deliveryTarget = maybe TelegramBroadcast resolveDeliveryTarget ep.deliveryTarget,
-                        suppressIfContains = ep.suppressIfContains,
-                        overrides = ep.overrides
-                      }
-                  | ep <- eps
-                  ]
-            }
-
-  let telegramChats_ =
-        [ TelegramChatConfig
-            { id_ = tc.id_,
-              session = maybe Isolated Named tc.session,
-              toolUseMessages = tc.toolUseMessages,
-              overrides = tc.overrides
-            }
-        | tc <- telegramChatFiles
-        ]
-
-  -- Validate no duplicate chat IDs
-  let chatIds = map (.id_) telegramChats_
-  when (nub chatIds /= chatIds) $
-    fail "channels.telegram contains duplicate chat IDs"
-
-  -- Resolve max_image_dimension: absent -> Just 1568, null -> Nothing, value -> Just value
-  let maxImgDim = case configFile.maxImageDimension of
-        Nothing -> Just 1568
-        Just Nothing -> Nothing
-        Just (Just n) -> Just n
-
-  -- Validate max_image_dimension >= 50
-  case maxImgDim of
-    Just n | n < 50 -> fail "max_image_dimension must be >= 50"
-    _ -> pure ()
-
-  let delCfg = fromMaybe (DelegateConfigFile (AgentPreset Nothing mempty) Map.empty Nothing) configFile.delegate
-
-  -- Collect explicitly-set provider names from every override site. An override
-  -- that does not set a provider inherits the base profile (already counted),
-  -- so only explicitly-set names need collecting here.
-  let webhookEndpointOverrides = maybe [] (\w -> maybe [] (map (.overrides)) w.endpoints) configFile.webhook
-      delegateOverrides = delCfg.agent.overrides : map (.overrides) (Map.elems delCfg.extraAgents)
-      chatOverrides = map (.overrides) telegramChatFiles
-      explicitProviders =
-        [ p
-        | ovr <- chatOverrides ++ webhookEndpointOverrides ++ delegateOverrides,
-          Just p <- [getLast ovr.model.provider]
-        ]
-      referenced =
+  (config, providerFiles) <- Yaml.decodeFileThrow path >>= either fail pure . parseEither parseConfig
+  token <- lookupEnv "TELEGRAM_BOT_TOKEN" >>= maybe (fail "TELEGRAM_BOT_TOKEN environment variable is required") (pure . Text.pack)
+  anthropicKey <- fmap (Text.pack <$>) (lookupEnv "ANTHROPIC_API_KEY")
+  secret <- fmap (Text.pack <$>) (lookupEnv "WEBHOOK_SECRET")
+  providers <- Map.traverseWithKey resolveProvider providerFiles
+  let builtin = ProviderConfig "anthropic" "https://api.anthropic.com" (anthropicKey >>= nonempty) AnthropicFormat ImagesEmbedded
+      resolved = Map.insertWith (\_ existing -> existing) "anthropic" builtin providers
+      overrides =
+        map (.overrides) config.telegramChats
+          <> map (.overrides) config.webhook.webhooks
+          <> map (.overrides) (config.delegateAgent : Map.elems config.delegateExtraAgents)
+      references =
         Set.fromList $
-          profile.model.provider
-            : maybe [] (\c -> [c.model.provider]) compact
-            ++ explicitProviders
-
-  forM_ (Set.toList referenced) $ \n ->
-    unless (Map.member n providersMap) $
-      fail $
-        "unknown provider: " <> T.unpack n
-
-  when (Set.member "anthropic" referenced && not anthropicUserDefined && isNothing anthropicApiKey_) $
+          config.agentProfile.model.provider
+            : maybe [] (\c -> [c.model.provider]) config.compaction
+              <> [p | o <- overrides, Just p <- [getLast o.model.provider]]
+  forM_ references $ \name -> unless (Map.member name resolved) (fail ("unknown provider: " <> Text.unpack name))
+  when (Set.member "anthropic" references && Map.notMember "anthropic" providers && isNothing builtin.apiKey) $
     fail "ANTHROPIC_API_KEY is required because the built-in 'anthropic' provider is used"
-
-  pure
-    Config
-      { stateDir = fromMaybe "/var/lib/assistant" configFile.stateDir,
-        workspace = workspace_,
-        telegramToken = telegramToken_,
-        providers = providersMap,
-        telegramChats = telegramChats_,
-        agentProfile = profile,
-        compaction = compact,
-        pruning = prune,
-        mcpServers = servers,
-        webhook = webhookCfg,
-        toolUseMessages = fromMaybe False configFile.toolUseMessages,
-        delegateAgent = delCfg.agent,
-        delegateExtraAgents = delCfg.extraAgents,
-        delegateAllowedModels = fromMaybe [] delCfg.allowedModels,
-        maxImageDimension = maxImgDim
-      }
+  let w = config.webhook
+  pure config {telegramToken = token, providers = resolved, webhook = WebhookServerConfig w.enabled w.port (secret <|> w.secret) w.webhooks}
+  where
+    nonempty t = if Text.null t then Nothing else Just t
+    resolveProvider name p = do
+      when (Text.null (Text.strip p.baseUrl)) (fail "base_url must not be empty")
+      unless (any (`Text.isPrefixOf` p.baseUrl) ["https://", "http://"]) (fail "provider base_url must be HTTP(S)")
+      _ <- parseRequest (Text.unpack p.baseUrl)
+      when (isJust p.apiKey && isJust p.apiKeyEnv) (fail "set either api_key or api_key_env, not both")
+      key <- case p.apiKeyEnv of
+        Nothing -> pure p.apiKey
+        Just variable -> lookupEnv (Text.unpack variable) >>= maybe (fail ("api_key_env is not set: " <> Text.unpack variable)) (pure . nonempty . Text.pack)
+      when (isJust p.apiKeyEnv && isNothing key) (fail "api_key_env is empty")
+      pure (ProviderConfig name p.baseUrl key (fromMaybe AnthropicFormat p.format) (fromMaybe ImagesEmbedded p.toolResultImages))

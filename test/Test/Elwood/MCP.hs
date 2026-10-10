@@ -6,7 +6,7 @@ import Control.Exception (finally)
 import Data.Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text qualified as T
-import Elwood.Claude.Types (ToolResultPart (..))
+import Elwood.Claude.Types (ToolResultPart (..), ToolSchema (..))
 import Elwood.Config (MCPServerConfig (..))
 import Elwood.Logging (newLogger)
 import Elwood.Logging qualified as Log
@@ -14,14 +14,17 @@ import Elwood.MCP.Client (defaultRequestTimeoutSeconds, sendRequest, spawnServer
 import Elwood.MCP.Registry
   ( extractTimeout,
     injectTimeoutProperty,
-    maxRequestTimeoutSeconds,
     normalizeInputSchema,
     schemaDeclaresTimeout,
+    startMCPServers,
     toolResultParts,
   )
 import Elwood.MCP.Types
+import Elwood.Tools.Registry qualified as Registry
+import Elwood.Tools.Types (Tool (..), toolSuccess)
 import System.IO (hClose, hPutStr)
 import System.IO.Temp (withSystemTempFile)
+import System.Timeout (timeout)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -36,7 +39,8 @@ tests =
       concurrentRequestTests,
       schemaNormalizationTests,
       timeoutArgTests,
-      toolResultPartsTests
+      toolResultPartsTests,
+      lifecycleTests
     ]
 
 schemaNormalizationTests :: TestTree
@@ -381,12 +385,12 @@ timeoutArgTests =
       testCase "explicit timeout extracted and stripped from args" $
         extractTimeout (object ["url" .= ("u" :: T.Text), "timeout_seconds" .= (90 :: Int)])
           @?= Right (90, object ["url" .= ("u" :: T.Text)]),
-      testCase "timeout above max is clamped" $
+      testCase "timeout above max is rejected" $
         extractTimeout (object ["timeout_seconds" .= (10000 :: Int)])
-          @?= Right (maxRequestTimeoutSeconds, object []),
-      testCase "timeout below 1 is clamped to 1" $
+          @?= Left "timeout_seconds must be between 1 and 300",
+      testCase "timeout below 1 is rejected" $
         extractTimeout (object ["timeout_seconds" .= (0 :: Int)])
-          @?= Right (1, object []),
+          @?= Left "timeout_seconds must be between 1 and 300",
       testCase "non-integer timeout returns error" $
         extractTimeout (object ["timeout_seconds" .= ("ten" :: T.Text)])
           @?= Left "Invalid 'timeout_seconds' parameter (must be an integer)",
@@ -419,3 +423,66 @@ timeoutArgTests =
         schemaDeclaresTimeout (object ["type" .= ("object" :: T.Text)])
           @?= False
     ]
+
+lifecycleTests :: TestTree
+lifecycleTests =
+  testGroup
+    "MCP lifetime"
+    [ testCase "disconnect closes existing and future requests" $ fakeServer False $ \server -> do
+        first <- sendRequest server 30 "disconnect" Nothing
+        assertLeft first
+        next <- timeout 1000000 (sendRequest server 30 "after_disconnect" Nothing)
+        case next of
+          Just result -> assertLeft result
+          Nothing -> assertFailure "request registered after disconnection",
+      testCase "shutdown terminates a server ignoring TERM" $ fakeServer True $ \server -> do
+        stopped <- timeout 3000000 (stopServer server)
+        stopped @?= Just (),
+      testCase "partial timed-out write closes transport" $ fakeServerWith True False $ \server -> do
+        result <- sendRequest server 1 "large" (Just (String (T.replicate 2000000 "x")))
+        assertLeft result
+        next <- timeout 1000000 (sendRequest server 30 "next" Nothing)
+        case next of
+          Just response -> assertLeft response
+          Nothing -> assertFailure "partial request left the transport usable",
+      testCase "catalog rejects a name already in the registry" $ withSystemTempFile "mcp-collision.sh" $ \path handle -> do
+        hPutStr handle $
+          unlines
+            [ "while IFS= read -r line; do",
+              "  id=$(printf '%s' \"$line\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')",
+              "  if [ -n \"$id\" ]; then printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"tools\":[{\"name\":\"c\",\"inputSchema\":{}}]}}\\n' \"$id\"; fi",
+              "done"
+            ]
+        hClose handle
+        logger <- newLogger Log.Error
+        let existing = Tool (ToolSchema "mcp_a_b_c" "existing" (object [])) (const (pure (toolSuccess "existing")))
+            registry = Registry.registerTool existing Registry.newToolRegistry
+        (updated, servers) <- startMCPServers logger [MCPServerConfig "a_b" "bash" [T.pack path] Nothing 0] registry
+        length servers @?= 0
+        length (Registry.allTools updated) @?= 1,
+      testCase "fractional timeout is rejected" $
+        case extractTimeout (object ["timeout_seconds" .= (1.5 :: Double)]) of
+          Left _ -> pure ()
+          Right _ -> assertFailure "fractional timeout accepted"
+    ]
+  where
+    assertLeft (Left _) = pure ()
+    assertLeft (Right _) = assertFailure "expected closed-connection error"
+    fakeServer = fakeServerWith False
+    fakeServerWith stalled stubborn action = withSystemTempFile "elwood-mcp.sh" $ \path handle -> do
+      hPutStr handle $
+        unlines
+          [ if stubborn then "trap '' TERM" else ":",
+            "while IFS= read -r line; do",
+            if stalled then "  case \"$line\" in *notifications/initialized*) sleep 60;; esac" else ":",
+            "  case \"$line\" in *disconnect*) exit 0;; esac",
+            "  id=$(printf '%s' \"$line\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')",
+            "  if [ -n \"$id\" ]; then printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{}}\\n' \"$id\"; fi",
+            "done"
+          ]
+      hClose handle
+      logger <- newLogger Log.Error
+      spawned <- spawnServer logger (MCPServerConfig "lifetime" "bash" [T.pack path] Nothing 0)
+      case spawned of
+        Left err -> assertFailure (show err)
+        Right server -> action server `finally` stopServer server

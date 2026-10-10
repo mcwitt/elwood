@@ -1,50 +1,16 @@
+-- | Public conversation API; individual modules support narrower qualified imports.
 module Elwood.Claude
-  ( -- * Client
-    ClaudeClient,
-    newClient,
-    sendMessages,
-    sendMessagesWithRetry,
-    RetryConfig (..),
-    defaultRetryConfig,
-
-    -- * Agent Loop
-    AgentConfig (..),
-    AgentResult (..),
-    ExhaustionInfo (..),
-    AgentObserver (..),
-    RateLimitCallback,
-    TextCallback,
-    ToolUseCallback,
-    runAgentTurn,
-
-    -- * Conversation
-    ConversationStore (..),
-    newConversationStore,
-    newInMemoryConversationStore,
-
-    -- * Types
-    CacheTtl (..),
-    ClaudeMessage (..),
-    ContentBlock (..),
-    ToolResultPart (..),
-    toolResultText,
-    Conversation (..),
-    Role (..),
-    ToolName (..),
-    ToolUseId (..),
-    ToolSchema (..),
-    MessagesRequest (..),
-    MessagesResponse (..),
-    Usage (..),
-    StopReason (..),
-    ClaudeError (..),
-    ThinkingConfig (..),
-    stopReasonToText,
+  ( module Agent,
+    module Client,
+    module Conversation,
+    module Observer,
+    module Types,
   )
 where
 
-import Elwood.Claude.AgentLoop
-import Elwood.Claude.Client
-import Elwood.Claude.Conversation
-import Elwood.Claude.Observer
-import Elwood.Claude.Types
+import Elwood.Claude.AgentLoop as Agent hiding (formatExhaustion, perceiveResultImages)
+import Elwood.Claude.Client as Client (ClaudeClient)
+import Elwood.Claude.Client as Client hiding (ClaudeClient (..), buildRequest, calculateRetryDelay, hoistToolResultImages, isRetryableError, requestBetas, retryWithBackoff)
+import Elwood.Claude.Conversation as Conversation
+import Elwood.Claude.Observer as Observer
+import Elwood.Claude.Types as Types

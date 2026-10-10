@@ -1,63 +1,30 @@
-module Elwood.Prompt
-  ( PromptInput (..),
-    assemblePrompt,
-  )
-where
+module Elwood.Prompt (PromptInput (..), assemblePrompt) where
 
 import Data.Aeson
 import Data.Aeson.Types (Parser)
-import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.IO qualified as TIO
-import GHC.Generics (Generic)
+import Data.Text.IO qualified as T
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 
--- | Resolved prompt input (ready for assembly)
-data PromptInput
-  = -- | Read content from a file in the workspace directory
-    WorkspaceFile FilePath
-  | -- | Inline text content
-    InlineText Text
-  deriving stock (Show, Eq, Generic)
+data PromptInput = WorkspaceFile FilePath | InlineText Text
+  deriving stock (Show, Eq)
 
 instance FromJSON PromptInput where
-  parseJSON = withObject "PromptInput" $ \v -> do
-    t <- v .: "type" :: Parser Text
-    case T.toLower t of
-      "workspace_file" -> WorkspaceFile <$> v .: "path"
-      "text" -> InlineText <$> v .: "content"
-      other -> fail $ "Unknown prompt input type: " <> T.unpack other
+  parseJSON = withObject "PromptInput" $ \o ->
+    (T.toLower <$> o .: "type" :: Parser Text) >>= \case
+      "workspace_file" -> WorkspaceFile <$> o .: "path"
+      "text" -> InlineText <$> o .: "content"
+      other -> fail ("Unknown prompt input type: " <> T.unpack other)
 
--- | Assemble a prompt from a list of inputs by reading workspace files
--- and concatenating all parts with @"\\n\\n"@.
---
--- Returns 'Nothing' if all inputs resolve to empty text.
 assemblePrompt :: FilePath -> [PromptInput] -> IO (Maybe Text)
-assemblePrompt dir inputs = do
-  parts <- catMaybes <$> mapM (resolveInput dir) inputs
-  let combined = T.intercalate "\n\n" parts
-  pure $
-    if T.null combined
-      then Nothing
-      else Just combined
-
--- | Resolve a single prompt input to its text content.
-resolveInput :: FilePath -> PromptInput -> IO (Maybe Text)
-resolveInput dir (WorkspaceFile fp) = do
-  let fullPath = dir </> fp
-  exists <- doesFileExist fullPath
-  if exists
-    then do
-      c <- TIO.readFile fullPath
-      pure $
-        if T.null c
-          then Nothing
-          else Just c
-    else pure Nothing
-resolveInput _ (InlineText t) =
-  pure $
-    if T.null t
-      then Nothing
-      else Just t
+assemblePrompt directory inputs = do
+  text <- T.intercalate "\n\n" . filter (not . T.null) <$> traverse resolve inputs
+  pure (if T.null text then Nothing else Just text)
+  where
+    resolve (InlineText text) = pure text
+    resolve (WorkspaceFile path) = do
+      let file = directory </> path
+      exists <- doesFileExist file
+      if exists then T.readFile file else pure ""

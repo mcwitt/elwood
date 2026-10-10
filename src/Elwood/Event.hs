@@ -1,84 +1,48 @@
 module Elwood.Event
-  ( -- * Event Types
-    Event (..),
-
-    -- * Re-exports from Event.Types
-    EventSource (..),
-    SessionConfig (..),
-    DeliveryTarget (..),
-    ImageData (..),
-    MediaType (..),
-    Base64Data (..),
-    SavedAttachment (..),
-
-    -- * Event Environment
+  ( Event (..),
     AppEnv (..),
-
-    -- * Event Handling
+    DeliveryPolicy (..),
+    Runner (..),
+    eventRunner,
     handleEvent,
-    handleEventBuffered,
-    BufferedResult (..),
-
-    -- * Core Pipeline
-    DeliveryCallbacks (..),
-    handleEventCore,
-
-    -- * Delivery
-    deliverToTargets,
-    deliverTextOnly,
-    sendTypingToTargets,
-
-    -- * Session ID Utilities
-    sessionToConversationId,
-
-    -- * Utilities
-    sendAttachmentSafe,
+    handleEventWith,
     lookupToolUseMessages,
+    sessionToConversationId,
     attachPromptNote,
   )
 where
 
-import Control.Concurrent (threadDelay)
-import Control.Concurrent.STM (STM, TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar)
-import Control.Exception (SomeException, catch)
-import Control.Monad (filterM, unless)
-import Data.Aeson (Value (..))
+import Control.Concurrent.STM
+import Control.Monad (filterM, void, when)
+import Data.Aeson (Value)
 import Data.Either (lefts)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime, getCurrentTime)
-import Elwood.AgentSettings (AgentPreset, AgentProfile (..), ModelRef (..), ToolSearchConfig (..))
+import Elwood.AgentSettings (AgentOverrides, AgentPreset, AgentProfile (..), ModelRef (..), ToolSearchConfig (..), resolveProfile, toOverrides)
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Compaction (compactIfNeeded)
 import Elwood.Claude.Pruning (PruneHorizons, getAndUpdateHorizon)
 import Elwood.Config (CompactionConfig, PruningConfig, TelegramChatConfig (..))
 import Elwood.Event.Types
-  ( Base64Data (..),
-    DeliveryTarget (..),
-    EventSource (..),
-    ImageData (..),
-    MediaType (..),
-    SavedAttachment (..),
-    SessionConfig (..),
-  )
-import Elwood.Logging (Logger, logError, logInfo, logWarn)
+import Elwood.Exception (catchSync)
+import Elwood.Logging (Logger, logError, logInfo)
 import Elwood.Metrics (MetricsStore, metricsObserver, metricsSource)
-import Elwood.Notify (Severity (..), formatNotify, sanitizeBackticks)
 import Elwood.Prompt (assemblePrompt)
 import Elwood.Scheduler (CallbackStore)
 import Elwood.Session (SessionLocks, sessionCancelFlag, withSessionLock)
 import Elwood.Telegram qualified as Telegram
 import Elwood.Telegram.ToolUse (ToolUseNote (..), formatToolUseNote)
 import Elwood.Tools qualified as Tools
+import Elwood.Tools.AsyncTask (forTurn, scopeTasks)
 import Elwood.Tools.Attachment (isPhotoExtension)
 
--- | Unified event type for all sources
 data Event = Event
   { -- | Where this event came from
     source :: EventSource,
@@ -116,8 +80,6 @@ data AppEnv = AppEnv
     agentProfile :: AgentProfile,
     -- | Telegram chat ID to full chat config (source of truth for allowed chats)
     telegramChatMap :: Map Int64 TelegramChatConfig,
-    -- | Attachment queue
-    attachmentQueue :: TVar [Tools.Attachment],
     -- | Metrics store for Prometheus counters
     metrics :: MetricsStore,
     -- | Per-session prune horizons for tool result pruning
@@ -144,612 +106,216 @@ data AppEnv = AppEnv
     callbackStore :: CallbackStore
   }
 
--- | Callbacks wired into the agent loop for delivery during a turn
-data DeliveryCallbacks = DeliveryCallbacks
-  { onText :: Maybe Claude.TextCallback,
-    -- | Delivery action for the @send_message@ tool, reporting failure to the
-    -- model; 'Nothing' when the event has no one to deliver to (the tool is
-    -- then not offered).
-    sendMessage :: Maybe (Text -> IO (Either Text ())),
-    onToolUse :: Maybe Claude.ToolUseCallback,
-    onRateLimit :: Maybe Claude.RateLimitCallback,
-    onBeforeApiCall :: Maybe (IO ()),
-    onResponse :: Text -> IO (),
-    -- | Factory for delegate sub-agent tool-use callbacks.
-    -- Takes the task description (from parsed tool input) and returns a
-    -- 'ToolUseCallback' for that delegate invocation.
-    onDelegateToolUse :: Maybe (Text -> Claude.ToolUseCallback)
-  }
+-- Adapters submit resolved input through this handle; only the composition
+-- boundary owns application resources and profile resolution.
+newtype Runner = Runner {run :: AgentOverrides -> DeliveryPolicy -> Event -> IO (Either Text Text)}
 
--- | Handle any event through the agent pipeline
---
--- Returns Either error message or success response text.
--- Each event gets its own attachment queue to prevent cross-event interference.
+eventRunner :: AppEnv -> Runner
+eventRunner env = Runner $ \overrides ->
+  handleEventWith
+    env {agentProfile = resolveProfile (toOverrides env.agentProfile <> overrides)}
+
+data DeliveryPolicy = Immediate | SuppressContaining Text
+  deriving stock (Eq, Show)
+
+data Output = Narration Text [Tools.Attachment] | ToolNotice (Maybe Text) [(Text, Value)] | RateLimit Text
+
 handleEvent :: AppEnv -> Event -> IO (Either Text Text)
-handleEvent env event = do
-  env' <- withLocalAttachmentQueue env
-  withSessionLockIfNamed env' event $
-    handleEventCore env' event (eagerCallbacks env' event)
+handleEvent env = handleEventWith env Immediate
 
--- | Look up the effective tool-use-messages value for a Telegram chat id,
--- consulting the per-chat overrides and falling back to the global default.
-lookupToolUseMessages :: AppEnv -> Int64 -> STM Bool
-lookupToolUseMessages env cid =
-  Map.findWithDefault env.toolUseMessages cid <$> readTVar env.toolUseMessagesOverrides
+handleEventWith :: AppEnv -> DeliveryPolicy -> Event -> IO (Either Text Text)
+handleEventWith env policy event = lock $ do
+  attachments <- newTVarIO []
+  pending <- newTVarIO []
+  let capture text = do
+        output <- atomically $ do
+          queued <- readTVar attachments
+          writeTVar attachments []
+          pure (Narration text queued)
+        emit output
+      emit output = case policy of
+        Immediate -> deliver env event.deliveryTarget output
+        SuppressContaining _ -> atomically (modifyTVar' pending (output :))
+      finish text messages = do
+        mapM_ (\cid -> env.conversations.appendMessages cid messages env.agentProfile.cache) session
+        capture text
+        case policy of
+          SuppressContaining pattern_
+            | not (pattern_ `T.isInfixOf` text) ->
+                readTVarIO pending >>= mapM_ (deliver env event.deliveryTarget) . reverse
+          _ -> pure ()
+        pure (Right text)
+  result <-
+    catchSync
+      (runTurn env event attachments capture emit)
+      (pure . Claude.AgentError . T.pack . show)
+  case result of
+    Claude.AgentSuccess text messages -> finish text messages
+    Claude.AgentTruncated text messages -> finish (text <> "\n\n[Response truncated by token limit]") messages
+    Claude.AgentExhausted info ->
+      finish
+        ( info.partialOutput
+            <> "\n\n[Iteration limit reached: "
+            <> T.pack (show info.iterationsUsed)
+            <> " requests, "
+            <> T.pack (show info.toolsCalled)
+            <> " tool calls]"
+        )
+        info.messages
+    Claude.AgentCancelled -> pure (Right "")
+    Claude.AgentError err -> pure (Left err)
+  where
+    session = sessionToConversationId event.session
+    lock = maybe id (withSessionLock env.sessionLocks) session
 
--- | Restrict a delivery target to recipients that want tool-use notifications.
---
--- For Telegram targets, drops chats whose per-chat @/tools@ override (or the
--- global default) is off and returns the remaining chats; returns 'Nothing' if
--- no chat wants them. For 'LogOnly', returns 'Just LogOnly' iff the global
--- default is on (since there is no chat to consult).
---
--- This is the single point that resolves @/tools@ for tool-use notifications,
--- whether the event came from Telegram or from a webhook (cron).
-filterTargetByToolUse :: AppEnv -> DeliveryTarget -> IO (Maybe DeliveryTarget)
-filterTargetByToolUse env = \case
-  TelegramDelivery chatIds -> do
-    enabled <- atomically $ filterM (lookupToolUseMessages env) (NE.toList chatIds)
-    pure (TelegramDelivery <$> NE.nonEmpty enabled)
-  TelegramBroadcast -> do
-    enabled <- atomically $ filterM (lookupToolUseMessages env) (Map.keys env.telegramChatMap)
-    pure (TelegramDelivery <$> NE.nonEmpty enabled)
-  LogOnly -> pure $ if env.toolUseMessages then Just LogOnly else Nothing
-
--- | Construct eager (immediate-delivery) callbacks from an event's delivery targets
-eagerCallbacks :: AppEnv -> Event -> DeliveryCallbacks
-eagerCallbacks env event =
-  DeliveryCallbacks
-    { onText = Just (mkTextCallback env event),
-      sendMessage = mkSendMessageDelivery env event.deliveryTarget,
-      onToolUse = Just (mkToolUseNotifier env event Nothing),
-      onRateLimit = Just (mkRateLimitCallback env event),
-      onBeforeApiCall = Just (mkBeforeApiCallCallback env event),
-      onResponse = deliverResponse env event,
-      onDelegateToolUse = Just (mkToolUseNotifier env event . Just)
-    }
-
--- | Core event handler parameterised by delivery callbacks
-handleEventCore :: AppEnv -> Event -> DeliveryCallbacks -> IO (Either Text Text)
-handleEventCore env event callbacks = do
-  let lgr = env.logger
-      src = event.source
-
-  logInfo
-    lgr
-    "Handling event"
-    [ ("source", formatSource src),
-      ("session", T.pack (show event.session)),
-      ("delivery_target", T.pack (show event.deliveryTarget))
-    ]
-
-  -- Determine conversation ID from session config
-  let mConversationId = sessionToConversationId event.session
-
-  let prof = env.agentProfile
-
-  -- Get existing conversation, run compaction if needed (empty for Isolated)
-  let observer = metricsObserver env.metrics prof.model.model (metricsSource src)
+runTurn :: AppEnv -> Event -> TVar [Tools.Attachment] -> (Text -> IO ()) -> (Output -> IO ()) -> IO Claude.AgentResult
+runTurn env event attachments narrate emit = do
+  let profile = env.agentProfile
+      observer = metricsObserver env.metrics profile.model.model (metricsSource event.source)
   now <- getCurrentTime
-  (history, pruneHorizon) <- case mConversationId of
+  (history, horizon) <- case sessionToConversationId event.session of
     Nothing -> pure ([], 0)
     Just cid -> do
-      conv <- env.conversations.getConversation cid
-      -- Run compaction before the agent turn; if compaction occurs,
-      -- replaceMessages is called internally (resetting cache expiry to epoch)
-      history <- case env.compaction of
-        Nothing -> pure conv.messages
-        Just compactCfg ->
-          compactIfNeeded
-            lgr
-            env.claude
-            compactCfg
-            observer.onCompaction
-            observer.onApiResponse
-            (env.conversations.replaceMessages cid)
-            conv.messages
-      -- Re-read conversation for possibly updated cache expiry
-      conv' <- env.conversations.getConversation cid
-      let cacheExpired = now > conv'.cacheExpiresAt
-      h <- getAndUpdateHorizon env.pruneHorizons cid (length history) cacheExpired
-      pure (history, h)
-
-  -- Assemble system prompt from workspace files (re-read each request)
-  systemPrompt <- assemblePrompt env.workspace prof.systemPrompt
-
-  -- Build user message with optional image; append a note describing any
-  -- attachments archived to the workspace inbox.
-  let promptWithNote = attachPromptNote event.prompt event.attachments
-      contentBlocks = case event.image of
-        Just img ->
-          [Claude.ImageBlock img.mediaType.unMediaType img.base64Data.unBase64Data, Claude.TextBlock promptWithNote]
-        Nothing ->
-          [Claude.TextBlock promptWithNote]
-      userMsg = Claude.ClaudeMessage Claude.User contentBlocks
-
-  -- Convert tool search config to Maybe (Set ToolName) for the agent loop
-  let toolSearch_ = case prof.toolSearch of
-        ToolSearchDisabled -> Nothing
-        ToolSearchEnabled names -> Just (Set.fromList (map Claude.ToolName names))
-
-  -- Re-register tools that need per-event state:
-  -- - run_command: per-chat/per-webhook permission overrides
-  -- - queue_attachment: per-event attachment queue (prevents cross-event interference)
-  -- - schedule_callback: captures this turn's session and delivery target so the
-  --   woken turn resumes the same conversation and is delivered to the same chat
-  let runCmdTool = Tools.mkRunCommandTool lgr env.workspace prof.permissions
-      attachmentTool = Tools.mkQueueAttachmentTool lgr env.attachmentQueue
-      scheduleTool = Tools.mkScheduleCallbackTool lgr env.callbackStore event.session event.deliveryTarget
-      registryWithPerms =
-        Tools.registerTool scheduleTool $
-          Tools.registerTool attachmentTool $
-            Tools.registerTool runCmdTool env.registry
-
-  -- Build registry with delegate and check_task tools (base registry has no
-  -- delegate_task or check_task, preventing recursive nesting)
-  let delegateTool =
-        Tools.mkDelegateTaskTool
-          lgr
-          env.claude
-          registryWithPerms
-          env.requestApproval
-          prof
-          env.pruning
-          env.workspace
-          env.maxImageDimension
-          env.metrics
-          env.delegateAgent
-          env.delegateExtraAgents
-          env.delegateAllowedModels
-          callbacks.onDelegateToolUse
-          (Just env.asyncTaskStore)
-      checkTaskTool = Tools.mkCheckTaskTool env.asyncTaskStore
-      awaitTaskTool = Tools.mkAwaitTaskTool env.asyncTaskStore
-      cancelTaskTool = Tools.mkCancelTaskTool env.asyncTaskStore
-      registryWithDelegate =
-        Tools.registerTool cancelTaskTool $
-          Tools.registerTool awaitTaskTool $
-            Tools.registerTool checkTaskTool $
-              Tools.registerTool delegateTool registryWithPerms
-      -- send_message is added after the delegate tool is built from
-      -- registryWithPerms so sub-agents cannot message the user directly.
-      registryWithSend = case callbacks.sendMessage of
-        Nothing -> registryWithDelegate
-        Just deliver -> Tools.registerTool (Tools.mkSendMessageTool lgr deliver) registryWithDelegate
-      -- toolFilter governs the complete registry including meta-tools
-      -- (delegate_task, check_task, ...); an OnlyTools allowlist must name them
-      -- explicitly to retain them.
-      filteredRegistry = Tools.applyToolFilter prof.toolFilter registryWithSend
-
-  -- Build cancellation check for this session (always False for isolated sessions)
-  isCancelled_ <- case mConversationId of
-    Nothing -> pure (pure False)
-    Just cid -> do
-      mtv <- sessionCancelFlag env.sessionLocks cid
-      pure $ maybe (pure False) readTVarIO mtv
-
-  -- Build agent config from environment
-  let agentConfig =
+      conversation <- env.conversations.getConversation cid
+      history <-
+        maybe
+          (pure conversation.messages)
+          ( \config ->
+              compactIfNeeded
+                env.logger
+                env.claude
+                config
+                observer.onCompaction
+                observer.onApiResponse
+                (env.conversations.replaceMessages cid)
+                conversation.messages
+          )
+          env.compaction
+      current <- env.conversations.getConversation cid
+      horizon <- getAndUpdateHorizon env.pruneHorizons cid (length history) (now > current.cacheExpiresAt)
+      pure (history, horizon)
+  system <- assemblePrompt env.workspace profile.systemPrompt
+  cancellation <- maybe (pure Nothing) (sessionCancelFlag env.sessionLocks) (sessionToConversationId event.session)
+  let base =
+        foldr
+          Tools.registerTool
+          env.registry
+          [ Tools.mkRunCommandTool env.logger env.workspace profile.permissions,
+            Tools.mkQueueAttachmentTool env.logger attachments,
+            Tools.mkScheduleCallbackTool env.logger env.callbackStore event.session event.deliveryTarget
+          ]
+      tasks = maybe id forTurn cancellation $ scopeTasks (fromMaybe (T.pack (show event.source) <> T.pack (show event.timestamp)) (sessionToConversationId event.session)) env.asyncTaskStore
+      delegateNote task _ calls = emit (ToolNotice (Just task) calls)
+      delegated =
+        foldr
+          Tools.registerTool
+          base
+          [ Tools.mkDelegateTaskTool
+              env.logger
+              env.claude
+              base
+              env.requestApproval
+              profile
+              env.pruning
+              env.workspace
+              env.maxImageDimension
+              env.metrics
+              env.delegateAgent
+              env.delegateExtraAgents
+              env.delegateAllowedModels
+              (Just delegateNote)
+              (Just tasks),
+            Tools.mkCheckTaskTool tasks,
+            Tools.mkAwaitTaskTool tasks,
+            Tools.mkCancelTaskTool tasks
+          ]
+      registry = case recipients env event.deliveryTarget of
+        [] -> delegated
+        chats ->
+          Tools.registerTool
+            ( Tools.mkSendMessageTool env.logger $ \text -> do
+                errors <- lefts <$> mapM (\chat -> sendText env chat text) chats
+                pure (if null errors then Right () else Left (T.intercalate "; " errors))
+            )
+            delegated
+      config =
         Claude.AgentConfig
-          { logger = lgr,
+          { logger = env.logger,
             client = env.claude,
-            registry = filteredRegistry,
+            registry = Tools.applyToolFilter profile.toolFilter registry,
             requestApproval = env.requestApproval,
-            systemPrompt = systemPrompt,
-            agentProfile = prof,
+            systemPrompt = system,
+            agentProfile = profile,
             observer = observer,
-            onRateLimit = callbacks.onRateLimit,
-            onText = callbacks.onText,
-            onToolUse = callbacks.onToolUse,
-            onBeforeApiCall = callbacks.onBeforeApiCall,
-            toolSearch = toolSearch_,
+            onRateLimit = Just (\attempt delay -> emit (RateLimit ("Rate limited: retry " <> T.pack (show attempt) <> " in " <> T.pack (show delay) <> "s"))),
+            onText = Just narrate,
+            onToolUse = Just (\_ calls -> emit (ToolNotice Nothing calls)),
+            onBeforeApiCall = Just (mapM_ (Telegram.sendChatAction env.telegram) (recipients env event.deliveryTarget)),
+            toolSearch = case profile.toolSearch of ToolSearchDisabled -> Nothing; ToolSearchEnabled names -> Just (Set.fromList (map Claude.ToolName names)),
             pruningConfig = env.pruning,
-            pruneHorizon = pruneHorizon,
+            pruneHorizon = horizon,
             outputFormat = Nothing,
             maxImageDimension = env.maxImageDimension,
-            isCancelled = isCancelled_
+            isCancelled = maybe (pure False) readTVarIO cancellation
           }
+      images = [Claude.ImageBlock img.mediaType.unMediaType img.base64Data.unBase64Data | img <- maybe [] pure event.image]
+      input = Claude.ClaudeMessage Claude.User (images <> [Claude.TextBlock (attachPromptNote event.prompt event.attachments)])
+  Claude.runAgentTurn config history input
 
-  -- Run the agent turn
-  result <-
-    Claude.runAgentTurn agentConfig history userMsg
-      `catch` \(e :: SomeException) -> do
-        logError lgr "Event handler agent error" [("error", T.pack (show e))]
-        pure $ Claude.AgentError $ formatNotify Error $ "**Agent error:** `" <> sanitizeBackticks (T.pack (show e)) <> "`"
+lookupToolUseMessages :: AppEnv -> Int64 -> STM Bool
+lookupToolUseMessages env chat = Map.findWithDefault env.toolUseMessages chat <$> readTVar env.toolUseMessagesOverrides
 
-  case result of
-    Claude.AgentSuccess responseText newMessages -> do
-      -- Append new messages to conversation (skip for isolated sessions)
-      case mConversationId of
-        Nothing -> pure ()
-        Just cid -> env.conversations.appendMessages cid newMessages prof.cache
+recipients :: AppEnv -> DeliveryTarget -> [Int64]
+recipients _ (TelegramDelivery chats) = NE.toList chats
+recipients env TelegramBroadcast = Map.keys env.telegramChatMap
+recipients _ LogOnly = []
 
-      -- Deliver response
-      callbacks.onResponse responseText
-
-      logInfo
-        lgr
-        "Event handled successfully"
-        [ ("source", formatSource src),
-          ("response_length", T.pack (show (T.length responseText)))
-        ]
-
-      pure (Right responseText)
-    Claude.AgentExhausted info -> do
-      -- Persist the partial turn and surface its text to the user rather
-      -- than discard work that hit the iteration cap.
-      case mConversationId of
-        Nothing -> pure ()
-        Just cid -> env.conversations.appendMessages cid info.messages prof.cache
-
-      let suffix =
-            "\n\n"
-              <> formatNotify
-                Error
-                ( "**Agent loop:** `exceeded max iterations ("
-                    <> T.pack (show info.iterationsUsed)
-                    <> ", "
-                    <> T.pack (show info.toolsCalled)
-                    <> " tool calls)`"
-                )
-          delivered =
-            if T.null info.partialOutput
-              then suffix
-              else info.partialOutput <> suffix
-
-      callbacks.onResponse delivered
-
-      logWarn
-        lgr
-        "Event handled with iteration exhaustion"
-        [ ("source", formatSource src),
-          ("iterations_used", T.pack (show info.iterationsUsed)),
-          ("tools_called", T.pack (show info.toolsCalled)),
-          ("partial_output_length", T.pack (show (T.length info.partialOutput)))
-        ]
-
-      pure (Right delivered)
-    Claude.AgentCancelled -> do
-      logInfo lgr "Event cancelled by user" [("source", formatSource src)]
-      -- Turn discarded — don't save anything or deliver a response
-      pure (Right "")
-    Claude.AgentError err -> do
-      logError lgr "Event handling failed" [("source", formatSource src), ("error", err)]
-      pure (Left err)
-
--- | Acquire the per-session lock for named sessions; run directly for isolated ones.
-withSessionLockIfNamed :: AppEnv -> Event -> IO a -> IO a
-withSessionLockIfNamed env event action =
-  case sessionToConversationId event.session of
-    Nothing -> action
-    Just sid -> withSessionLock env.sessionLocks sid action
-
--- | Delay in microseconds between typing indicator and message delivery
--- during buffered flush (500ms)
-flushPacingDelay :: Int
-flushPacingDelay = 500000
-
--- | Buffered output item captured during an agent turn
-data BufferedItem
-  = -- | Intermediate text with any attachments queued before it
-    BufferedText Text [Tools.Attachment]
-  | -- | Tool-use notification, carried as (optional delegate label, tool
-    -- calls). Recipients are filtered and the note is formatted at flush
-    -- time, not at buffer time, so a chat that has notifications disabled
-    -- pays no formatting cost.
-    BufferedToolUse (Maybe Text) [(Text, Value)]
-  | BufferedRateLimit Text
-
--- | Atomically prepend an item to the output buffer. Tool-use callbacks from
--- concurrently-executing delegate sub-agents can fire from multiple threads,
--- so a non-atomic read-modify-write would drop items.
-bufferItem :: IORef [BufferedItem] -> BufferedItem -> IO ()
-bufferItem ref item = atomicModifyIORef' ref (\items -> (item : items, ()))
-
--- | Result of a buffered event handler run
-data BufferedResult
-  = -- | Agent turn failed
-    BufferedError Text
-  | -- | Agent turn succeeded with response text and flush action.
-    -- Call the flush action to deliver all buffered output.
-    BufferedSuccess
-      -- | Response text
-      Text
-      -- | Flush action: replays buffered output then delivers final response
-      (IO ())
-
--- | Handle an event with buffered delivery
---
--- All intermediate text and rate-limit messages are captured in a buffer.
--- On success, returns a 'BufferedSuccess' whose 'flush' action replays the
--- buffer (with typing indicators and pacing) then delivers the final
--- response including attachments. On error, the buffer is discarded.
-handleEventBuffered ::
-  AppEnv -> Event -> DeliveryTarget -> IO BufferedResult
-handleEventBuffered env event targets = do
-  env' <- withLocalAttachmentQueue env
-  bufRef <- newIORef ([] :: [BufferedItem])
-  let bufferText t = do
-        -- Drain any attachments queued since the last text callback
-        atts <- atomically $ do
-          a <- readTVar env'.attachmentQueue
-          writeTVar env'.attachmentQueue []
-          pure a
-        bufferItem bufRef (BufferedText t atts)
-      callbacks =
-        DeliveryCallbacks
-          { onText = Just bufferText,
-            -- Replayed by the flush action, so buffering is the delivery
-            -- that can be promised here.
-            sendMessage = Just (fmap Right . bufferText),
-            onToolUse = Just $ \_iter calls ->
-              bufferItem bufRef (BufferedToolUse Nothing calls),
-            onRateLimit =
-              Just
-                ( \n s -> do
-                    let m = formatNotify Warn $ "Rate limited, retry " <> T.pack (show n) <> " in " <> T.pack (show s) <> "s"
-                    bufferItem bufRef (BufferedRateLimit m)
-                ),
-            onBeforeApiCall = Nothing,
-            onResponse = \_ -> pure (),
-            onDelegateToolUse = Just $ \task _iter calls ->
-              bufferItem bufRef (BufferedToolUse (Just task) calls)
-          }
-  result <- withSessionLockIfNamed env' event $ handleEventCore env' event callbacks
-  case result of
-    Left err -> do
-      drainAttachmentQueue env'
-      pure (BufferedError err)
-    Right rsp -> do
-      buf <- readIORef bufRef
-      pure $ BufferedSuccess rsp (flushBuffer env' targets (reverse buf) rsp)
-
--- | Replay buffered items with typing indicators and pacing, then deliver
--- the final response (including attachment drain).
-flushBuffer :: AppEnv -> DeliveryTarget -> [BufferedItem] -> Text -> IO ()
-flushBuffer env target items finalResponse = do
-  let chatIds = targetChatIds env target
-  mapM_ (flushItem chatIds) items
-  -- Final response: typing → delay → deliver with attachments
-  sendTypingToTargets env target
-  threadDelay flushPacingDelay
-  deliverToTargets env target finalResponse
+deliver :: AppEnv -> DeliveryTarget -> Output -> IO ()
+deliver env target output = do
+  chats <- case output of
+    ToolNotice _ _ -> atomically (filterM (lookupToolUseMessages env) (recipients env target))
+    _ -> pure (recipients env target)
+  case output of
+    Narration text attachments -> do
+      mapM_ (\chat -> void (sendText env chat text)) chats
+      mapM_ (\attachment -> mapM_ (\chat -> safe (sendAttachment chat attachment)) chats) attachments
+      when (null chats) (logInfo env.logger "Event output" [("text", text)])
+    RateLimit text -> mapM_ (\chat -> void (sendText env chat text)) chats
+    ToolNotice label calls -> do
+      let note = formatToolUseNote label calls
+      mapM_ (\chat -> safe (Telegram.notifyHtml env.logger env.telegram chat note.html note.plain)) chats
   where
-    flushItem :: [Int64] -> BufferedItem -> IO ()
-    flushItem chatIds (BufferedText t atts) = do
-      sendTypingToTargets env target
-      threadDelay flushPacingDelay
-      deliverTextOnly env target t
-      -- Deliver attachments that were queued before this text
-      mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) atts
-    flushItem _ (BufferedToolUse label calls) =
-      filterTargetByToolUse env target >>= \case
-        Nothing -> pure ()
-        Just subTarget -> do
-          sendTypingToTargets env subTarget
-          threadDelay flushPacingDelay
-          deliverNote env subTarget label calls
-    flushItem _ (BufferedRateLimit m) = do
-      deliverTextOnly env target m
+    safe action = catchSync action (\err -> logError env.logger "Delivery failed" [("error", T.pack (show err))])
+    sendAttachment chat attachment =
+      let send = case attachment.type_ of
+            Tools.AttachPhoto -> Telegram.sendPhoto
+            Tools.AttachDocument -> Telegram.sendDocument
+            Tools.AttachAuto -> if isPhotoExtension attachment.path then Telegram.sendPhoto else Telegram.sendDocument
+       in send env.telegram chat attachment.path attachment.caption
 
--- | Drain the attachment queue, discarding all queued attachments
-drainAttachmentQueue :: AppEnv -> IO ()
-drainAttachmentQueue env =
-  atomically $ writeTVar env.attachmentQueue []
+sendText :: AppEnv -> Int64 -> Text -> IO (Either Text ())
+sendText env chat text = catchSync (Right <$> Telegram.sendMessage env.telegram chat text) $ \err -> do
+  let message = T.pack (show err)
+  logError env.logger "Delivery failed" [("error", message)]
+  pure (Left message)
 
--- | Create a fresh per-event attachment queue, replacing the global one in the env
-withLocalAttachmentQueue :: AppEnv -> IO AppEnv
-withLocalAttachmentQueue env = do
-  localQueue <- newTVarIO []
-  pure env {attachmentQueue = localQueue}
-
--- | Deliver response to configured targets, then send queued attachments
-deliverResponse :: AppEnv -> Event -> Text -> IO ()
-deliverResponse env event = deliverToTargets env event.deliveryTarget
-
--- | Deliver text to the specified target without draining the attachment queue
-deliverTextOnly :: AppEnv -> DeliveryTarget -> Text -> IO ()
-deliverTextOnly env target msg =
-  deliverOrLog env target msg $
-    logInfo env.logger "Event response (log only)" [("response", T.take 100 msg)]
-
--- | Run a per-chat send action over a delivery target's chats, or a fallback
--- action for 'LogOnly'. The single place that resolves a 'DeliveryTarget' to
--- concrete recipients.
-deliverWith :: AppEnv -> DeliveryTarget -> (Int64 -> IO ()) -> IO () -> IO ()
-deliverWith env target send logAction = case target of
-  TelegramDelivery chatIds -> mapM_ send chatIds
-  TelegramBroadcast -> mapM_ send (Map.keys env.telegramChatMap)
-  LogOnly -> logAction
-
--- | Deliver a formatted message to Telegram targets, or run a fallback IO
--- action for LogOnly targets. Shared by all notification callbacks.
-deliverOrLog :: AppEnv -> DeliveryTarget -> Text -> IO () -> IO ()
-deliverOrLog env target msg = deliverWith env target (\cid -> notifySafe env cid msg)
-
--- | Deliver a message to the specified target, then send queued attachments
-deliverToTargets :: AppEnv -> DeliveryTarget -> Text -> IO ()
-deliverToTargets env target msg = do
-  deliverTextOnly env target msg
-  -- Send queued attachments to Telegram targets (if any)
-  -- Only drain the queue when there are real Telegram targets; for LogOnly
-  -- the polling path in App.hs handles attachment delivery separately.
-  let chatIds = targetChatIds env target
-  unless (null chatIds) $ do
-    attachments <- atomically $ do
-      atts <- readTVar env.attachmentQueue
-      writeTVar env.attachmentQueue []
-      pure atts
-    mapM_ (\att -> mapM_ (\cid -> sendAttachmentSafe env cid att) chatIds) attachments
-
--- | Resolve a delivery target to its Telegram chat IDs
-targetChatIds :: AppEnv -> DeliveryTarget -> [Int64]
-targetChatIds _ (TelegramDelivery chatIds) = NE.toList chatIds
-targetChatIds env TelegramBroadcast = Map.keys env.telegramChatMap
-targetChatIds _ LogOnly = []
-
--- | Send a single attachment to a chat, choosing photo vs document
-sendAttachmentSafe :: AppEnv -> Int64 -> Tools.Attachment -> IO ()
-sendAttachmentSafe env chatId_ att = do
-  let send = case att.type_ of
-        Tools.AttachPhoto -> Telegram.sendPhoto
-        Tools.AttachDocument -> Telegram.sendDocument
-        Tools.AttachAuto
-          | isPhotoExtension att.path -> Telegram.sendPhoto
-          | otherwise -> Telegram.sendDocument
-  send env.telegram chatId_ att.path att.caption
-    `catch` \(e :: SomeException) ->
-      logError
-        env.logger
-        "Failed to send attachment"
-        [ ("chat_id", T.pack (show chatId_)),
-          ("path", T.pack att.path),
-          ("error", T.pack (show e))
-        ]
-
--- | Safely send notification, catching any errors.
--- On failure, logs the error and attempts to send a user-visible error
--- notification to Telegram so the failure isn't completely silent.
-notifySafe :: AppEnv -> Int64 -> Text -> IO ()
-notifySafe env chatId_ msg =
-  notifyEither env chatId_ msg >>= \case
-    Right () -> pure ()
-    Left err -> do
-      -- Try to inform the user in Telegram; if this also fails, just log.
-      let errMsg = formatNotify Error $ "**Delivery failed:** `" <> sanitizeBackticks err <> "`"
-      Telegram.notify env.logger env.telegram chatId_ errMsg
-        `catch` \(_ :: SomeException) ->
-          logError env.logger "Failed to send delivery-error notification" [("chat_id", T.pack (show chatId_))]
-
--- | Send a notification, logging and returning any error instead of throwing.
-notifyEither :: AppEnv -> Int64 -> Text -> IO (Either Text ())
-notifyEither env chatId_ msg =
-  (Right <$> Telegram.notify env.logger env.telegram chatId_ msg)
-    `catch` \(e :: SomeException) -> do
-      logError env.logger "Failed to send notification" [("chat_id", T.pack (show chatId_)), ("error", T.pack (show e))]
-      pure (Left (T.pack (show e)))
-
--- | Delivery action for the @send_message@ tool. Unlike the intermediate-text
--- path, a failed send is reported to the model rather than only logged, so
--- it can fall back to its final reply instead of assuming the user saw the
--- message. A target with no chats (a log-only webhook or callback) gets no
--- action: the tool would promise a delivery that cannot happen.
-mkSendMessageDelivery :: AppEnv -> DeliveryTarget -> Maybe (Text -> IO (Either Text ()))
-mkSendMessageDelivery env target = case targetChatIds env target of
-  [] -> Nothing
-  chatIds -> Just $ \msg -> do
-    errs <- lefts <$> mapM (\cid -> notifyEither env cid msg) chatIds
-    pure $ if null errs then Right () else Left (T.intercalate "; " errs)
-
--- | Convert session config to conversation ID
---
--- For Isolated sessions, returns Nothing (no conversation persistence).
--- For Named sessions, returns the session name as the conversation key.
 sessionToConversationId :: SessionConfig -> Maybe Text
 sessionToConversationId Isolated = Nothing
-sessionToConversationId (Named n) = Just n
+sessionToConversationId (Named name) = Just name
 
--- | Create text callback to deliver intermediate text during tool-use turns
-mkTextCallback :: AppEnv -> Event -> Claude.TextCallback
-mkTextCallback env event = deliverToTargets env event.deliveryTarget
-
--- | Create rate limit notification callback based on event delivery targets
-mkRateLimitCallback :: AppEnv -> Event -> Claude.RateLimitCallback
-mkRateLimitCallback env event attemptNum waitSecs =
-  deliverOrLog env event.deliveryTarget msg $
-    logInfo env.logger "Rate limited" [("attempt", T.pack (show attemptNum)), ("wait_seconds", T.pack (show waitSecs))]
-  where
-    msg = formatNotify Warn $ "Rate limited, retry " <> T.pack (show attemptNum) <> " in " <> T.pack (show waitSecs) <> "s"
-
--- | Deliver a tool-use notification (optional delegate label + tool calls) to
--- a target. The note is built lazily, so 'LogOnly' targets pay no formatting
--- cost; they log the tool names instead.
-deliverNote :: AppEnv -> DeliveryTarget -> Maybe Text -> [(Text, Value)] -> IO ()
-deliverNote env target label calls =
-  deliverWith
-    env
-    target
-    (\cid -> notifyNoteSafe env cid note)
-    (logInfo env.logger "Tool use" [("tools", T.intercalate ", " (map fst calls))])
-  where
-    note = formatToolUseNote label calls
-
--- | Safely send a tool-use notification, logging on failure. Unlike
--- 'notifySafe', no error message is sent to the chat: tool-use notes are
--- ephemeral status, not content worth a delivery-failure alert.
-notifyNoteSafe :: AppEnv -> Int64 -> ToolUseNote -> IO ()
-notifyNoteSafe env chatId_ note =
-  Telegram.notifyHtml env.logger env.telegram chatId_ note.html note.plain
-    `catch` \(e :: SomeException) ->
-      logError env.logger "Failed to send tool-use notification" [("chat_id", T.pack (show chatId_)), ("error", T.pack (show e))]
-
--- | Tool-use notification callback for an event's delivery target. The
--- optional label names a delegate sub-agent ('Nothing' is the main agent).
--- Filters per-chat by the @/tools@ override before delivering.
-mkToolUseNotifier :: AppEnv -> Event -> Maybe Text -> Claude.ToolUseCallback
-mkToolUseNotifier env event label _iter calls =
-  filterTargetByToolUse env event.deliveryTarget >>= \case
-    Nothing -> pure ()
-    Just t -> deliverNote env t label calls
-
--- | Send typing indicator to a delivery target
-sendTypingToTargets :: AppEnv -> DeliveryTarget -> IO ()
-sendTypingToTargets env target = case target of
-  TelegramDelivery chatIds ->
-    mapM_ (Telegram.sendChatAction env.telegram) chatIds
-  TelegramBroadcast ->
-    mapM_ (Telegram.sendChatAction env.telegram) (Map.keys env.telegramChatMap)
-  LogOnly -> pure ()
-
--- | Create before-API-call callback to send typing indicators
-mkBeforeApiCallCallback :: AppEnv -> Event -> IO ()
-mkBeforeApiCallCallback env event =
-  sendTypingToTargets env event.deliveryTarget
-
--- | Format event source for logging
-formatSource :: EventSource -> Text
-formatSource (WebhookSource n) = "webhook:" <> n
-formatSource (TelegramSource chatId_) = "telegram:" <> T.pack (show chatId_)
-formatSource CallbackSource = "callback"
-
--- | Append a human-readable note about archived attachments to a prompt.
--- Returns the prompt unchanged when there are no attachments.
 attachPromptNote :: Text -> [SavedAttachment] -> Text
 attachPromptNote prompt [] = prompt
-attachPromptNote prompt atts
-  | T.null prompt = note
-  | otherwise = prompt <> "\n\n" <> note
-  where
-    n = length atts
-    header =
-      "[System: archived "
-        <> T.pack (show n)
-        <> " inbound "
-        <> (if n == 1 then "attachment" else "attachments")
-        <> " to the workspace inbox:"
-    note = T.intercalate "\n" (header : map renderAttachmentLine atts) <> "]"
-
--- | Render one archived-attachment bullet line.
-renderAttachmentLine :: SavedAttachment -> Text
-renderAttachmentLine a =
-  "- `"
-    <> T.pack a.path
-    <> "`"
-    <> maybe "" (\name -> " (original: " <> name <> ")") a.originalName
-    <> " — "
-    <> a.mediaType
-    <> ", "
-    <> formatByteSize a.sizeBytes
-    <> " "
-    <> ( if a.perceivable
-           then "(also attached above for viewing)"
-           else "(saved-only; not viewable inline)"
-       )
-
--- | Format a byte count with integer B/KB/MB units (deterministic).
--- Files >= 1 GB render as large MB counts; not expected given Telegram limits.
-formatByteSize :: Int -> Text
-formatByteSize b
-  | b < 1024 = T.pack (show b) <> " B"
-  | b < 1024 * 1024 = T.pack (show (b `div` 1024)) <> " KB"
-  | otherwise = T.pack (show (b `div` (1024 * 1024))) <> " MB"
+attachPromptNote prompt attachments =
+  T.intercalate "\n" $
+    [prompt | not (T.null prompt)]
+      <> ["Archived inbound attachments:"]
+      <> [ T.pack attachment.path
+             <> maybe "" (\name -> " (" <> name <> ")") attachment.originalName
+             <> " — "
+             <> attachment.mediaType
+             <> ", "
+             <> T.pack (show attachment.sizeBytes)
+             <> " bytes"
+             <> if attachment.perceivable then " (attached for viewing)" else " (saved only)"
+         | attachment <- attachments
+         ]

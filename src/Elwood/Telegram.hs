@@ -1,39 +1,4 @@
-module Elwood.Telegram
-  ( -- * Client
-    TelegramClient,
-    newClient,
-    getUpdatesAllowed,
-    sendMessage,
-    sendMessageHtml,
-    sendMessageWithKeyboard,
-    answerCallbackQuery,
-    editMessageReplyMarkup,
-    notify,
-    notifyHtml,
-    getFile,
-    downloadFile,
-    sendPhoto,
-    sendDocument,
-    sendChatAction,
-
-    -- * Polling
-    runPolling,
-
-    -- * Types
-    Update (..),
-    Message (..),
-    Chat (..),
-    User (..),
-    PhotoSize (..),
-    Document (..),
-    Voice (..),
-    Audio (..),
-    TelegramFile (..),
-    CallbackQuery (..),
-    InlineKeyboardButton (..),
-    InlineKeyboardMarkup (..),
-  )
-where
+module Elwood.Telegram (module Elwood.Telegram.Client, module Elwood.Telegram.Types, runPolling) where
 
 import Elwood.Telegram.Client
 import Elwood.Telegram.Polling (runPolling)

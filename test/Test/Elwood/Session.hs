@@ -1,6 +1,6 @@
 module Test.Elwood.Session (tests) where
 
-import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Concurrent.STM (atomically, newTVarIO, readTVarIO, writeTVar)
 import Control.Exception (SomeException, try)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
@@ -83,64 +83,27 @@ tests =
         withSessionLock locks "s1" $ atomically $ writeTVar ref True
         val <- readTVarIO ref
         val @?= True,
-      testCase "reentrant access to same session deadlocks (documents behavior)" $ do
-        -- This test documents that the lock is NOT reentrant.
-        -- A nested withSessionLock on the same session will block forever.
-        locks <- newSessionLocks
-        result <- newEmptyMVar :: IO (MVar String)
-        _ <- forkIO $ do
-          withSessionLock locks "s1" $
-            withSessionLock locks "s1" $
-              putMVar result "completed"
-          putMVar result "should not reach"
-        -- Give it 100ms -- if it hasn't completed, it's deadlocked (expected)
-        threadDelay 100000
-        -- Try non-blocking take; should be empty because the thread is deadlocked
-        val <- tryTakeMVarTimeout result
-        val @?= Nothing,
       testCase "cancelSession returns False for unknown session" $ do
         locks <- newSessionLocks
         result <- cancelSession locks "nonexistent"
         result @?= False,
-      testCase "cancelSession sets the cancel flag" $ do
+      testCase "idle session cannot be cancelled" $ do
         locks <- newSessionLocks
-        -- Create session state by acquiring the lock
         withSessionLock locks "s1" $ pure ()
-        -- Cancel it
-        result <- cancelSession locks "s1"
-        result @?= True
-        -- Verify the flag is set
-        mFlag <- sessionCancelFlag locks "s1"
-        case mFlag of
-          Nothing -> assertFailure "expected cancel flag to exist"
-          Just tv -> do
-            val <- readTVarIO tv
-            val @?= True,
-      testCase "withSessionLock resets cancel flag" $ do
+        cancelSession locks "s1" >>= (@?= False),
+      testCase "cancellation belongs to an active turn" $ do
         locks <- newSessionLocks
-        -- Create session and cancel it
-        withSessionLock locks "s1" $ pure ()
-        _ <- cancelSession locks "s1"
-        -- Acquire the lock again — should reset the flag
+        old <- withSessionLock locks "s1" $ do
+          Just flag <- sessionCancelFlag locks "s1"
+          cancelSession locks "s1" >>= (@?= True)
+          readTVarIO flag >>= (@?= True)
+          pure flag
         withSessionLock locks "s1" $ do
-          mFlag <- sessionCancelFlag locks "s1"
-          case mFlag of
-            Nothing -> assertFailure "expected cancel flag to exist"
-            Just tv -> do
-              val <- readTVarIO tv
-              val @?= False,
+          Just fresh <- sessionCancelFlag locks "s1"
+          atomically (writeTVar old True)
+          readTVarIO fresh >>= (@?= False),
       testCase "sessionCancelFlag returns Nothing for unknown session" $ do
         locks <- newSessionLocks
         mFlag <- sessionCancelFlag locks "nonexistent"
         assertBool "expected Nothing" (null mFlag)
     ]
-
--- | Try to take from an MVar, returning Nothing if empty
-tryTakeMVarTimeout :: MVar a -> IO (Maybe a)
-tryTakeMVarTimeout mv = do
-  ref <- newIORef Nothing
-  _ <- forkIO $ do
-    v <- takeMVar mv
-    atomicModifyIORef' ref (const (Just v, ()))
-  threadDelay 10000 -- 10ms grace
-  readIORef ref

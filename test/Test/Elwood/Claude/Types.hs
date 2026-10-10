@@ -15,7 +15,12 @@ tests :: TestTree
 tests =
   testGroup
     "Claude.Types"
-    [ roleTests,
+    [ testCase "unknown provider blocks survive roundtrip" $ do
+        let value = Aeson.object ["type" Aeson..= ("future_block" :: Text), "payload" Aeson..= ("opaque" :: Text)]
+        case Aeson.fromJSON @ContentBlock value of
+          Aeson.Error err -> assertFailure err
+          Aeson.Success block -> Aeson.toJSON block @?= value,
+      roleTests,
       contentBlockTests,
       claudeMessageTests,
       usageTests,

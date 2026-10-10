@@ -2,6 +2,7 @@ module Test.Elwood.Permissions (tests) where
 
 import Data.Monoid (Last (..))
 import Data.Text (Text)
+import Elwood.Pattern qualified as Pattern
 import Elwood.Permissions
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -16,10 +17,10 @@ commandPermissionTests :: TestTree
 commandPermissionTests =
   testGroup
     "checkCommandPermission"
-    [ testCase "allows safe pattern" $
+    [ testCase "allows safe compiled" $
         let cfg = mkCfg [] ["^ls\\b"]
          in checkCommandPermission cfg "ls -la" @?= Allowed,
-      testCase "blocks dangerous pattern" $
+      testCase "blocks dangerous compiled" $
         let cfg = mkCfg ["\\brm\\b"] []
          in assertDenied $ checkCommandPermission cfg "rm -rf /",
       testCase "safe overrides dangerous" $
@@ -42,9 +43,12 @@ commandPermissionTests =
 mkCfg :: [Text] -> [Text] -> PermissionConfig
 mkCfg dangerous safe =
   resolvePermissions $
-    PermissionConfigFile (Last (Just safe)) (Last (Just dangerous)) (Last Nothing) (Last Nothing) (Last Nothing)
+    PermissionConfigFile (Last (Just (map compiled safe))) (Last (Just (map compiled dangerous))) (Last Nothing) (Last Nothing) (Last Nothing)
 
 -- | Assert a PermissionResult is Denied
 assertDenied :: PermissionResult -> IO ()
 assertDenied (Denied _) = pure ()
 assertDenied Allowed = assertFailure "Expected Denied but got Allowed"
+
+compiled :: Text -> Pattern.Pattern
+compiled = either error id . Pattern.parse

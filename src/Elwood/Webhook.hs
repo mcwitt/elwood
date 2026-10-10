@@ -1,16 +1,4 @@
-module Elwood.Webhook
-  ( -- * Server
-    runWebhookServer,
-    webhookApp,
-
-    -- * Template Rendering
-    renderTemplate,
-
-    -- * Types
-    WebhookConfig (..),
-    WebhookServerConfig (..),
-  )
-where
+module Elwood.Webhook (module Elwood.Webhook.Server, module Elwood.Webhook.Types) where
 
 import Elwood.Webhook.Server
 import Elwood.Webhook.Types

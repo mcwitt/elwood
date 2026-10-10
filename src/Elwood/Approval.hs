@@ -1,24 +1,9 @@
-module Elwood.Approval
-  ( -- * Types
-    ApprovalResult (..),
-    ApprovalCoordinator (..),
-    Decision (..),
+module Elwood.Approval (ApprovalResult (..), ApprovalCoordinator, Decision (..), newApprovalCoordinator, withApproval, withCancellableApproval, respondToApproval, formatApprovalRequest, parseCallbackData) where
 
-    -- * Coordinator Operations
-    newApprovalCoordinator,
-    requestApproval,
-    respondToApproval,
-
-    -- * Helpers
-    formatApprovalRequest,
-    parseCallbackData,
-  )
-where
-
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.Async (race)
 import Control.Concurrent.STM
-import Control.Monad (void, when)
-import Data.Map.Strict (Map)
+import Control.Exception (bracket)
+import Data.Either (fromLeft)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -28,103 +13,58 @@ import Data.UUID.V4 qualified as UUID
 import Elwood.Claude.Types (ToolName (..))
 import Elwood.Positive (Positive (getPositive))
 
--- | Result of an approval request
-data ApprovalResult
-  = -- | User approved the action
-    Approved
-  | -- | User denied the action
-    Denied
-  | -- | Request timed out waiting for response
-    TimedOut
-  deriving stock (Show, Eq)
+data ApprovalResult = Approved | Denied | TimedOut deriving stock (Show, Eq)
 
--- | Coordinator for managing pending approval requests
-newtype ApprovalCoordinator = ApprovalCoordinator
-  { -- | Map of pending requests awaiting response
-    pendingRequests :: TVar (Map UUID (TMVar ApprovalResult))
-  }
+data Decision = Approve | Deny deriving stock (Show, Eq)
 
--- | Create a new approval coordinator
+newtype ApprovalCoordinator = ApprovalCoordinator (TVar (Map.Map UUID (TMVar ApprovalResult, TVar Bool)))
+
 newApprovalCoordinator :: IO ApprovalCoordinator
-newApprovalCoordinator = do
-  pendingVar <- newTVarIO Map.empty
-  pure ApprovalCoordinator {pendingRequests = pendingVar}
+newApprovalCoordinator = ApprovalCoordinator <$> newTVarIO Map.empty
 
--- | Request approval and block until response or timeout
---
--- Returns the UUID for the request (to be included in callback data)
--- and an action that blocks until a response is received or timeout occurs.
-requestApproval :: ApprovalCoordinator -> Positive -> IO (UUID, IO ApprovalResult)
-requestApproval coordinator timeoutSecs = do
-  -- Generate unique ID for this request
-  requestId_ <- UUID.nextRandom
+withApproval :: ApprovalCoordinator -> Positive -> (UUID -> IO ()) -> IO ApprovalResult
+withApproval (ApprovalCoordinator pending) seconds notify = do
+  key <- UUID.nextRandom
+  result <- newEmptyTMVarIO
+  timer <- registerDelay (fromInteger $ min (toInteger (maxBound :: Int)) (toInteger seconds.getPositive * 1000000))
+  bracket
+    (atomically $ modifyTVar' pending (Map.insert key (result, timer)))
+    (\() -> atomically $ modifyTVar' pending (Map.delete key))
+    ( \() -> do
+        notify key
+        atomically $ do
+          outcome <- readTMVar result `orElse` (readTVar timer >>= check >> pure TimedOut)
+          modifyTVar' pending (Map.delete key)
+          pure outcome
+    )
 
-  -- Create TMVar for the response
-  responseVar <- newEmptyTMVarIO
+-- Cancelling an active turn also releases an outstanding approval wait.
+withCancellableApproval :: Maybe (TVar Bool) -> ApprovalCoordinator -> Positive -> (UUID -> IO ()) -> IO ApprovalResult
+withCancellableApproval Nothing = withApproval
+withCancellableApproval (Just token) = \coordinator seconds notify -> do
+  cancelled <- readTVarIO token
+  if cancelled
+    then pure Denied
+    else
+      fromLeft Denied <$> race (withApproval coordinator seconds notify) (atomically (readTVar token >>= check))
 
-  -- Register the pending request
-  atomically $ modifyTVar' coordinator.pendingRequests (Map.insert requestId_ responseVar)
-
-  -- Start timeout thread
-  void $
-    forkIO $ do
-      threadDelay (timeoutSecs.getPositive * 1000000)
-      -- Try to mark as timed out (only succeeds if not already responded)
-      atomically $ do
-        pending <- readTVar coordinator.pendingRequests
-        case Map.lookup requestId_ pending of
-          Just var -> do
-            success <- tryPutTMVar var TimedOut
-            when success $ modifyTVar' coordinator.pendingRequests (Map.delete requestId_)
-          Nothing -> pure ()
-
-  -- Return the request ID and an action to wait for the result
-  let waitForResult = atomically $ readTMVar responseVar
-  pure (requestId_, waitForResult)
-
--- | Respond to a pending approval request
---
--- Returns True if the request was found and responded to,
--- False if the request was not found (already responded or timed out)
 respondToApproval :: ApprovalCoordinator -> UUID -> ApprovalResult -> IO Bool
-respondToApproval coordinator requestId_ result = atomically $ do
-  pending <- readTVar coordinator.pendingRequests
-  case Map.lookup requestId_ pending of
-    Just var -> do
-      success <- tryPutTMVar var result
-      when success $ modifyTVar' coordinator.pendingRequests (Map.delete requestId_)
-      pure success
+respondToApproval (ApprovalCoordinator pending) key decision = atomically $ do
+  requests <- readTVar pending
+  case Map.lookup key requests of
     Nothing -> pure False
+    Just (result, timer) -> do
+      expired <- readTVar timer
+      won <- tryPutTMVar result (if expired then TimedOut else decision)
+      writeTVar pending (Map.delete key requests)
+      pure (won && not expired)
 
--- | Format a tool use request for display in Telegram
---
--- Emits standard markdown; the downstream @sendMessageWithKeyboard@ handles
--- conversion to Telegram HTML.
 formatApprovalRequest :: ToolName -> Text -> Text
-formatApprovalRequest (ToolName toolName_) inputSummary =
-  T.unlines
-    [ "**Tool Approval Required**",
-      "",
-      "**Tool:** `" <> toolName_ <> "`",
-      "**Input:**",
-      "```",
-      inputSummary,
-      "```",
-      "Do you want to allow this action?"
-    ]
+formatApprovalRequest (ToolName name) input =
+  T.unlines ["**Tool Approval Required**", "", "**Tool:** `" <> name <> "`", "**Input:**", "```", input, "```", "Do you want to allow this action?"]
 
--- | User's decision on a tool approval request
-data Decision
-  = Approve
-  | Deny
-  deriving stock (Show, Eq)
-
--- | Parse callback data to extract approval decision and request ID
---
--- Callback data format: "approve:<uuid>" or "deny:<uuid>"
 parseCallbackData :: Text -> Maybe (Decision, UUID)
-parseCallbackData callbackData =
-  case T.splitOn ":" callbackData of
-    ["approve", uuidText] -> (Approve,) <$> UUID.fromText uuidText
-    ["deny", uuidText] -> (Deny,) <$> UUID.fromText uuidText
-    _ -> Nothing
+parseCallbackData input = case T.splitOn ":" input of
+  ["approve", key] -> (Approve,) <$> UUID.fromText key
+  ["deny", key] -> (Deny,) <$> UUID.fromText key
+  _ -> Nothing

@@ -5,410 +5,98 @@ module Elwood.Telegram.Types
     Chat (..),
     ChatType (..),
     User (..),
-    PhotoSize (..),
-    Document (..),
-    Voice (..),
-    Audio (..),
     TelegramFile (..),
-    SendMessageRequest (..),
-    GetUpdatesResponse (..),
-    SendMessageResponse (..),
-    GetFileResponse (..),
-
-    -- * Callback Query Types
     CallbackQuery (..),
-
-    -- * Inline Keyboard Types
     InlineKeyboardButton (..),
     InlineKeyboardMarkup (..),
-    SendMessageWithKeyboardRequest (..),
-    AnswerCallbackQueryRequest (..),
-    EditMessageReplyMarkupRequest (..),
+    AttachmentKind (..),
+    InboundAttachment (..),
   )
 where
 
-import Control.Applicative ((<|>))
+import Control.Monad (void)
 import Data.Aeson
+import Data.Aeson.KeyMap qualified as KM
+import Data.Aeson.Types (Parser)
 import Data.Int (Int64)
+import Data.List (sortOn)
+import Data.Maybe (catMaybes)
+import Data.Ord (Down (..))
 import Data.Text (Text)
+import Elwood.Aeson (enum, recordOptions)
 import GHC.Generics (Generic)
 
--- | Payload of an incoming Telegram update
-data UpdatePayload
-  = UpdateMessage Message
-  | UpdateCallbackQuery CallbackQuery
-  | UpdateIgnored
-  deriving stock (Show, Generic)
+data UpdatePayload = UpdateMessage Message | UpdateCallbackQuery CallbackQuery | UpdateIgnored deriving stock (Show)
 
--- | Incoming update from Telegram's getUpdates API
-data Update = Update
-  { -- | Unique update identifier
-    id_ :: Int,
-    -- | Update payload
-    payload :: UpdatePayload
-  }
-  deriving stock (Show, Generic)
+data Update = Update {id_ :: Int, payload :: UpdatePayload} deriving stock (Show)
 
 instance FromJSON Update where
-  parseJSON = withObject "Update" $ \v -> do
-    uid <- v .: "update_id"
-    p <-
-      (UpdateMessage <$> v .: "message")
-        <|> (UpdateCallbackQuery <$> v .: "callback_query")
-        <|> pure UpdateIgnored
-    pure $ Update uid p
+  parseJSON = withObject "Update" $ \o -> Update <$> o .: "update_id" <*> payload o
+    where
+      payload o
+        | KM.member "message" o = UpdateMessage <$> o .: "message"
+        | KM.member "callback_query" o = UpdateCallbackQuery <$> o .: "callback_query"
+        | otherwise = pure UpdateIgnored
 
--- | A photo size variant (Telegram sends multiple sizes)
-data PhotoSize = PhotoSize
-  { -- | Identifier for this file
-    fileId :: Text,
-    -- | Unique file identifier (consistent across bots)
-    fileUniqueId :: Text,
-    -- | Photo width
-    width :: Int,
-    -- | Photo height
-    height :: Int,
-    -- | File size in bytes (optional)
-    fileSize :: Maybe Int
-  }
-  deriving stock (Show, Eq, Generic)
+data AttachmentKind = KindPhoto | KindDocument | KindVoice | KindAudio deriving stock (Show, Eq)
 
-instance FromJSON PhotoSize where
-  parseJSON = withObject "PhotoSize" $ \v ->
-    PhotoSize
-      <$> v .: "file_id"
-      <*> v .: "file_unique_id"
-      <*> v .: "width"
-      <*> v .: "height"
-      <*> v .:? "file_size"
+data InboundAttachment = InboundAttachment
+  {fileId, fileUniqueId :: Text, kind :: AttachmentKind, fileName, mimeType :: Maybe Text, fileSize :: Maybe Int}
+  deriving stock (Show, Eq)
 
--- | A document attachment (files, PDFs, images sent "as file")
-data Document = Document
-  { -- | Identifier for this file
-    fileId :: Text,
-    -- | Unique file identifier (consistent across bots)
-    fileUniqueId :: Text,
-    -- | Original filename, if supplied by the sender
-    fileName :: Maybe Text,
-    -- | MIME type as declared by the sender, if any
-    mimeType :: Maybe Text,
-    -- | File size in bytes (optional)
-    fileSize :: Maybe Int
-  }
-  deriving stock (Show, Eq, Generic)
+-- Parse media once into the archive's domain. Required protocol fields remain
+-- checked even when they carry no information needed by subsequent stages.
+parseAttachment :: AttachmentKind -> Value -> Parser InboundAttachment
+parseAttachment kind = withObject "attachment" $ \o -> do
+  case kind of
+    KindPhoto -> void ((,) <$> (o .: "width" :: Parser Int) <*> (o .: "height" :: Parser Int))
+    KindVoice -> void (o .: "duration" :: Parser Int)
+    KindAudio -> void (o .: "duration" :: Parser Int)
+    KindDocument -> pure ()
+  InboundAttachment <$> o .: "file_id" <*> o .: "file_unique_id" <*> pure kind <*> o .:? "file_name" <*> o .:? "mime_type" <*> o .:? "file_size"
 
-instance FromJSON Document where
-  parseJSON = withObject "Document" $ \v ->
-    Document
-      <$> v .: "file_id"
-      <*> v .: "file_unique_id"
-      <*> v .:? "file_name"
-      <*> v .:? "mime_type"
-      <*> v .:? "file_size"
-
--- | A voice note (Telegram OGG/OPUS)
-data Voice = Voice
-  { -- | Identifier for this file
-    fileId :: Text,
-    -- | Unique file identifier (consistent across bots)
-    fileUniqueId :: Text,
-    -- | Duration of the voice note in seconds
-    duration :: Int,
-    -- | MIME type as declared by the sender, if any
-    mimeType :: Maybe Text,
-    -- | File size in bytes (optional)
-    fileSize :: Maybe Int
-  }
-  deriving stock (Show, Eq, Generic)
-
-instance FromJSON Voice where
-  parseJSON = withObject "Voice" $ \v ->
-    Voice
-      <$> v .: "file_id"
-      <*> v .: "file_unique_id"
-      <*> v .: "duration"
-      <*> v .:? "mime_type"
-      <*> v .:? "file_size"
-
--- | An audio file attachment
-data Audio = Audio
-  { -- | Identifier for this file
-    fileId :: Text,
-    -- | Unique file identifier (consistent across bots)
-    fileUniqueId :: Text,
-    -- | Duration of the audio in seconds
-    duration :: Int,
-    -- | Original filename, if supplied by the sender
-    fileName :: Maybe Text,
-    -- | MIME type as declared by the sender, if any
-    mimeType :: Maybe Text,
-    -- | File size in bytes (optional)
-    fileSize :: Maybe Int
-  }
-  deriving stock (Show, Eq, Generic)
-
-instance FromJSON Audio where
-  parseJSON = withObject "Audio" $ \v ->
-    Audio
-      <$> v .: "file_id"
-      <*> v .: "file_unique_id"
-      <*> v .: "duration"
-      <*> v .:? "file_name"
-      <*> v .:? "mime_type"
-      <*> v .:? "file_size"
-
--- | A Telegram message
 data Message = Message
-  { -- | Unique message identifier
-    id_ :: Int,
-    -- | Chat the message belongs to
-    chat :: Chat,
-    -- | Text content of the message
-    text :: Maybe Text,
-    -- | Sender of the message
-    from_ :: Maybe User,
-    -- | Photos attached to the message (multiple sizes)
-    photo :: Maybe [PhotoSize],
-    -- | Caption for media messages
-    caption :: Maybe Text,
-    -- | Document attachment, if any
-    document :: Maybe Document,
-    -- | Voice note, if any
-    voice :: Maybe Voice,
-    -- | Audio file, if any
-    audio :: Maybe Audio
-  }
-  deriving stock (Show, Generic)
+  {id_ :: Int, chat :: Chat, text :: Maybe Text, from_ :: Maybe User, caption :: Maybe Text, attachments :: [InboundAttachment]}
+  deriving stock (Show)
 
 instance FromJSON Message where
-  parseJSON = withObject "Message" $ \v ->
-    Message
-      <$> v .: "message_id"
-      <*> v .: "chat"
-      <*> v .:? "text"
-      <*> v .:? "from"
-      <*> v .:? "photo"
-      <*> v .:? "caption"
-      <*> v .:? "document"
-      <*> v .:? "voice"
-      <*> v .:? "audio"
+  parseJSON = withObject "Message" $ \o -> do
+    photos <- o .:? "photo" .!= [] >>= traverse (parseAttachment KindPhoto)
+    other <-
+      traverse
+        (\(key, kind) -> o .:? key >>= traverse (parseAttachment kind))
+        [("document", KindDocument), ("voice", KindVoice), ("audio", KindAudio)]
+    let attachments = take 1 (sortOn (Down . (.fileSize)) photos) <> catMaybes other
+    Message <$> o .: "message_id" <*> o .: "chat" <*> o .:? "text" <*> o .:? "from" <*> o .:? "caption" <*> pure attachments
 
--- | Type of a Telegram chat
-data ChatType = Private | Group | Supergroup | Channel
-  deriving stock (Show, Eq, Generic)
+data ChatType = Private | Group | Supergroup | Channel deriving stock (Show, Eq)
 
 instance FromJSON ChatType where
-  parseJSON = withText "ChatType" $ \case
-    "private" -> pure Private
-    "group" -> pure Group
-    "supergroup" -> pure Supergroup
-    "channel" -> pure Channel
-    other -> fail $ "Unknown chat type: " <> show other
+  parseJSON = enum "ChatType" [("private", Private), ("group", Group), ("supergroup", Supergroup), ("channel", Channel)]
 
--- | A Telegram chat
-data Chat = Chat
-  { -- | Unique chat identifier
-    id_ :: Int64,
-    -- | Type of chat
-    type_ :: ChatType
-  }
-  deriving stock (Show, Generic)
+data Chat = Chat {id_ :: Int64, type_ :: ChatType} deriving stock (Show, Generic)
 
-instance FromJSON Chat where
-  parseJSON = withObject "Chat" $ \v ->
-    Chat
-      <$> v .: "id"
-      <*> v .: "type"
+instance FromJSON Chat where parseJSON = genericParseJSON telegramFields
 
--- | A Telegram user
-data User = User
-  { -- | Unique user identifier
-    id_ :: Int64,
-    -- | User's first name
-    firstName :: Text,
-    -- | User's last name (optional)
-    lastName :: Maybe Text,
-    -- | User's username (optional)
-    username :: Maybe Text
-  }
-  deriving stock (Show, Generic)
+data User = User {id_ :: Int64, firstName :: Text, lastName, username :: Maybe Text} deriving stock (Show, Generic)
 
-instance FromJSON User where
-  parseJSON = withObject "User" $ \v ->
-    User
-      <$> v .: "id"
-      <*> v .: "first_name"
-      <*> v .:? "last_name"
-      <*> v .:? "username"
+instance FromJSON User where parseJSON = genericParseJSON telegramFields
 
--- | Request body for sendMessage API
-data SendMessageRequest = SendMessageRequest
-  { chatId :: Int64,
-    text :: Text,
-    parseMode :: Maybe Text
-  }
-  deriving stock (Show, Generic)
+data TelegramFile = TelegramFile {fileId, fileUniqueId :: Text, fileSize :: Maybe Int, filePath :: Maybe Text} deriving stock (Show, Generic)
 
-instance ToJSON SendMessageRequest where
-  toJSON req =
-    object $
-      [ "chat_id" .= req.chatId,
-        "text" .= req.text
-      ]
-        ++ maybe [] (\pm -> ["parse_mode" .= pm]) req.parseMode
+instance FromJSON TelegramFile where parseJSON = genericParseJSON telegramFields
 
--- | Response wrapper for Telegram API
-data GetUpdatesResponse = GetUpdatesResponse
-  { ok :: Bool,
-    result :: [Update]
-  }
-  deriving stock (Show, Generic)
+data CallbackQuery = CallbackQuery {id_ :: Text, from_ :: User, message :: Maybe Message, data_ :: Maybe Text} deriving stock (Show, Generic)
 
-instance FromJSON GetUpdatesResponse where
-  parseJSON = withObject "GetUpdatesResponse" $ \v ->
-    GetUpdatesResponse
-      <$> v .: "ok"
-      <*> v .: "result"
+instance FromJSON CallbackQuery where parseJSON = genericParseJSON telegramFields
 
--- | Response for sendMessage API
-data SendMessageResponse = SendMessageResponse
-  { ok :: Bool,
-    result :: Maybe Message
-  }
-  deriving stock (Show, Generic)
+data InlineKeyboardButton = InlineKeyboardButton {text, callbackData :: Text} deriving stock (Show, Generic)
 
-instance FromJSON SendMessageResponse where
-  parseJSON = withObject "SendMessageResponse" $ \v ->
-    SendMessageResponse
-      <$> v .: "ok"
-      <*> v .:? "result"
+instance ToJSON InlineKeyboardButton where toJSON = genericToJSON telegramFields
 
--- | File information from Telegram getFile API
-data TelegramFile = TelegramFile
-  { -- | Identifier for this file
-    fileId :: Text,
-    -- | Unique file identifier
-    fileUniqueId :: Text,
-    -- | File size in bytes (optional)
-    fileSize :: Maybe Int,
-    -- | File path for download (optional, use with file download URL)
-    filePath :: Maybe Text
-  }
-  deriving stock (Show, Generic)
+newtype InlineKeyboardMarkup = InlineKeyboardMarkup {inlineKeyboard :: [[InlineKeyboardButton]]} deriving stock (Show, Generic)
 
-instance FromJSON TelegramFile where
-  parseJSON = withObject "TelegramFile" $ \v ->
-    TelegramFile
-      <$> v .: "file_id"
-      <*> v .: "file_unique_id"
-      <*> v .:? "file_size"
-      <*> v .:? "file_path"
+instance ToJSON InlineKeyboardMarkup where toJSON = genericToJSON telegramFields
 
--- | Response for getFile API
-data GetFileResponse = GetFileResponse
-  { ok :: Bool,
-    result :: Maybe TelegramFile
-  }
-  deriving stock (Show, Generic)
-
-instance FromJSON GetFileResponse where
-  parseJSON = withObject "GetFileResponse" $ \v ->
-    GetFileResponse
-      <$> v .: "ok"
-      <*> v .:? "result"
-
--- | Callback query from pressing an inline keyboard button
-data CallbackQuery = CallbackQuery
-  { -- | Unique callback query identifier
-    id_ :: Text,
-    -- | User who pressed the button
-    from_ :: User,
-    -- | Message with the callback button (if available)
-    message :: Maybe Message,
-    -- | Data associated with the callback button
-    data_ :: Maybe Text
-  }
-  deriving stock (Show, Generic)
-
-instance FromJSON CallbackQuery where
-  parseJSON = withObject "CallbackQuery" $ \v ->
-    CallbackQuery
-      <$> v .: "id"
-      <*> v .: "from"
-      <*> v .:? "message"
-      <*> v .:? "data"
-
--- | Inline keyboard button
-data InlineKeyboardButton = InlineKeyboardButton
-  { -- | Button text
-    text :: Text,
-    -- | Data to be sent in callback query
-    callbackData :: Text
-  }
-  deriving stock (Show, Generic)
-
-instance ToJSON InlineKeyboardButton where
-  toJSON btn =
-    object
-      [ "text" .= btn.text,
-        "callback_data" .= btn.callbackData
-      ]
-
--- | Inline keyboard markup (array of button rows)
-newtype InlineKeyboardMarkup = InlineKeyboardMarkup
-  { inlineKeyboard :: [[InlineKeyboardButton]]
-  }
-  deriving stock (Show, Generic)
-
-instance ToJSON InlineKeyboardMarkup where
-  toJSON markup =
-    object ["inline_keyboard" .= markup.inlineKeyboard]
-
--- | Request body for sendMessage with inline keyboard
-data SendMessageWithKeyboardRequest = SendMessageWithKeyboardRequest
-  { chatId :: Int64,
-    text :: Text,
-    parseMode :: Maybe Text,
-    replyMarkup :: InlineKeyboardMarkup
-  }
-  deriving stock (Show, Generic)
-
-instance ToJSON SendMessageWithKeyboardRequest where
-  toJSON req =
-    object $
-      [ "chat_id" .= req.chatId,
-        "text" .= req.text,
-        "reply_markup" .= req.replyMarkup
-      ]
-        ++ maybe [] (\pm -> ["parse_mode" .= pm]) req.parseMode
-
--- | Request body for answerCallbackQuery
-data AnswerCallbackQueryRequest = AnswerCallbackQueryRequest
-  { callbackQueryId :: Text,
-    text :: Maybe Text,
-    showAlert :: Bool
-  }
-  deriving stock (Show, Generic)
-
-instance ToJSON AnswerCallbackQueryRequest where
-  toJSON req =
-    object $
-      ["callback_query_id" .= req.callbackQueryId]
-        ++ maybe [] (\t -> ["text" .= t]) req.text
-        ++ ["show_alert" .= req.showAlert | req.showAlert]
-
--- | Request body for editMessageReplyMarkup
-data EditMessageReplyMarkupRequest = EditMessageReplyMarkupRequest
-  { chatId :: Int64,
-    messageId :: Int,
-    replyMarkup :: Maybe InlineKeyboardMarkup
-  }
-  deriving stock (Show, Generic)
-
-instance ToJSON EditMessageReplyMarkupRequest where
-  toJSON req =
-    object $
-      [ "chat_id" .= req.chatId,
-        "message_id" .= req.messageId
-      ]
-        ++ maybe [] (\rm -> ["reply_markup" .= rm]) req.replyMarkup
+telegramFields :: Options
+telegramFields = recordOptions {rejectUnknownFields = False}

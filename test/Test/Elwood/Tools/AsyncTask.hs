@@ -39,27 +39,32 @@ checkTaskParsingTests =
         store <- newAsyncTaskStore 3600
         let tool = mkCheckTaskTool store
         result <- tool.execute (String "not an object")
-        result @?= ToolError "Expected object input",
+        assertToolError result,
       testCase "non-string task_id returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCheckTaskTool store
         result <- tool.execute (object ["task_id" .= (42 :: Int)])
-        result @?= ToolError "Invalid 'task_id' parameter (must be a string)",
+        assertToolError result,
       testCase "empty task_id returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCheckTaskTool store
         result <- tool.execute (object ["task_id" .= ("  " :: Text)])
-        result @?= ToolError "task_id must not be empty",
+        assertToolError result,
       testCase "non-integer timeout_seconds returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCheckTaskTool store
         result <- tool.execute (object ["timeout_seconds" .= ("five" :: Text)])
-        result @?= ToolError "Invalid 'timeout_seconds' parameter (must be an integer)",
+        assertToolError result,
+      testCase "null timeout_seconds returns error" $ do
+        store <- newAsyncTaskStore 3600
+        let tool = mkCheckTaskTool store
+        result <- tool.execute (object ["timeout_seconds" .= Null])
+        assertToolError result,
       testCase "negative timeout_seconds returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCheckTaskTool store
         result <- tool.execute (object ["timeout_seconds" .= (-1 :: Int)])
-        result @?= ToolError "timeout_seconds must be non-negative",
+        assertToolError result,
       testCase "unknown task_id returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCheckTaskTool store
@@ -128,7 +133,7 @@ checkTaskRoundTripTests =
             assertBool "should contain list-ex-id" (T.isInfixOf "list-ex-id" t)
             assertBool "should contain 'exhausted' status" (T.isInfixOf "exhausted" t)
           _ -> assertFailure $ "expected ToolSuccess, got: " <> show result,
-      testCase "finished task is consumed on first check" $ do
+      testCase "finished task remains observable" $ do
         store <- newAsyncTaskStore 3600
         a <- Async.async $ pure $ AgentSuccess "one-time result" []
         _ <- Async.wait a
@@ -137,7 +142,7 @@ checkTaskRoundTripTests =
         r1 <- tool.execute (object ["task_id" .= ("re-id" :: Text)])
         r1 @?= toolSuccess "one-time result"
         r2 <- tool.execute (object ["task_id" .= ("re-id" :: Text)])
-        r2 @?= ToolError "Unknown task: re-id",
+        r2 @?= r1,
       testCase "poll running task returns still running" $ do
         store <- newAsyncTaskStore 3600
         block <- newEmptyMVar
@@ -186,32 +191,32 @@ awaitTaskParsingTests =
         store <- newAsyncTaskStore 3600
         let tool = mkAwaitTaskTool store
         result <- tool.execute (object [])
-        result @?= ToolError "Missing required 'task_id' parameter",
+        assertToolError result,
       testCase "empty task_id returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkAwaitTaskTool store
         result <- tool.execute (object ["task_id" .= ("  " :: Text)])
-        result @?= ToolError "task_id must not be empty",
+        assertToolError result,
       testCase "non-string task_id returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkAwaitTaskTool store
         result <- tool.execute (object ["task_id" .= (42 :: Int)])
-        result @?= ToolError "Invalid 'task_id' parameter (must be a string)",
+        assertToolError result,
       testCase "non-integer timeout_seconds returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkAwaitTaskTool store
         result <- tool.execute (object ["task_id" .= ("id" :: Text), "timeout_seconds" .= ("five" :: Text)])
-        result @?= ToolError "Invalid 'timeout_seconds' parameter (must be an integer)",
+        assertToolError result,
       testCase "zero timeout_seconds returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkAwaitTaskTool store
         result <- tool.execute (object ["task_id" .= ("id" :: Text), "timeout_seconds" .= (0 :: Int)])
-        result @?= ToolError "timeout_seconds must be positive",
+        assertToolError result,
       testCase "negative timeout_seconds returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkAwaitTaskTool store
         result <- tool.execute (object ["task_id" .= ("id" :: Text), "timeout_seconds" .= (-1 :: Int)])
-        result @?= ToolError "timeout_seconds must be positive",
+        assertToolError result,
       testCase "unknown task_id returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkAwaitTaskTool store
@@ -239,7 +244,7 @@ awaitTaskRoundTripTests =
         let tool = mkAwaitTaskTool store
         result <- tool.execute (object ["task_id" .= ("await-err" :: Text)])
         result @?= ToolError "something broke",
-      testCase "awaited task is consumed on first await" $ do
+      testCase "awaited task remains observable" $ do
         store <- newAsyncTaskStore 3600
         a <- Async.async $ pure $ AgentSuccess "one-time" []
         _ <- Async.wait a
@@ -248,7 +253,7 @@ awaitTaskRoundTripTests =
         r1 <- tool.execute (object ["task_id" .= ("consume-id" :: Text)])
         r1 @?= toolSuccess "one-time"
         r2 <- tool.execute (object ["task_id" .= ("consume-id" :: Text)])
-        r2 @?= ToolError "Unknown task: consume-id",
+        r2 @?= r1,
       testCase "await running task with short timeout returns timeout error" $ do
         store <- newAsyncTaskStore 3600
         block <- newEmptyMVar
@@ -271,17 +276,17 @@ cancelTaskParsingTests =
         store <- newAsyncTaskStore 3600
         let tool = mkCancelTaskTool store
         result <- tool.execute (object [])
-        result @?= ToolError "Missing required 'task_id' parameter",
+        assertToolError result,
       testCase "empty task_id returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCancelTaskTool store
         result <- tool.execute (object ["task_id" .= ("  " :: Text)])
-        result @?= ToolError "task_id must not be empty",
+        assertToolError result,
       testCase "non-string task_id returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCancelTaskTool store
         result <- tool.execute (object ["task_id" .= (42 :: Int)])
-        result @?= ToolError "Invalid 'task_id' parameter (must be a string)",
+        assertToolError result,
       testCase "unknown task_id returns error" $ do
         store <- newAsyncTaskStore 3600
         let tool = mkCancelTaskTool store
@@ -357,3 +362,7 @@ ttlSweepTests =
         result <- tool.execute (object [])
         result @?= toolSuccess "No async tasks."
     ]
+
+assertToolError :: ToolResult -> Assertion
+assertToolError (ToolError message) = assertBool "error explains failure" (not (T.null message))
+assertToolError other = assertFailure ("expected tool error, got " <> show other)

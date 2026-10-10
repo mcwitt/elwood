@@ -24,20 +24,22 @@ sanitizeKeyTests =
         sanitizeKey "my-key" @?= Just "my-key",
       testCase "accepts underscores" $
         sanitizeKey "my_key" @?= Just "my_key",
-      testCase "removes special characters" $
-        sanitizeKey "hello!@#world" @?= Just "helloworld",
-      testCase "removes spaces" $
-        sanitizeKey "hello world" @?= Just "helloworld",
-      testCase "removes path separators" $
-        sanitizeKey "../../../etc/passwd" @?= Just "etcpasswd",
+      testCase "rejects special characters" $
+        sanitizeKey "hello!@#world" @?= Nothing,
+      testCase "rejects spaces" $
+        sanitizeKey "hello world" @?= Nothing,
+      testCase "rejects path separators" $
+        sanitizeKey "../../../etc/passwd" @?= Nothing,
       testCase "returns Nothing for empty result" $
         sanitizeKey "!@#$%^&*()" @?= Nothing,
       testCase "returns Nothing for empty input" $
         sanitizeKey "" @?= Nothing,
-      testCase "truncates long keys to 100 chars" $
+      testCase "rejects keys longer than 100 chars" $
         let longKey = T.replicate 150 "a"
             result = sanitizeKey longKey
-         in fmap T.length result @?= Just 100,
+         in result @?= Nothing,
+      testCase "rejects keys exceeding filename byte limit" $
+        sanitizeKey (T.replicate 100 "界") @?= Nothing,
       testCase "mixed case preserved" $
         sanitizeKey "HelloWorld" @?= Just "HelloWorld"
     ]

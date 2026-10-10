@@ -1,5 +1,7 @@
 module Test.Elwood.Telegram.Inbox (tests) where
 
+import Data.Aeson (eitherDecode, encode, object, (.=))
+import Data.Aeson.Types (Pair)
 import Data.ByteString qualified as BS
 import Data.Text (Text)
 import Elwood.Telegram.Inbox
@@ -9,38 +11,20 @@ import Elwood.Telegram.Inbox
     messageAttachments,
     writeInboxFile,
   )
-import Elwood.Telegram.Types
-  ( Audio (..),
-    Chat (..),
-    ChatType (..),
-    Document (..),
-    Message (..),
-    PhotoSize (..),
-    Voice (..),
-  )
+import Elwood.Telegram.Types (Message)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty
 import Test.Tasty.HUnit
 
--- A message with all media fields empty; override one field per test.
-baseMessage :: Message
-baseMessage =
-  Message
-    { id_ = 100,
-      chat = Chat {id_ = 1, type_ = Private},
-      text = Nothing,
-      from_ = Nothing,
-      photo = Nothing,
-      caption = Nothing,
-      document = Nothing,
-      voice = Nothing,
-      audio = Nothing
-    }
-
-photoSize :: Int -> Text -> Maybe Int -> PhotoSize
-photoSize w fuid sz = PhotoSize {fileId = fuid <> "-id", fileUniqueId = fuid, width = w, height = w, fileSize = sz}
+messageWith :: [Pair] -> IO Message
+messageWith fields =
+  either fail pure $
+    eitherDecode $
+      encode $
+        object
+          (["message_id" .= (100 :: Int), "chat" .= object ["id" .= (1 :: Int), "type" .= ("private" :: Text)]] <> fields)
 
 tests :: TestTree
 tests =
@@ -53,31 +37,28 @@ tests =
 
 messageAttachmentsTests :: [TestTree]
 messageAttachmentsTests =
-  [ testCase "no media yields no attachments" $
-      messageAttachments baseMessage @?= [],
+  [ testCase "no media yields no attachments" $ do
+      message <- messageWith []
+      messageAttachments message @?= [],
     testCase "picks the largest photo only" $ do
-      let m = baseMessage {photo = Just [photoSize 90 "small" (Just 100), photoSize 1280 "big" (Just 9000)]}
-          atts = messageAttachments m
-      map (.fileUniqueId) atts @?= ["big"]
-      map (.kind) atts @?= [KindPhoto],
+      message <- messageWith ["photo" .= [media "small" 100 photo, media "big" 9000 photo]]
+      map (.fileUniqueId) (messageAttachments message) @?= ["big"]
+      map (.kind) (messageAttachments message) @?= [KindPhoto],
     testCase "document maps to one KindDocument attachment" $ do
-      let d = Document {fileId = "D", fileUniqueId = "U", fileName = Just "r.pdf", mimeType = Just "application/pdf", fileSize = Just 10}
-          atts = messageAttachments baseMessage {document = Just d}
-      map (.kind) atts @?= [KindDocument]
-      map (.fileName) atts @?= [Just "r.pdf"],
+      message <- messageWith ["document" .= media "doc" 10 ["file_name" .= ("r.pdf" :: Text), "mime_type" .= ("application/pdf" :: Text)]]
+      map (.kind) (messageAttachments message) @?= [KindDocument]
+      map (.fileName) (messageAttachments message) @?= [Just "r.pdf"],
     testCase "voice and audio both surface" $ do
-      let v = Voice {fileId = "V", fileUniqueId = "UV", duration = 3, mimeType = Just "audio/ogg", fileSize = Just 5}
-          a = Audio {fileId = "A", fileUniqueId = "UA", duration = 9, fileName = Nothing, mimeType = Just "audio/mpeg", fileSize = Just 7}
-          atts = messageAttachments baseMessage {voice = Just v, audio = Just a}
-      map (.kind) atts @?= [KindVoice, KindAudio],
+      message <- messageWith ["voice" .= media "voice" 5 timed, "audio" .= media "audio" 7 timed]
+      map (.kind) (messageAttachments message) @?= [KindVoice, KindAudio],
     testCase "all media kinds surface in order photo, document, voice, audio" $ do
-      let p = photoSize 1280 "big" (Just 9000)
-          d = Document {fileId = "D", fileUniqueId = "U", fileName = Just "r.pdf", mimeType = Just "application/pdf", fileSize = Just 10}
-          v = Voice {fileId = "V", fileUniqueId = "UV", duration = 3, mimeType = Just "audio/ogg", fileSize = Just 5}
-          a = Audio {fileId = "A", fileUniqueId = "UA", duration = 9, fileName = Nothing, mimeType = Just "audio/mpeg", fileSize = Just 7}
-          atts = messageAttachments baseMessage {photo = Just [p], document = Just d, voice = Just v, audio = Just a}
-      map (.kind) atts @?= [KindPhoto, KindDocument, KindVoice, KindAudio]
+      message <- messageWith ["photo" .= [media "photo" 9 photo], "document" .= media "doc" 10 [], "voice" .= media "voice" 5 timed, "audio" .= media "audio" 7 timed]
+      map (.kind) (messageAttachments message) @?= [KindPhoto, KindDocument, KindVoice, KindAudio]
   ]
+  where
+    photo = ["width" .= (1280 :: Int), "height" .= (1280 :: Int)]
+    timed = ["duration" .= (3 :: Int)]
+    media name size extra = object (["file_id" .= (name :: Text), "file_unique_id" .= name, "file_size" .= (size :: Int)] <> extra)
 
 photoAtt :: InboundAttachment
 photoAtt = InboundAttachment {fileId = "fid", fileUniqueId = "AgADabc", kind = KindPhoto, fileName = Nothing, mimeType = Nothing, fileSize = Just 1}

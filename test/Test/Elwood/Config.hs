@@ -3,28 +3,29 @@ module Test.Elwood.Config (tests) where
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (SomeException, bracket_, try)
 import Data.Aeson (Result (..), Value (..), fromJSON, object, (.=))
+import Data.Aeson.Types (parseEither)
 import Data.List (isInfixOf)
 import Data.Map.Strict qualified as Map
 import Data.Monoid (Last (..))
+import Data.Text qualified
+import Data.Text.Encoding qualified as Encoding
+import Data.Yaml qualified as Yaml
 import Elwood.AgentSettings (AgentPreset (..), AgentProfile (..), ModelRef (..), ToolSearchConfig (..))
 import Elwood.Config
   ( CompactionConfig (..),
     CompactionStrategy (..),
     Config (..),
     PruningConfig (..),
-    PruningConfigFile (..),
     PruningStrategy (..),
     TelegramChatConfig (..),
     ThinkingPruningConfig (..),
-    ThinkingPruningConfigFile (..),
     ToolDirectionConfig (..),
-    ToolDirectionConfigFile (..),
     ToolPruningConfig (..),
-    ToolPruningConfigFile (..),
     loadConfig,
     resolvePruning,
   )
 import Elwood.Event.Types (DeliveryTarget (..), SessionConfig (..))
+import Elwood.Positive (literal)
 import Elwood.Provider (ProviderConfig (..))
 import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..), ThinkingMode (..), ThinkingOverrides (..))
 import Elwood.Webhook.Types (WebhookConfig (..), WebhookServerConfig (..))
@@ -47,25 +48,36 @@ tests =
       pruningFromJsonTests,
       -- exampleConfigTests/providerTests mutate the process-global environment;
       -- envLock serializes those critical sections (see withConfig/withEnvLock).
-      testGroup "env-dependent" [exampleConfigTests, providerTests, toolUseMessagesTests]
+      testGroup "env-dependent" [exampleConfigTests, providerTests, toolUseMessagesTests, boundaryTests]
     ]
 
 compactionConfigTests :: TestTree
 compactionConfigTests =
   testGroup
-    "CompactionConfig"
-    [ testCase "has sensible defaults" $ do
-        let cc =
-              CompactionConfig
-                { tokenThreshold = 50000,
-                  model = ModelRef "anthropic" "claude-3-5-haiku-20241022",
-                  prompt = Nothing,
-                  strategy = CKeepTurns 10
-                }
-        cc.tokenThreshold @?= 50000
-        cc.model @?= ModelRef "anthropic" "claude-3-5-haiku-20241022"
-        cc.strategy @?= CKeepTurns 10
+    "Compaction parsing"
+    [ testCase "absent compaction uses defaults" $ withConfig "{}" setup defaults,
+      testCase "null compaction inherits defaults" $ withConfig "compaction: null" setup defaults,
+      testCase "empty compaction inherits defaults" $ withConfig "compaction: {}" setup defaults,
+      testCase "enable false disables compaction" $ withConfig "compaction: {enable: false}" setup $ \cfg ->
+        case cfg.compaction of
+          Nothing -> pure ()
+          Just _ -> assertFailure "compaction should be disabled",
+      testCase "invalid disabled compaction is rejected" $
+        withConfigExpectFailure "positive" "compaction: {enable: false, token_threshold: 0}" setup,
+      testCase "null root pruning inherits defaults" $ withConfig "pruning: null" setup $ \cfg ->
+        case cfg.pruning of
+          Just pruning -> pruning.strategy @?= KeepTurns 3
+          Nothing -> assertFailure "root null historically inherits defaults"
     ]
+  where
+    setup = setEnv "ANTHROPIC_API_KEY" "test"
+    defaults cfg = case cfg.compaction of
+      Nothing -> assertFailure "compaction defaults should be enabled"
+      Just cc -> do
+        cc.tokenThreshold @?= literal @50000
+        cc.model @?= ModelRef "anthropic" "claude-3-5-haiku-20241022"
+        cc.prompt @?= Nothing
+        cc.strategy @?= CKeepTurns (literal @10)
 
 thinkingModeTests :: TestTree
 thinkingModeTests =
@@ -95,7 +107,7 @@ thinkingModeTests =
           Success _ -> assertFailure "Expected failure for unknown adaptive key",
       testCase "parses fixed with budget_tokens" $ do
         let json = object ["fixed" .= object ["budget_tokens" .= (4096 :: Int)]]
-        fromJSON json @?= Success (Budget 4096),
+        fromJSON json @?= Success (Budget (literal @4096)),
       testCase "rejects zero budget_tokens" $ do
         let json = object ["fixed" .= object ["budget_tokens" .= (0 :: Int)]]
         case fromJSON json :: Result ThinkingMode of
@@ -114,9 +126,9 @@ thinkingModeTests =
       testCase "equality works" $ do
         Adaptive (Just EffortLow) Nothing == Adaptive (Just EffortLow) Nothing @?= True
         Adaptive Nothing Nothing == Adaptive Nothing Nothing @?= True
-        Budget 1024 == Budget 1024 @?= True
-        Budget 1024 == Budget 2048 @?= False
-        Adaptive (Just EffortHigh) Nothing == Budget 4096 @?= False
+        Budget (literal @1024) == Budget (literal @1024) @?= True
+        Budget (literal @1024) == Budget (literal @2048) @?= False
+        Adaptive (Just EffortHigh) Nothing == Budget (literal @4096) @?= False
     ]
 
 thinkingOverridesTests :: TestTree
@@ -150,190 +162,83 @@ thinkingOverridesTests =
 -- resolvePruning tests
 -- ---------------------------------------------------------------------------
 
+-- These tests exercise the parsed, resolved contract, without freezing a
+-- second hierarchy of temporary configuration DTOs.
 pruningResolutionTests :: TestTree
 pruningResolutionTests =
   testGroup
-    "PruningConfig resolution"
-    [ testCase "empty config resolves to defaults" $ do
-        Just cfg <- pure $ resolvePruning mempty
-        Just tc <- pure cfg.tools
+    "Pruning resolution"
+    [ check "empty config resolves defaults" "{}" $ \cfg -> do
         cfg.strategy @?= KeepTurns 3
-        cfg.thinking @?= Just ThinkingPruningConfig {strategy = KeepTurns 3}
-        tc.headChars @?= 500
-        tc.tailChars @?= 500
-        tc.strategy @?= KeepTurns 3
-        tc.input.strategy @?= KeepTurns 3
-        tc.input.headChars @?= 500
-        tc.input.tailChars @?= 500
-        tc.output.strategy @?= KeepTurns 3
-        tc.output.headChars @?= 500
-        tc.output.tailChars @?= 500,
-      testCase "global strategy cascades to thinking and directions" $ do
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Last Nothing, strategy = Last (Just (KeepTurns 7)), thinking = Last Nothing, tools = Last Nothing})
+        cfg.thinking @?= Just (ThinkingPruningConfig (KeepTurns 3))
         Just tc <- pure cfg.tools
-        cfg.strategy @?= KeepTurns 7
-        cfg.thinking @?= Just ThinkingPruningConfig {strategy = KeepTurns 7}
-        tc.strategy @?= KeepTurns 7
+        tc.input @?= ToolDirectionConfig (KeepTurns 3) 500 500
+        tc.output @?= tc.input,
+      check "global retention cascades" "{strategy: {keep_turns: 7}}" $ \cfg -> do
+        cfg.thinking @?= Just (ThinkingPruningConfig (KeepTurns 7))
+        Just tc <- pure cfg.tools
         tc.input.strategy @?= KeepTurns 7
         tc.output.strategy @?= KeepTurns 7,
-      testCase "per-direction strategy overrides tools level" $ do
-        let inputCf = ToolDirectionConfigFile {strategy = Last (Just (KeepTurns 10)), headChars = Last Nothing, tailChars = Last Nothing}
-            toolsCf = ToolPruningConfigFile {enable = Last Nothing, headChars = Last Nothing, tailChars = Last Nothing, strategy = Last Nothing, input = Just inputCf, output = Nothing}
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Last Nothing, strategy = Last (Just (KeepTurns 5)), thinking = Last Nothing, tools = Last (Just (Just toolsCf))})
+      check "direction retention overrides tools" "{strategy: {keep_turns: 5}, tools: {input: {strategy: {keep_turns: 10}}}}" $ \cfg -> do
         Just tc <- pure cfg.tools
         tc.input.strategy @?= KeepTurns 10
-        tc.output.strategy @?= KeepTurns 5, -- output inherits global
-      testCase "tools-level strategy overrides global" $ do
-        let toolsCf = ToolPruningConfigFile {enable = Last Nothing, headChars = Last Nothing, tailChars = Last Nothing, strategy = Last (Just (KeepTurns 8)), input = Nothing, output = Nothing}
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Last Nothing, strategy = Last (Just (KeepTurns 3)), thinking = Last Nothing, tools = Last (Just (Just toolsCf))})
+        tc.output.strategy @?= KeepTurns 5,
+      check "tool retention overrides global" "{strategy: {keep_turns: 3}, tools: {strategy: {keep_turns: 8}}}" $ \cfg -> do
+        cfg.strategy @?= KeepTurns 3
         Just tc <- pure cfg.tools
-        cfg.strategy @?= KeepTurns 3 -- global unchanged
-        tc.strategy @?= KeepTurns 8
-        tc.input.strategy @?= KeepTurns 8 -- inherits tools
-        tc.output.strategy @?= KeepTurns 8, -- inherits tools
-      testCase "thinking: null disables thinking pruning" $ do
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Last Nothing, strategy = Last Nothing, thinking = Last (Just Nothing), tools = Last Nothing})
-        cfg.thinking @?= Nothing,
-      testCase "thinking: {} inherits global strategy" $ do
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Last Nothing, strategy = Last (Just (KeepTurns 5)), thinking = Last (Just (Just (ThinkingPruningConfigFile (Last Nothing) (Last Nothing)))), tools = Last Nothing})
-        cfg.thinking @?= Just ThinkingPruningConfig {strategy = KeepTurns 5},
-      testCase "thinking strategy overrides global" $ do
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Last Nothing, strategy = Last (Just (KeepTurns 5)), thinking = Last (Just (Just (ThinkingPruningConfigFile (Last Nothing) (Last (Just (KeepTurns 2)))))), tools = Last Nothing})
-        cfg.thinking @?= Just ThinkingPruningConfig {strategy = KeepTurns 2},
-      testCase "tools headChars/tailChars cascade to directions" $ do
-        let toolsCf = ToolPruningConfigFile {enable = Last Nothing, headChars = Last (Just 100), tailChars = Last (Just 200), strategy = Last Nothing, input = Nothing, output = Nothing}
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Last Nothing, strategy = Last Nothing, thinking = Last Nothing, tools = Last (Just (Just toolsCf))})
+        tc.input.strategy @?= KeepTurns 8
+        tc.output.strategy @?= KeepTurns 8,
+      check "thinking null disables" "{thinking: null}" $ \cfg -> cfg.thinking @?= Nothing,
+      check "thinking empty inherits" "{strategy: {keep_turns: 5}, thinking: {}}" $ \cfg -> cfg.thinking @?= Just (ThinkingPruningConfig (KeepTurns 5)),
+      check "thinking retention overrides" "{strategy: {keep_turns: 5}, thinking: {strategy: {keep_turns: 2}}}" $ \cfg -> cfg.thinking @?= Just (ThinkingPruningConfig (KeepTurns 2)),
+      check "tool character counts cascade" "{tools: {head_chars: 100, tail_chars: 200}}" $ \cfg -> do
         Just tc <- pure cfg.tools
-        tc.headChars @?= 100
-        tc.tailChars @?= 200
-        tc.input.headChars @?= 100
-        tc.input.tailChars @?= 200
-        tc.output.headChars @?= 100
-        tc.output.tailChars @?= 200,
-      testCase "direction headChars/tailChars override tools level" $ do
-        let outputCf = ToolDirectionConfigFile {strategy = Last Nothing, headChars = Last (Just 50), tailChars = Last (Just 75)}
-            toolsCf = ToolPruningConfigFile {enable = Last Nothing, headChars = Last (Just 100), tailChars = Last (Just 200), strategy = Last Nothing, input = Nothing, output = Just outputCf}
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Last Nothing, strategy = Last Nothing, thinking = Last Nothing, tools = Last (Just (Just toolsCf))})
+        tc.input @?= ToolDirectionConfig (KeepTurns 3) 100 200
+        tc.output @?= tc.input,
+      check "direction character counts override" "{tools: {head_chars: 100, tail_chars: 200, output: {head_chars: 50, tail_chars: 75}}}" $ \cfg -> do
         Just tc <- pure cfg.tools
-        tc.input.headChars @?= 100 -- inherits tools
-        tc.input.tailChars @?= 200 -- inherits tools
-        tc.output.headChars @?= 50 -- overridden
-        tc.output.tailChars @?= 75, -- overridden
-      testCase "tools: null disables tool pruning" $ do
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Last Nothing, strategy = Last Nothing, thinking = Last Nothing, tools = Last (Just Nothing)})
-        cfg.tools @?= Nothing,
-      testCase "enable = false disables all pruning" $ do
-        resolvePruning (PruningConfigFile {enable = Last (Just False), strategy = Last Nothing, thinking = Last Nothing, tools = Last Nothing}) @?= Nothing,
-      testCase "thinking.enable = false disables thinking" $ do
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Last Nothing, strategy = Last Nothing, thinking = Last (Just (Just (ThinkingPruningConfigFile (Last (Just False)) (Last Nothing)))), tools = Last Nothing})
-        cfg.thinking @?= Nothing,
-      testCase "tools.enable = false disables tools" $ do
-        let toolsCf = ToolPruningConfigFile {enable = Last (Just False), headChars = Last Nothing, tailChars = Last Nothing, strategy = Last Nothing, input = Nothing, output = Nothing}
-        Just cfg <- pure $ resolvePruning (PruningConfigFile {enable = Last Nothing, strategy = Last Nothing, thinking = Last Nothing, tools = Last (Just (Just toolsCf))})
-        cfg.tools @?= (Nothing :: Maybe ToolPruningConfig),
-      testCase "pruning.enable = false overrides child enable = true" $ do
-        let toolsCf = ToolPruningConfigFile {enable = Last (Just True), headChars = Last Nothing, tailChars = Last Nothing, strategy = Last Nothing, input = Nothing, output = Nothing}
-        resolvePruning (PruningConfigFile {enable = Last (Just False), strategy = Last Nothing, thinking = Last (Just (Just (ThinkingPruningConfigFile (Last (Just True)) (Last Nothing)))), tools = Last (Just (Just toolsCf))}) @?= Nothing
+        tc.input @?= ToolDirectionConfig (KeepTurns 3) 100 200
+        tc.output @?= ToolDirectionConfig (KeepTurns 3) 50 75,
+      check "tools null disables" "{tools: null}" $ \cfg -> cfg.tools @?= Nothing,
+      testCase "enable false disables all" $ parsePruning "{enable: false}" @?= Right Nothing,
+      check "thinking enable false disables" "{thinking: {enable: false}}" $ \cfg -> cfg.thinking @?= Nothing,
+      check "tools enable false disables" "{tools: {enable: false}}" $ \cfg -> cfg.tools @?= Nothing,
+      testCase "global disable dominates child enable" $ parsePruning "{enable: false, thinking: {enable: true}, tools: {enable: true}}" @?= Right Nothing
     ]
+  where
+    check name yaml action = testCase name $ either assertFailure (maybe (assertFailure "unexpected disabled pruning") action) (parsePruning yaml)
 
--- ---------------------------------------------------------------------------
--- FromJSON tests for pruning config types
--- ---------------------------------------------------------------------------
+parsePruning :: Data.Text.Text -> Either String (Maybe PruningConfig)
+parsePruning yaml = either (Left . show) (parseEither resolvePruning) (Yaml.decodeEither' (Encoding.encodeUtf8 yaml))
 
 pruningFromJsonTests :: TestTree
 pruningFromJsonTests =
   testGroup
-    "PruningConfigFile FromJSON"
-    [ testCase "parses full nested config" $ do
-        let json =
-              object
-                [ "strategy" .= object ["keep_turns" .= (5 :: Int)],
-                  "thinking" .= object ["strategy" .= object ["keep_turns" .= (2 :: Int)]],
-                  "tools"
-                    .= object
-                      [ "head_chars" .= (100 :: Int),
-                        "tail_chars" .= (200 :: Int),
-                        "input" .= object ["strategy" .= object ["keep_turns" .= (10 :: Int)], "head_chars" .= (50 :: Int)],
-                        "output" .= object ["tail_chars" .= (75 :: Int)]
-                      ]
-                ]
-        case fromJSON json of
-          Error err -> assertFailure $ "Parse failed: " <> err
-          Success (pcf :: PruningConfigFile) -> do
-            pcf.strategy @?= Last (Just (KeepTurns 5))
-            case getLast pcf.thinking of
-              Just (Just tcf) -> tcf.strategy @?= Last (Just (KeepTurns 2))
-              other -> assertFailure $ "Expected Just (Just ...), got: " <> show other
-            case getLast pcf.tools of
-              Just (Just tc) -> do
-                tc.headChars @?= Last (Just 100)
-                tc.tailChars @?= Last (Just 200)
-                case tc.input of
-                  Just ic -> do
-                    ic.strategy @?= Last (Just (KeepTurns 10))
-                    ic.headChars @?= Last (Just 50)
-                    ic.tailChars @?= Last Nothing
-                  Nothing -> assertFailure "Expected Just for input"
-                case tc.output of
-                  Just oc -> do
-                    oc.strategy @?= Last Nothing
-                    oc.headChars @?= Last Nothing
-                    oc.tailChars @?= Last (Just 75)
-                  Nothing -> assertFailure "Expected Just for output"
-              other -> assertFailure $ "Expected Just (Just ...) for tools, got: " <> show other,
-      testCase "parses thinking: null as disabled" $ do
-        let json = object ["thinking" .= Null]
-        case fromJSON json of
-          Error err -> assertFailure $ "Parse failed: " <> err
-          Success (pcf :: PruningConfigFile) ->
-            pcf.thinking @?= Last (Just Nothing),
-      testCase "absent thinking parses as Nothing (inherit defaults)" $ do
-        let json = object ["strategy" .= object ["keep_turns" .= (3 :: Int)]]
-        case fromJSON json of
-          Error err -> assertFailure $ "Parse failed: " <> err
-          Success (pcf :: PruningConfigFile) ->
-            pcf.thinking @?= Last Nothing,
-      testCase "parses tools: null as disabled" $ do
-        let json = object ["tools" .= Null]
-        case fromJSON json of
-          Error err -> assertFailure $ "Parse failed: " <> err
-          Success (pcf :: PruningConfigFile) ->
-            pcf.tools @?= Last (Just Nothing),
-      testCase "absent tools parses as Nothing (inherit defaults)" $ do
-        let json = object ["strategy" .= object ["keep_turns" .= (3 :: Int)]]
-        case fromJSON json of
-          Error err -> assertFailure $ "Parse failed: " <> err
-          Success (pcf :: PruningConfigFile) ->
-            pcf.tools @?= Last Nothing,
-      testCase "empty object parses with all Nothing" $ do
-        let json = object []
-        case fromJSON json of
-          Error err -> assertFailure $ "Parse failed: " <> err
-          Success (pcf :: PruningConfigFile) -> do
-            pcf.strategy @?= Last Nothing
-            pcf.thinking @?= Last Nothing
-            pcf.tools @?= Last Nothing,
-      testCase "rejects unknown keys at top level" $ do
-        let json = object ["strategy" .= object ["keep_turns" .= (3 :: Int)], "bogus" .= True]
-        case fromJSON json :: Result PruningConfigFile of
-          Error _ -> pure ()
-          Success _ -> assertFailure "Expected parse failure for unknown key",
-      testCase "rejects unknown keys in thinking" $ do
-        let json = object ["thinking" .= object ["strategy" .= object ["keep_turns" .= (1 :: Int)], "bogus" .= True]]
-        case fromJSON json :: Result PruningConfigFile of
-          Error _ -> pure ()
-          Success _ -> assertFailure "Expected parse failure for unknown key in thinking",
-      testCase "rejects unknown keys in tools" $ do
-        let json = object ["tools" .= object ["head_chars" .= (100 :: Int), "bogus" .= True]]
-        case fromJSON json :: Result PruningConfigFile of
-          Error _ -> pure ()
-          Success _ -> assertFailure "Expected parse failure for unknown key in tools",
-      testCase "rejects unknown keys in tools direction" $ do
-        let json = object ["tools" .= object ["input" .= object ["strategy" .= object ["keep_turns" .= (1 :: Int)], "bogus" .= True]]]
-        case fromJSON json :: Result PruningConfigFile of
-          Error _ -> pure ()
-          Success _ -> assertFailure "Expected parse failure for unknown key in tools.input"
+    "Pruning boundary"
+    [ testCase "full nested config resolves every inherited field" $ do
+        let parsed = parsePruning "{strategy: {keep_turns: 5}, thinking: {strategy: {keep_turns: 2}}, tools: {head_chars: 100, tail_chars: 200, input: {strategy: {keep_turns: 10}, head_chars: 50}, output: {tail_chars: 75}}}"
+        case parsed of
+          Right (Just cfg) -> do
+            cfg.thinking @?= Just (ThinkingPruningConfig (KeepTurns 2))
+            Just tc <- pure cfg.tools
+            tc.input @?= ToolDirectionConfig (KeepTurns 10) 50 200
+            tc.output @?= ToolDirectionConfig (KeepTurns 5) 100 75
+          other -> assertFailure (show other),
+      testCase "null thinking is observably different from missing" $ assertBool "null disables" (parsePruning "{thinking: null}" /= parsePruning "{}"),
+      testCase "missing thinking inherits defaults" $ parsePruning "{thinking: {}}" @?= parsePruning "{}",
+      testCase "null tools is observably different from missing" $ assertBool "null disables" (parsePruning "{tools: null}" /= parsePruning "{}"),
+      testCase "missing tools inherits defaults" $ parsePruning "{tools: {}}" @?= parsePruning "{}",
+      testCase "empty direction inherits defaults" $ parsePruning "{tools: {input: {}, output: {}}}" @?= parsePruning "{}",
+      rejects "unknown root key" "{bogus: true}",
+      rejects "unknown thinking key" "{thinking: {bogus: true}}",
+      rejects "unknown tools key" "{tools: {bogus: true}}",
+      rejects "unknown direction key" "{tools: {input: {bogus: true}}}",
+      rejects "invalid disabled child still rejected" "{enable: false, tools: {head_chars: -1}}"
     ]
+  where
+    rejects name yaml = testCase name $ case parsePruning yaml of
+      Left _ -> pure ()
+      Right _ -> assertFailure "accepted invalid pruning config"
 
 exampleConfigTests :: TestTree
 exampleConfigTests =
@@ -357,8 +262,8 @@ exampleConfigTests =
         tc.id_ @?= 123456789
         tc.session @?= Named "main"
         Just cc <- pure config.compaction
-        cc.tokenThreshold @?= 50000
-        cc.strategy @?= CKeepTurns 10
+        cc.tokenThreshold @?= literal @50000
+        cc.strategy @?= CKeepTurns (literal @10)
         -- Verify delivery target from example config
         let webhooks = config.webhook.webhooks
         length webhooks @?= 1
@@ -478,3 +383,24 @@ providerTests =
           "agent:\n  model: claude-opus-4-8\n"
           (setEnv "ANTHROPIC_API_KEY" "")
     ]
+
+boundaryTests :: TestTree
+boundaryTests =
+  testGroup
+    "strict boundaries"
+    [ testCase "explicit null disables image resizing" $
+        withConfig "max_image_dimension: null\n" setup $
+          \cfg -> cfg.maxImageDimension @?= Nothing,
+      testCase "fractional iteration budget is rejected" $
+        withConfigExpectFailure "Int" "agent: { max_iterations: 1.5 }\n" setup,
+      testCase "invalid regular expression fails on load" $
+        withConfigExpectFailure "regex" "agent: { permissions: { dangerous_patterns: ['['] } }\n" setup,
+      testCase "negative pruning length fails on load" $
+        withConfigExpectFailure "nonnegative" "pruning: { tools: { head_chars: -1 } }\n" setup,
+      testCase "invalid webhook port fails on load" $
+        withConfigExpectFailure "port" "webhook: { port: 65536 }\n" setup,
+      testCase "non-HTTP provider fails on load" $
+        withConfigExpectFailure "HTTP" "providers: { bad: { base_url: 'file:///tmp/model' } }\n" setup
+    ]
+  where
+    setup = setEnv "ANTHROPIC_API_KEY" "test"

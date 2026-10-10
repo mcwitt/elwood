@@ -1,362 +1,152 @@
-module Elwood.App
-  ( runApp,
-  )
-where
+module Elwood.App (runApp, fireCallback) where
 
-import Control.Concurrent.Async (async, wait)
+import Control.Concurrent.Async (race_)
 import Control.Concurrent.STM (newTVarIO)
-import Control.Exception (finally)
+import Control.Exception (bracket)
 import Control.Monad (void)
 import Data.Aeson (Value (Null))
-import Data.Foldable (for_)
-import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
-import Elwood.AgentSettings (AgentProfile (..), ModelRef (..), ToolSearchConfig (..), resolveProfile, toOverrides)
-import Elwood.Approval
-  ( ApprovalCoordinator,
-    ApprovalResult (..),
-    Decision (..),
-    formatApprovalRequest,
-    newApprovalCoordinator,
-    parseCallbackData,
-    requestApproval,
-    respondToApproval,
-  )
+import Elwood.AgentSettings (AgentProfile (..), resolveProfile, toOverrides)
+import Elwood.Approval qualified as Approval
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Pruning (newPruneHorizons)
 import Elwood.Config
-import Elwood.Event (AppEnv (..), DeliveryTarget (..), Event (..), EventSource (..), handleEvent)
+import Elwood.Event
+import Elwood.Event.Types
+import Elwood.Exception (catchSync)
 import Elwood.Logging
 import Elwood.MCP qualified as MCP
 import Elwood.Memory (newMemoryStore)
-import Elwood.Metrics (newMetricsStore, setMCPServerCount)
-import Elwood.Positive (Positive)
+import Elwood.Metrics qualified as Metrics
 import Elwood.Scheduler qualified as Scheduler
-import Elwood.Session (newSessionLocks)
+import Elwood.Session (newSessionLocks, sessionCancelFlag)
 import Elwood.Telegram qualified as Telegram
-import Elwood.Telegram.Handler (handleTelegramMessage)
+import Elwood.Telegram.Handler (handleTelegramMessage, parseCommand)
 import Elwood.Telegram.Markdown (warmupMarkdown)
 import Elwood.Tools qualified as Tools
+import Elwood.Tools.AsyncTask (closeTaskStore)
 import Elwood.Webhook qualified as Webhook
+import Elwood.Workers qualified as Workers
 import System.Directory (createDirectoryIfMissing)
 
--- | Initialize and run the application
 runApp :: Config -> IO ()
 runApp config = do
-  -- Initialize logging
   logger <- newLogger Info
-
-  logInfo logger "Elwood starting up" []
-  logInfo logger "Configuration loaded" [("state_dir", T.pack config.stateDir)]
-
-  -- Register cmark-gfm extensions once before any per-message threads spawn
   warmupMarkdown
-
-  -- Ensure state directory exists
   createDirectoryIfMissing True config.stateDir
-
-  -- Initialize Telegram client
-  tg <- Telegram.newClient logger config.telegramToken
-  logInfo logger "Telegram client initialized" []
-
-  -- Initialize Claude client
+  telegram <- Telegram.newClient logger config.telegramToken
   claude <- Claude.newClient config.providers
-  logInfo logger "Claude client initialized" [("model", config.agentProfile.model.model)]
-
-  -- Initialize conversation store
-  convs <- Claude.newConversationStore config.stateDir
-  logInfo logger "Conversation store initialized" []
-
-  -- Initialize memory store
-  memoryStore <- newMemoryStore config.stateDir
-  logInfo logger "Memory store initialized" []
-
-  -- Initialize scheduled-callback store (loads pending callbacks from disk)
-  callbackStore_ <- Scheduler.newCallbackStore logger config.stateDir
-  logInfo logger "Callback store initialized" []
-
-  -- Initialize approval coordinator
-  approvalCoordinator <- newApprovalCoordinator
-  logInfo logger "Approval coordinator initialized" []
-
-  -- Initialize attachment queue
-  attachmentQueue_ <- newTVarIO []
-
-  -- Initialize prune horizons
-  pruneHorizons_ <- newPruneHorizons
-
-  -- Initialize per-session locks
-  sessionLocks_ <- newSessionLocks
-
-  -- Construct tools with explicit dependencies
-  -- Note: run_command is registered with the base profile's permissions here,
-  -- but is re-registered per-request in handleEventCore with current permissions
-  -- (so per-chat/per-webhook/per-delegate overrides take effect).
-  let builtinRegistry =
-        Tools.registerTool (Tools.mkListCallbacksTool callbackStore_) $
-          Tools.registerTool (Tools.mkCancelCallbackTool callbackStore_) $
-            Tools.registerTool (Tools.mkQueueAttachmentTool logger attachmentQueue_) $
-              Tools.registerTool (Tools.mkRunCommandTool logger config.workspace config.agentProfile.permissions) $
-                Tools.registerTool (Tools.mkViewImageTool logger config.workspace) $
-                  Tools.registerTool (Tools.mkSaveMemoryTool logger memoryStore) $
-                    Tools.registerTool
-                      (Tools.mkSearchMemoryTool logger memoryStore)
-                      Tools.newToolRegistry
-
-  logInfo
-    logger
-    "Built-in tools registered"
-    [("tool_count", T.pack (show (length (Tools.allTools builtinRegistry))))]
-
-  -- Initialize MCP servers and merge tools
-  (reg, mcpServers) <- MCP.startMCPServers logger config.mcpServers builtinRegistry
-
-  logInfo
-    logger
-    "MCP initialized"
-    [("servers", T.pack (show (length mcpServers)))]
-
-  -- Initialize metrics store
-  mets <- newMetricsStore
-  logInfo logger "Metrics store initialized" []
-
-  logInfo
-    logger
-    "Tool search"
-    [("enabled", T.pack (show (case config.agentProfile.toolSearch of ToolSearchDisabled -> False; _ -> True)))]
-
-  logInfo
-    logger
-    "Tool registry initialized"
-    [("tool_count", T.pack (show (length (Tools.allTools reg))))]
-
-  -- Log configured chats
-  let chatIds = map (.id_) config.telegramChats
-  logInfo
-    logger
-    "Telegram chats"
-    [("chats", T.pack (show chatIds))]
-
-  -- Default approval function (no approval channel — used by webhooks)
-  let baseApprovalFn = Tools.noApprovalChannel
-
-  -- Helper to create per-chat approval function.
-  -- Closes over the per-chat approval timeout so overrides take effect.
-  let mkApprovalFn = requestToolApproval logger tg approvalCoordinator
-
-  -- Create callback handler for approval responses
-  let callbackHandler = handleApprovalCallback logger tg approvalCoordinator
-
-  -- Record MCP server count in metrics
-  setMCPServerCount mets (length mcpServers)
-
-  -- Create async task store for delegate_task async mode (1 hour TTL)
-  asyncStore <- Tools.newAsyncTaskStore 3600
-
-  -- Seed per-chat tool-use overrides from config so they persist across
-  -- restarts; the /tools command toggles them for the running session.
-  toolUseMessagesOverrides_ <-
-    newTVarIO $ Map.fromList [(tc.id_, b) | tc <- config.telegramChats, Just b <- [tc.toolUseMessages]]
-
-  -- Create base app environment (shared by webhook and telegram handlers)
-  let appEnv =
-        AppEnv
-          { logger = logger,
-            telegram = tg,
-            claude = claude,
-            conversations = convs,
-            registry = reg,
-            requestApproval = baseApprovalFn,
-            compaction = config.compaction,
-            pruning = config.pruning,
-            workspace = config.workspace,
-            agentProfile = config.agentProfile,
-            telegramChatMap = Map.fromList [(tc.id_, tc) | tc <- config.telegramChats],
-            attachmentQueue = attachmentQueue_,
-            metrics = mets,
-            pruneHorizons = pruneHorizons_,
-            sessionLocks = sessionLocks_,
-            toolUseMessages = config.toolUseMessages,
-            toolUseMessagesOverrides = toolUseMessagesOverrides_,
-            delegateAgent = config.delegateAgent,
-            delegateExtraAgents = config.delegateExtraAgents,
-            delegateAllowedModels = config.delegateAllowedModels,
-            maxImageDimension = config.maxImageDimension,
-            asyncTaskStore = asyncStore,
-            callbackStore = callbackStore_
-          }
-
-  -- Resolve the per-chat environment (profile overrides + interactive approval
-  -- channel) for a given chat id. Shared by the Telegram handler and the
-  -- scheduler's callback firing so a woken callback runs with the same model,
-  -- permissions, tool filter, and approval channel that were in effect when it
-  -- was scheduled.
-  let resolveChatEnv cid =
-        let chatCfg = Map.lookup cid appEnv.telegramChatMap
-            chatProfile = resolveProfile (toOverrides appEnv.agentProfile <> maybe mempty (.overrides) chatCfg)
-         in appEnv
-              { requestApproval = mkApprovalFn cid chatProfile.permissions.approvalTimeoutSeconds,
-                agentProfile = chatProfile
-              }
-
-  -- Telegram message handler: inject per-chat approval and overrides
-  let msgHandler msg = handleTelegramMessage (resolveChatEnv msg.chat.id_) msg
-
-  -- Log webhook configuration
-  let webhookCfg = config.webhook
-  if webhookCfg.enabled
-    then
-      logInfo
-        logger
-        "Webhook server enabled"
-        [ ("port", T.pack (show webhookCfg.port)),
-          ("endpoints", T.pack (show (length webhookCfg.webhooks)))
-        ]
-    else logInfo logger "Webhook server disabled" []
-
-  -- Run polling and optionally webhook server, with MCP cleanup on exit
-  finally
-    ( do
-        -- Start webhook server in background if enabled
-        webhookThread <-
-          if webhookCfg.enabled
-            then do
-              logInfo logger "Starting webhook server" [("port", T.pack (show webhookCfg.port))]
-              Just <$> async (Webhook.runWebhookServer webhookCfg appEnv)
-            else pure Nothing
-
-        -- Start the scheduled-callback timer thread. When a callback is due it
-        -- injects a turn via handleEvent, resuming the captured session and
-        -- delivering to the captured target. When that target is a single
-        -- known chat, the turn runs with that chat's resolved profile and
-        -- approval channel (so per-chat permissions/tool-filter are enforced
-        -- and `ask` tools can prompt); otherwise it falls back to the base env.
-        let envForCallback cb = case cb.deliveryTarget of
-              TelegramDelivery (cid :| []) | Map.member cid appEnv.telegramChatMap -> resolveChatEnv cid
-              _ -> appEnv
-            fireCallback cb =
-              void $
-                handleEvent
-                  (envForCallback cb)
-                  Event
-                    { source = CallbackSource,
-                      timestamp = cb.fireAt,
-                      payload = Null,
-                      prompt = cb.prompt,
-                      image = Nothing,
-                      attachments = [],
-                      session = cb.session,
-                      deliveryTarget = cb.deliveryTarget
-                    }
-        logInfo logger "Starting scheduler" []
-        _ <- async (Scheduler.runScheduler logger callbackStore_ fireCallback)
-
-        -- Run Telegram polling
-        Telegram.runPolling
-          logger
-          tg
-          chatIds
-          msgHandler
-          callbackHandler
-
-        -- Wait for webhook thread (this won't happen in normal operation)
-        for_ webhookThread wait
-    )
-    ( do
-        logInfo logger "Shutting down MCP servers" []
-        mapM_ MCP.stopServer mcpServers
-    )
-
--- | Request tool approval via Telegram inline keyboard
-requestToolApproval ::
-  Logger ->
-  Telegram.TelegramClient ->
-  ApprovalCoordinator ->
-  Int64 ->
-  Positive ->
-  Claude.ToolName ->
-  Text ->
-  IO Tools.ApprovalOutcome
-requestToolApproval logger tg coordinator cid timeout toolName_ inputSummary = do
-  -- Create approval request and get UUID
-  (requestId_, waitForResult) <- requestApproval coordinator timeout
-
-  -- Build the approval message with inline keyboard
-  let messageText = formatApprovalRequest toolName_ inputSummary
-      keyboard =
-        Telegram.InlineKeyboardMarkup
-          [ [ Telegram.InlineKeyboardButton "✅ Approve" ("approve:" <> UUID.toText requestId_),
-              Telegram.InlineKeyboardButton "❌ Deny" ("deny:" <> UUID.toText requestId_)
-            ]
+  conversations <- Claude.newConversationStore config.stateDir
+  memory <- newMemoryStore config.stateDir
+  callbacks <- Scheduler.newCallbackStore logger config.stateDir
+  approvals <- Approval.newApprovalCoordinator
+  horizons <- newPruneHorizons
+  sessions <- newSessionLocks
+  metrics <- Metrics.newMetricsStore
+  toggles <- newTVarIO (Map.fromList [(chat.id_, enabled) | chat <- config.telegramChats, Just enabled <- [chat.toolUseMessages]])
+  let builtins =
+        foldr
+          Tools.registerTool
+          Tools.newToolRegistry
+          [ Tools.mkListCallbacksTool callbacks,
+            Tools.mkCancelCallbackTool callbacks,
+            Tools.mkViewImageTool logger config.workspace,
+            Tools.mkSaveMemoryTool logger memory,
+            Tools.mkSearchMemoryTool logger memory
           ]
+  bracket (MCP.startMCPServers logger config.mcpServers builtins) (mapM_ MCP.stopServer . snd) $ \(registry, servers) ->
+    bracket (Tools.newAsyncTaskStore 3600) closeTaskStore $ \tasks -> Workers.withWorkers $ \workers -> do
+      Metrics.setMCPServerCount metrics (length servers)
+      let env =
+            AppEnv
+              { logger = logger,
+                telegram = telegram,
+                claude = claude,
+                conversations = conversations,
+                registry = registry,
+                requestApproval = Tools.noApprovalChannel,
+                compaction = config.compaction,
+                pruning = config.pruning,
+                workspace = config.workspace,
+                agentProfile = config.agentProfile,
+                telegramChatMap = Map.fromList [(chat.id_, chat) | chat <- config.telegramChats],
+                metrics = metrics,
+                pruneHorizons = horizons,
+                sessionLocks = sessions,
+                toolUseMessages = config.toolUseMessages,
+                toolUseMessagesOverrides = toggles,
+                delegateAgent = config.delegateAgent,
+                delegateExtraAgents = config.delegateExtraAgents,
+                delegateAllowedModels = config.delegateAllowedModels,
+                maxImageDimension = config.maxImageDimension,
+                asyncTaskStore = tasks,
+                callbackStore = callbacks
+              }
+          chatEnv cid =
+            let profile = resolveProfile (toOverrides config.agentProfile <> maybe mempty (.overrides) (Map.lookup cid env.telegramChatMap))
+                approve tool input = do
+                  token <- maybe (pure Nothing) (sessionCancelFlag sessions) (Map.lookup cid env.telegramChatMap >>= sessionToConversationId . (.session))
+                  result <- Approval.withCancellableApproval token approvals profile.permissions.approvalTimeoutSeconds $ \key ->
+                    void $
+                      Telegram.sendMessageWithKeyboard
+                        telegram
+                        cid
+                        (Approval.formatApprovalRequest tool input)
+                        (Telegram.InlineKeyboardMarkup [[Telegram.InlineKeyboardButton label (decision <> UUID.toText key) | (label, decision) <- [("Approve", "approve:"), ("Deny", "deny:")]]])
+                  pure $ case result of Approval.Approved -> Tools.ApprovalGranted; Approval.Denied -> Tools.ApprovalDenied; Approval.TimedOut -> Tools.ApprovalTimeout
+             in env {agentProfile = profile, requestApproval = approve}
+          lane Isolated = Nothing
+          lane (Named name) = Just name
+          dispatch message =
+            Workers.submit workers $
+              if fmap fst (message.text >>= parseCommand) == Just "stop"
+                then Nothing
+                else lane (maybe Isolated (.session) (Map.lookup message.chat.id_ env.telegramChatMap))
+          callback query = case query.data_ >>= Approval.parseCallbackData of
+            Nothing -> Telegram.answerCallbackQuery telegram query.id_ (Just "Invalid callback")
+            Just (decision, key) -> do
+              accepted <- Approval.respondToApproval approvals key (case decision of Approval.Approve -> Approval.Approved; Approval.Deny -> Approval.Denied)
+              Telegram.answerCallbackQuery telegram query.id_ (Just (if accepted then "Recorded" else "Request expired"))
+              case query.message of
+                Just message | accepted -> Telegram.editMessageReplyMarkup telegram message.chat.id_ message.id_ Nothing
+                _ -> pure ()
+          fire scheduled = Workers.submit workers (lane scheduled.session) $ do
+            let selected = case scheduled.deliveryTarget of
+                  TelegramDelivery (cid :| []) | Map.member cid env.telegramChatMap -> chatEnv cid
+                  _ -> env
+            fireCallback logger (handleEvent selected) scheduled
+          polling =
+            Telegram.runPolling
+              logger
+              telegram
+              (Map.keys env.telegramChatMap)
+              dispatch
+              (\message -> handleTelegramMessage (chatEnv message.chat.id_) message)
+              callback
+          webhook =
+            Webhook.runWebhookServer
+              config.webhook
+              Webhook.WebhookHandle
+                { runner = eventRunner env,
+                  workspace = config.workspace,
+                  metrics = Metrics.renderMetrics metrics conversations registry,
+                  submit = Workers.submit workers,
+                  logger = logger
+                }
+          services = race_ polling (Scheduler.runScheduler logger callbacks fire)
+      logInfo logger "Elwood started" [("state_dir", T.pack config.stateDir)]
+      if config.webhook.enabled then race_ services webhook else services
 
-  -- Send the message with keyboard
-  msgId <- Telegram.sendMessageWithKeyboard tg cid messageText keyboard
-  logInfo
-    logger
-    "Sent approval request"
-    [ ("tool", let Claude.ToolName tn = toolName_ in tn),
-      ("request_id", UUID.toText requestId_),
-      ("message_id", T.pack (show msgId))
-    ]
-
-  -- Wait for result (blocks until approval, denial, or timeout)
-  result <- waitForResult
-
-  -- Convert to ApprovalOutcome
-  case result of
-    Approved -> pure Tools.ApprovalGranted
-    Denied -> pure Tools.ApprovalDenied
-    TimedOut -> pure Tools.ApprovalTimeout
-
--- | Handle callback queries for approval buttons
-handleApprovalCallback ::
-  Logger ->
-  Telegram.TelegramClient ->
-  ApprovalCoordinator ->
-  Telegram.CallbackQuery ->
-  IO ()
-handleApprovalCallback logger tg coordinator cq = do
-  case cq.data_ of
-    Nothing -> do
-      logWarn logger "Callback query without data" []
-      Telegram.answerCallbackQuery tg cq.id_ (Just "Invalid callback")
-    Just callbackData -> do
-      case parseCallbackData callbackData of
-        Nothing -> do
-          logWarn logger "Failed to parse callback data" [("data", callbackData)]
-          Telegram.answerCallbackQuery tg cq.id_ (Just "Invalid callback data")
-        Just (decision, requestId_) -> do
-          let result = case decision of
-                Approve -> Approved
-                Deny -> Denied
-          success <- respondToApproval coordinator requestId_ result
-
-          if success
-            then do
-              let responseText = case decision of
-                    Approve -> "✅ Approved"
-                    Deny -> "❌ Denied"
-              logInfo
-                logger
-                "Approval response received"
-                [ ("request_id", UUID.toText requestId_),
-                  ("decision", T.pack (show decision))
-                ]
-
-              -- Acknowledge the callback
-              Telegram.answerCallbackQuery tg cq.id_ (Just responseText)
-
-              -- Remove the inline keyboard from the message
-              case cq.message of
-                Just cbMsg -> do
-                  let cbCid = cbMsg.chat.id_
-                  Telegram.editMessageReplyMarkup tg cbCid cbMsg.id_ Nothing
-                Nothing -> pure ()
-            else do
-              logWarn logger "Approval request not found or already responded" [("request_id", UUID.toText requestId_)]
-              Telegram.answerCallbackQuery tg cq.id_ (Just "Request expired or already responded")
+-- The job owns error reporting after admission; queue submission alone cannot
+-- observe failures from model execution or conversation persistence.
+fireCallback :: Logger -> (Event -> IO (Either Text Text)) -> Scheduler.Callback -> IO ()
+fireCallback logger run scheduled =
+  catchSync
+    (run (Event CallbackSource scheduled.fireAt Null scheduled.prompt Nothing [] scheduled.session scheduled.deliveryTarget) >>= either report (const (pure ())))
+    (report . T.pack . show)
+  where
+    report errorText = logError logger "Scheduled callback failed" [("callback", scheduled.id_.unCallbackId), ("error", errorText)]

@@ -1,165 +1,58 @@
--- | Convert markdown to Telegram-supported HTML.
---
--- Telegram supports a limited subset of HTML:
--- @\<b\>@, @\<i\>@, @\<s\>@, @\<code\>@, @\<pre\>@, @\<a\>@, @\<blockquote\>@.
---
--- We parse Claude's markdown via @cmark-gfm@ and emit only these tags,
--- with appropriate fallbacks for unsupported elements (headings become bold,
--- lists become text with bullet\/number prefixes, tables become @\<pre\>@ blocks).
-module Elwood.Telegram.Markdown
-  ( markdownToTelegramHtml,
-    warmupMarkdown,
-    escapeHtmlText,
-  )
-where
+module Elwood.Telegram.Markdown (markdownToTelegramHtml, warmupMarkdown, escapeHtmlText) where
 
 import CMarkGFM
-  ( CMarkExtension,
-    ListAttributes (..),
-    ListType (..),
-    Node (..),
-    NodeType (..),
-    commonmarkToNode,
-    extStrikethrough,
-    extTable,
-    optSmart,
-  )
 import Control.Exception (evaluate)
+import Control.Monad (void)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Lazy qualified as TL
-import Data.Text.Lazy.Builder (Builder)
-import Data.Text.Lazy.Builder qualified as B
 
--- | Convert markdown text to Telegram-compatible HTML.
---
--- Parses the input as GitHub-flavoured CommonMark (with strikethrough and
--- table extensions) and renders the AST using only the HTML tags that
--- Telegram's Bot API supports.
 markdownToTelegramHtml :: Text -> Text
-markdownToTelegramHtml md =
-  let node = commonmarkToNode [optSmart] extensions md
-   in TL.toStrict $ B.toLazyText $ renderNode node
+markdownToTelegramHtml = render . commonmarkToNode [optSmart] [extStrikethrough, extTable]
 
-extensions :: [CMarkExtension]
-extensions = [extStrikethrough, extTable]
-
--- | Force cmark-gfm's lazy, non-thread-safe extension registration to happen
--- once on the current thread. Call before any concurrent conversions.
+-- cmark-gfm registers extensions lazily; force registration before threading.
 warmupMarkdown :: IO ()
-warmupMarkdown = do
-  _ <- evaluate (T.length (markdownToTelegramHtml "~~s~~ `c`\n\n| a | b |\n|---|---|\n| 1 | 2 |"))
-  pure ()
+warmupMarkdown = void (evaluate (T.length (markdownToTelegramHtml "~~s~~ `c`\n\n| a | b |\n|---|---|\n| 1 | 2 |")))
 
--- | Render a cmark Node to a Telegram HTML Builder.
-renderNode :: Node -> Builder
-renderNode (Node _ nodeType children) = case nodeType of
-  DOCUMENT -> renderChildren children
-  -- Block elements
-  PARAGRAPH -> renderChildren children <> "\n\n"
-  HEADING _ -> "<b>" <> renderChildren children <> "</b>\n\n"
-  BLOCK_QUOTE -> "<blockquote>" <> trimBlock (renderChildren children) <> "</blockquote>"
-  CODE_BLOCK info content ->
-    let langAttr
-          | T.null info = mempty
-          | otherwise = " class=\"language-" <> escapeAttrB info <> "\""
-     in "<pre><code"
-          <> langAttr
-          <> ">"
-          <> escapeHtml content
-          <> "</code></pre>\n\n"
+render :: Node -> Text
+render (Node _ kind children) = case kind of
+  DOCUMENT -> content
+  PARAGRAPH -> content <> "\n\n"
+  HEADING _ -> tag "b" content <> "\n\n"
+  BLOCK_QUOTE -> tag "blockquote" (trim content)
+  CODE_BLOCK language text -> "<pre><code" <> attribute language <> ">" <> escapeHtmlText text <> "</code></pre>\n\n"
   THEMATIC_BREAK -> "---\n\n"
-  LIST listAttrs -> renderList listAttrs children <> "\n"
-  ITEM -> renderChildren children
-  -- Inline elements
-  TEXT t -> escapeHtml t
+  LIST attrs -> T.concat (zipWith (item attrs) [attrs.listStart ..] children) <> "\n"
+  TEXT text -> escapeHtmlText text
   SOFTBREAK -> "\n"
   LINEBREAK -> "\n"
-  CODE t -> "<code>" <> escapeHtml t <> "</code>"
-  EMPH -> "<i>" <> renderChildren children <> "</i>"
-  STRONG -> "<b>" <> renderChildren children <> "</b>"
-  STRIKETHROUGH -> "<s>" <> renderChildren children <> "</s>"
-  -- Telegram HTML has no title attribute support on links
-  LINK url _title -> "<a href=\"" <> escapeAttrB url <> "\">" <> renderChildren children <> "</a>"
-  IMAGE url _title -> "<a href=\"" <> escapeAttrB url <> "\">" <> renderChildren children <> "</a>"
-  -- Tables: render as pre-formatted pipe tables
-  TABLE _alignments -> "<pre>" <> renderTable children <> "</pre>\n\n"
-  TABLE_ROW -> mempty -- handled by renderTable
-  TABLE_CELL -> mempty -- handled by renderTable
-  -- Raw HTML: strip it (don't pass through)
-  HTML_BLOCK _ -> mempty
-  HTML_INLINE _ -> mempty
-  -- Anything else: just render children
-  _ -> renderChildren children
-
-renderChildren :: [Node] -> Builder
-renderChildren = foldMap renderNode
-
--- | Render a list with bullet or number prefixes.
-renderList :: ListAttributes -> [Node] -> Builder
-renderList attrs items =
-  -- Infinite index list is truncated by zipWith to the length of items
-  mconcat $ zipWith (renderItem isBullet) [attrs.listStart ..] items
+  CODE text -> tag "code" (escapeHtmlText text)
+  EMPH -> tag "i" content
+  STRONG -> tag "b" content
+  STRIKETHROUGH -> tag "s" content
+  LINK url _ -> link url
+  IMAGE url _ -> link url
+  TABLE _ -> tag "pre" (foldMap row children) <> "\n\n"
+  TABLE_ROW -> ""
+  TABLE_CELL -> ""
+  HTML_BLOCK _ -> ""
+  HTML_INLINE _ -> ""
+  _ -> content
   where
-    isBullet = case attrs.listType of
-      BULLET_LIST -> True
-      ORDERED_LIST -> False
+    content = foldMap render children
+    trim = T.dropWhileEnd (== '\n')
+    link url = "<a href=\"" <> escapeAttribute url <> "\">" <> content <> "</a>"
+    attribute language = if T.null language then "" else " class=\"language-" <> escapeAttribute language <> "\""
+    item attrs index (Node _ _ nodes) =
+      (case attrs.listType of BULLET_LIST -> "• "; ORDERED_LIST -> T.pack (show index) <> ". ")
+        <> trim (foldMap render nodes)
+        <> "\n"
+    row (Node _ _ cells) = "| " <> T.intercalate " | " [T.strip (foldMap render nodes) | Node _ _ nodes <- cells] <> " |\n"
 
-renderItem :: Bool -> Int -> Node -> Builder
-renderItem isBullet idx (Node _ _ children) =
-  let prefix
-        | isBullet = "• "
-        | otherwise = B.fromText (T.pack (show idx)) <> ". "
-      body = stripTrailingNewlines $ renderChildren children
-   in prefix <> body <> "\n"
+tag :: Text -> Text -> Text
+tag name text = "<" <> name <> ">" <> text <> "</" <> name <> ">"
 
-stripTrailingNewlines :: Builder -> Builder
-stripTrailingNewlines b =
-  let t = TL.toStrict $ B.toLazyText b
-   in B.fromText $ T.dropWhileEnd (== '\n') t
-
--- | Render table rows as pipe-separated pre-formatted text.
-renderTable :: [Node] -> Builder
-renderTable rows = mconcat $ map renderTableRow rows
-
-renderTableRow :: Node -> Builder
-renderTableRow (Node _ _ cells) =
-  let cellTexts = map renderTableCell cells
-   in "| " <> B.fromText (T.intercalate " | " cellTexts) <> " |\n"
-
-renderTableCell :: Node -> Text
-renderTableCell (Node _ _ children) =
-  -- Render cell content as plain text with HTML escaping, no nested block tags
-  let b = renderChildren children
-      t = TL.toStrict $ B.toLazyText b
-   in T.strip t
-
--- | Strip trailing newlines from a Builder (used to clean up inner block content).
-trimBlock :: Builder -> Builder
-trimBlock = B.fromText . T.dropWhileEnd (== '\n') . TL.toStrict . B.toLazyText
-
--- | Common HTML entity escaping for content: @&@, @<@, @>@.
-escapeCharCommon :: Char -> Text
-escapeCharCommon '&' = "&amp;"
-escapeCharCommon '<' = "&lt;"
-escapeCharCommon '>' = "&gt;"
-escapeCharCommon c = T.singleton c
-
--- | Escape text for HTML content.
-escapeHtml :: Text -> Builder
-escapeHtml = B.fromText . escapeHtmlText
-
--- | Escape text for HTML content as 'Text' (for callers outside this module).
 escapeHtmlText :: Text -> Text
-escapeHtmlText = T.concatMap escapeCharCommon
+escapeHtmlText = T.replace ">" "&gt;" . T.replace "<" "&lt;" . T.replace "&" "&amp;"
 
--- | Escape text for use in an HTML attribute value (adds @\"@ escaping).
-escapeAttr :: Text -> Text
-escapeAttr = T.concatMap escapeAttrChar
-  where
-    escapeAttrChar '"' = "&quot;"
-    escapeAttrChar c = escapeCharCommon c
-
--- | 'escapeAttr' as a Builder.
-escapeAttrB :: Text -> Builder
-escapeAttrB = B.fromText . escapeAttr
+escapeAttribute :: Text -> Text
+escapeAttribute = T.replace "\"" "&quot;" . escapeHtmlText

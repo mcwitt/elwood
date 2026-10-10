@@ -1,78 +1,39 @@
-module Elwood.Session
-  ( SessionLocks,
-    newSessionLocks,
-    withSessionLock,
-    cancelSession,
-    sessionCancelFlag,
-  )
-where
+module Elwood.Session (SessionLocks, newSessionLocks, withSessionLock, cancelSession, sessionCancelFlag) where
 
-import Control.Concurrent.MVar (MVar, newMVar, putMVar, takeMVar)
-import Control.Concurrent.STM (TVar, atomically, newTVarIO, readTVar, writeTVar)
-import Control.Exception (bracket_)
-import Data.Map.Strict (Map)
+import Control.Concurrent.MVar
+import Control.Concurrent.STM
+import Control.Exception (bracket)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 
--- | Per-session state: a mutex for serializing turns plus a cancel flag.
-data SessionState = SessionState
-  { lock :: MVar (),
-    cancelled :: TVar Bool
-  }
+data Session = Session {mutex :: MVar (), active :: TVar (Maybe (TVar Bool))}
 
--- | Per-session locks and cancel flags for concurrent event handling.
--- The outer TVar provides safe concurrent access to the session map;
--- each MVar acts as a mutex for its session.
-newtype SessionLocks = SessionLocks (TVar (Map Text SessionState))
+newtype SessionLocks = SessionLocks (MVar (Map.Map Text Session))
 
--- | Create an empty 'SessionLocks'
 newSessionLocks :: IO SessionLocks
-newSessionLocks = SessionLocks <$> newTVarIO Map.empty
+newSessionLocks = SessionLocks <$> newMVar Map.empty
 
--- | Run an action while holding the lock for the given session ID.
--- Creates the session state on first use. Resets the cancel flag on acquire.
--- Exception-safe via bracket.
 withSessionLock :: SessionLocks -> Text -> IO a -> IO a
-withSessionLock locks sid action = do
-  state <- getOrCreateState locks sid
-  bracket_
-    (takeMVar state.lock)
-    (putMVar state.lock ())
-    (atomically (writeTVar state.cancelled False) >> action)
-
--- | Signal a running turn for the given session to stop.
--- Returns True if the session exists (cancel flag was set), False otherwise.
-cancelSession :: SessionLocks -> Text -> IO Bool
-cancelSession (SessionLocks tvar) sid =
-  atomically $ do
-    m <- readTVar tvar
-    case Map.lookup sid m of
-      Nothing -> pure False
-      Just state -> do
-        writeTVar state.cancelled True
-        pure True
-
--- | Get the cancel flag for a session, if the session state exists.
-sessionCancelFlag :: SessionLocks -> Text -> IO (Maybe (TVar Bool))
-sessionCancelFlag (SessionLocks tvar) sid =
-  atomically $ do
-    m <- readTVar tvar
-    pure $ (.cancelled) <$> Map.lookup sid m
-
--- | Get or create session state for a given session ID.
-getOrCreateState :: SessionLocks -> Text -> IO SessionState
-getOrCreateState (SessionLocks tvar) sid = do
-  existing <- atomically $ Map.lookup sid <$> readTVar tvar
-  case existing of
-    Just s -> pure s
+withSessionLock (SessionLocks sessions) sid action = do
+  session <- modifyMVar sessions $ \current -> case Map.lookup sid current of
+    Just existing -> pure (current, existing)
     Nothing -> do
-      mv <- newMVar ()
-      cv <- newTVarIO False
-      let s = SessionState mv cv
-      atomically $ do
-        m <- readTVar tvar
-        case Map.lookup sid m of
-          Just s' -> pure s' -- another thread beat us
-          Nothing -> do
-            writeTVar tvar (Map.insert sid s m)
-            pure s
+      fresh <- Session <$> newMVar () <*> newTVarIO Nothing
+      pure (Map.insert sid fresh current, fresh)
+  withMVar session.mutex $ \() ->
+    bracket
+      ( atomically $ do
+          token <- newTVar False
+          writeTVar session.active (Just token)
+      )
+      (\() -> atomically $ writeTVar session.active Nothing)
+      (\() -> action)
+
+cancelSession :: SessionLocks -> Text -> IO Bool
+cancelSession sessions sid = do
+  token <- sessionCancelFlag sessions sid
+  atomically $ maybe (pure False) (\flag -> writeTVar flag True >> pure True) token
+
+sessionCancelFlag :: SessionLocks -> Text -> IO (Maybe (TVar Bool))
+sessionCancelFlag (SessionLocks sessions) sid = withMVar sessions $ \current ->
+  maybe (pure Nothing) (readTVarIO . (.active)) (Map.lookup sid current)

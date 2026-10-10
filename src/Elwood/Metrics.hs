@@ -1,40 +1,26 @@
 module Elwood.Metrics
-  ( -- * Store
-    MetricsStore,
+  ( MetricsStore,
     newMetricsStore,
-
-    -- * Recording
     recordApiResponse,
     recordToolCall,
     recordCompaction,
     setMCPServerCount,
-    recordEstimatedInputTokens,
     recordInputBreakdown,
-
-    -- * Estimation
     InputTokenType (..),
     estimateTextTokens,
     estimateJsonTokens,
-
-    -- * Observer
     metricsObserver,
-
-    -- * Source Labels
     metricsSource,
-
-    -- * Rendering
     renderMetrics,
   )
 where
 
-import Control.Monad (when)
-import Data.Aeson (Value (..), encode, withObject, (.:))
+import Data.Aeson (Value, encode, withObject, (.:))
 import Data.Aeson.Types (parseMaybe)
-import Data.ByteString.Builder qualified as B
 import Data.ByteString.Lazy qualified as LBS
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef
 import Data.Int (Int64)
-import Data.List (find, intersperse, nub)
+import Data.List (find)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -43,446 +29,177 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
+import Data.Time
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Elwood.Claude.Compaction (estimateTokens)
-import Elwood.Claude.Conversation qualified as Claude
+import Elwood.Claude.Conversation qualified as Conversation
 import Elwood.Claude.Observer (AgentObserver (..))
-import Elwood.Claude.Types qualified as Claude
+import Elwood.Claude.Types qualified as C
 import Elwood.Event.Types (EventSource (..))
 import Elwood.Tools.Registry qualified as Tools
-import Elwood.Tools.Types qualified as Tools
-import Text.Printf (printf)
+import Numeric (showFFloat)
 
--- | Content type for estimated input token breakdown
-data InputTokenType
-  = ItSystemPrompt
-  | ItUserText
-  | ItAssistantText
-  | ItThinking
-  | ItToolSchemas
-  | ItToolUse
-  | ItToolResult
+data InputTokenType = ItSystemPrompt | ItUserText | ItAssistantText | ItThinking | ItToolSchemas | ItToolUse | ItToolResult
   deriving stock (Eq, Ord, Show)
 
--- | Convert an InputTokenType to its Prometheus label value
 inputTokenTypeLabel :: InputTokenType -> Text
-inputTokenTypeLabel ItSystemPrompt = "system_prompt"
-inputTokenTypeLabel ItUserText = "user_text"
-inputTokenTypeLabel ItAssistantText = "assistant_text"
-inputTokenTypeLabel ItThinking = "thinking"
-inputTokenTypeLabel ItToolSchemas = "tool_schemas"
-inputTokenTypeLabel ItToolUse = "tool_use"
-inputTokenTypeLabel ItToolResult = "tool_result"
+inputTokenTypeLabel = \case
+  ItSystemPrompt -> "system_prompt"
+  ItUserText -> "user_text"
+  ItAssistantText -> "assistant_text"
+  ItThinking -> "thinking"
+  ItToolSchemas -> "tool_schemas"
+  ItToolUse -> "tool_use"
+  ItToolResult -> "tool_result"
 
--- | Key for a counter metric
-data CounterKey
-  = -- | Token counter: metric_suffix, model, source. Used for input, output,
-    -- and cache_read. Cache writes use 'CkCacheWriteTokens' instead so the
-    -- TTL can be tracked.
-    CkTokens Text Text Text
-  | -- | Cache-write token counter: model, source, ttl
-    CkCacheWriteTokens Text Text Claude.CacheTtl
-  | -- | API requests: model, source, stop_reason
-    CkApiRequests Text Text Text
-  | -- | Tool calls: tool name
-    CkToolCalls Text
-  | -- | Compactions (no labels)
-    CkCompactions
-  | -- | Estimated input tokens: model, source, type, tool (empty when not applicable)
-    CkEstimatedInputTokens Text Text InputTokenType Text
-  deriving stock (Eq, Ord, Show)
+-- A sample is its metric suffix and ordered labels. Pointwise addition gives
+-- counters a commutative monoid; a request publishes its entire delta atomically.
+type Sample = (Text, [(Text, Text)])
 
--- | Thread-safe metrics store
-data MetricsStore = MetricsStore
-  { counters :: IORef (Map CounterKey Int64),
-    mcpServerCount :: IORef Int,
-    startTime :: UTCTime
-  }
+data MetricsStore = MetricsStore {counters :: IORef (Map Sample Int64), mcpServers :: IORef Int, started :: UTCTime}
 
--- | Create an empty metrics store
 newMetricsStore :: IO MetricsStore
 newMetricsStore = MetricsStore <$> newIORef Map.empty <*> newIORef 0 <*> getCurrentTime
 
--- | Increment a counter by a given amount
-incrementCounter :: MetricsStore -> CounterKey -> Int64 -> IO ()
-incrementCounter store k delta =
-  atomicModifyIORef' store.counters $ \m ->
-    (Map.insertWith (+) k delta m, ())
+record :: MetricsStore -> [(Sample, Int64)] -> IO ()
+record store samples = atomicModifyIORef' store.counters (\old -> (Map.unionWith (+) old (Map.fromListWith (+) samples), ()))
 
--- | Record metrics from an API response
-recordApiResponse :: MetricsStore -> Text -> Text -> Claude.StopReason -> Claude.Usage -> IO ()
-recordApiResponse store m source stopReason u = do
-  let reasonText = Claude.stopReasonToText stopReason
-  incrementCounter store (CkTokens "input" m source) (fromIntegral u.inputTokens)
-  incrementCounter store (CkTokens "output" m source) (fromIntegral u.outputTokens)
-  incrementCounter store (CkTokens "cache_read" m source) (fromIntegral u.cacheReadInputTokens)
-  incrementCounter store (CkCacheWriteTokens m source Claude.CacheTtl5Min) (fromIntegral u.cacheCreation5mTokens)
-  incrementCounter store (CkCacheWriteTokens m source Claude.CacheTtl1Hour) (fromIntegral u.cacheCreation1hTokens)
-  incrementCounter store (CkApiRequests m source reasonText) 1
+labels :: Text -> Text -> [(Text, Text)]
+labels model source = [("model", model), ("source", source)]
 
--- | Record a tool call
+recordApiResponse :: MetricsStore -> Text -> Text -> C.StopReason -> C.Usage -> IO ()
+recordApiResponse store model source reason usage =
+  record store $
+    [ ((suffix <> "_tokens_total", ls), fromIntegral n)
+    | (suffix, n) <- [("input", usage.inputTokens), ("output", usage.outputTokens), ("cache_read", usage.cacheReadInputTokens)]
+    ]
+      <> [ (("cache_creation_tokens_total", ls <> [("cache_ttl", ttl)]), fromIntegral n)
+         | (ttl, n) <- [("5m", usage.cacheCreation5mTokens), ("1h", usage.cacheCreation1hTokens)]
+         ]
+      <> [(("api_requests_total", ls <> [("stop_reason", C.stopReasonToText reason)]), 1)]
+  where
+    ls = labels model source
+
 recordToolCall :: MetricsStore -> Text -> IO ()
-recordToolCall store toolName_ =
-  incrementCounter store (CkToolCalls toolName_) 1
+recordToolCall store tool = record store [(("tool_calls_total", [("tool", tool)]), 1)]
 
--- | Record a compaction event
 recordCompaction :: MetricsStore -> IO ()
-recordCompaction store =
-  incrementCounter store CkCompactions 1
+recordCompaction store = record store [(("compactions_total", []), 1)]
 
--- | Set the number of active MCP servers
 setMCPServerCount :: MetricsStore -> Int -> IO ()
-setMCPServerCount store n = writeIORef store.mcpServerCount n
+setMCPServerCount store = writeIORef store.mcpServers
 
--- | Estimate tokens from text (chars / 4)
 estimateTextTokens :: Text -> Int64
-estimateTextTokens t = fromIntegral (T.length t) `div` 4
+estimateTextTokens = (`div` 4) . fromIntegral . T.length
 
--- | Estimate tokens from a JSON value (encoded bytes / 4)
 estimateJsonTokens :: Value -> Int64
-estimateJsonTokens v = LBS.length (encode v) `div` 4
+estimateJsonTokens = (`div` 4) . LBS.length . encode
 
--- | Record estimated input tokens for a content type
-recordEstimatedInputTokens :: MetricsStore -> Text -> Text -> InputTokenType -> Text -> Int64 -> IO ()
-recordEstimatedInputTokens store model source typ tool =
-  incrementCounter store (CkEstimatedInputTokens model source typ tool)
+estimateSample :: Text -> Text -> InputTokenType -> Text -> Sample
+estimateSample model source typ tool = ("estimated_input_tokens_total", labels model source <> [("type", inputTokenTypeLabel typ)] <> [("tool", tool) | not (T.null tool)])
 
--- | Estimate tokens for a single tool schema (name + description + input schema)
-estimateSchemaTokens :: Claude.ToolSchema -> Int64
-estimateSchemaTokens s =
-  let Claude.ToolName tn = s.name
-   in estimateTextTokens tn + estimateTextTokens s.description + estimateJsonTokens s.inputSchema
-
--- | Extract tool names from tool_reference objects in a tool search result.
--- Returns an empty list if the JSON structure doesn't match the expected
--- @{"tool_references": [{"tool_name": "..."}]}@ format.
-extractToolReferences :: Value -> [Claude.ToolName]
-extractToolReferences v = fromMaybe [] $ parseMaybe parser v
+recordInputBreakdown :: MetricsStore -> Text -> Text -> Maybe Text -> Maybe (Set C.ToolName) -> [C.ClaudeMessage] -> [C.ToolSchema] -> IO ()
+recordInputBreakdown store model source system search messages schemas =
+  record
+    store
+    [(estimateSample model source typ tool, n) | (typ, tool, n) <- parts]
   where
-    parser = withObject "search_result" $ \o -> do
-      refs <- o .: "tool_references"
-      mapM (withObject "tool_ref" (\r -> Claude.ToolName <$> r .: "tool_name")) refs
+    schemaTokens s = estimateTextTokens s.name.unToolName + estimateTextTokens s.description + estimateJsonTokens s.inputSchema
+    schemaMap = Map.fromList [(s.name, s) | s <- schemas]
+    nonDeferred = fromMaybe (Map.keysSet schemaMap) search
+    names = Map.fromList [(tid, name.unToolName) | C.ClaudeMessage C.Assistant blocks <- messages, C.ToolUseBlock tid name _ <- blocks]
+    upfront = sum [schemaTokens s | s <- schemas, Set.member s.name nonDeferred]
+    parts =
+      [(ItSystemPrompt, "", estimateTextTokens t) | t <- maybe [] pure system]
+        <> [(ItToolSchemas, "", upfront) | upfront > 0]
+        <> concat [concatMap (block role) blocks | C.ClaudeMessage role blocks <- messages]
+    block role (C.TextBlock t) = [(if role == C.User then ItUserText else ItAssistantText, "", estimateTextTokens t)]
+    block _ (C.ThinkingBlock t _) = [(ItThinking, "", estimateTextTokens t)]
+    block _ (C.RedactedThinkingBlock t) = [(ItThinking, "", estimateTextTokens t)]
+    block _ (C.ToolUseBlock _ name input) = [(ItToolUse, name.unToolName, estimateJsonTokens input)]
+    block _ (C.ToolResultBlock tid content _) = [(ItToolResult, Map.findWithDefault "unknown" tid names, estimateTextTokens (C.toolResultText content))]
+    block _ (C.ToolSearchResultBlock _ value) =
+      [(ItToolSchemas, "", schemaTokens s) | name <- references value, not (Set.member name nonDeferred), Just s <- [Map.lookup name schemaMap]]
+    block _ _ = []
+    references value =
+      fromMaybe [] $
+        parseMaybe
+          ( withObject "search" $ \o ->
+              o .: "tool_references" >>= mapM (withObject "reference" (\r -> C.ToolName <$> r .: "tool_name"))
+          )
+          value
 
--- | Record estimated input token breakdown for an API call.
---
--- Iterates over the system prompt, tool schemas, and all message content blocks
--- to estimate tokens by content type. Builds a ToolUseId→ToolName map from
--- assistant messages so tool_result blocks can be attributed to the correct tool.
---
--- When tool search is enabled ('Just' neverDefer set), only non-deferred tools
--- are counted upfront. Deferred tools are counted when their 'tool_reference'
--- blocks appear in the conversation (the server expands these into full
--- definitions each turn). Non-deferred tools appearing in search results are
--- skipped to avoid double-counting.
-recordInputBreakdown :: MetricsStore -> Text -> Text -> Maybe Text -> Maybe (Set Claude.ToolName) -> [Claude.ClaudeMessage] -> [Claude.ToolSchema] -> IO ()
-recordInputBreakdown store model source systemPrompt toolSearch msgs schemas = do
-  -- System prompt
-  case systemPrompt of
-    Just sp -> record ItSystemPrompt "" (estimateTextTokens sp)
-    Nothing -> pure ()
-
-  -- Tool schemas: only count non-deferred tools upfront
-  let baseSchemas = filter (\s -> Set.member s.name nonDeferred) schemas
-      schemaTokens = sum (map estimateSchemaTokens baseSchemas)
-  when (schemaTokens > 0) $ record ItToolSchemas "" schemaTokens
-
-  -- Build ToolUseId → ToolName map from all messages
-  let toolNameMap =
-        Map.fromList
-          [ (tid, tn)
-          | Claude.ClaudeMessage Claude.Assistant blocks <- msgs,
-            Claude.ToolUseBlock tid tn _ <- blocks
-          ]
-
-  -- Schema map for looking up deferred tools referenced in search results
-  let schemaMap = Map.fromList [(s.name, s) | s <- schemas]
-
-  -- Content blocks
-  mapM_ (recordMessageBlocks toolNameMap schemaMap) msgs
-  where
-    record = recordEstimatedInputTokens store model source
-
-    roleTokenType Claude.User = ItUserText
-    roleTokenType Claude.Assistant = ItAssistantText
-
-    recordMessageBlocks toolNameMap schemaMap (Claude.ClaudeMessage role blocks) =
-      mapM_ (recordBlock role toolNameMap schemaMap) blocks
-
-    recordBlock role _ _ (Claude.TextBlock t) =
-      record (roleTokenType role) "" (estimateTextTokens t)
-    recordBlock _ _ _ (Claude.ThinkingBlock t _sig) =
-      record ItThinking "" (estimateTextTokens t)
-    recordBlock _ _ _ (Claude.RedactedThinkingBlock d) =
-      record ItThinking "" (estimateTextTokens d)
-    recordBlock _ _ _ (Claude.ToolUseBlock _ (Claude.ToolName tn) input) =
-      record ItToolUse tn (estimateJsonTokens input)
-    -- Image parts are not estimated, matching ImageBlock treatment below.
-    recordBlock _ toolNameMap _ (Claude.ToolResultBlock tid parts _isErr) =
-      let Claude.ToolName tn = Map.findWithDefault (Claude.ToolName "unknown") tid toolNameMap
-       in record ItToolResult tn (estimateTextTokens (Claude.toolResultText parts))
-    recordBlock _ _ schemaMap (Claude.ToolSearchResultBlock _ searchResult) =
-      let refs = extractToolReferences searchResult
-       in mapM_ (recordReferencedSchema schemaMap) refs
-    -- ImageBlock, ServerToolUseBlock: not estimated (images are base64-encoded
-    -- data; server tool use is handled via ToolSearchResultBlock)
-    recordBlock _ _ _ _ = pure ()
-
-    -- Record schema tokens for a tool_reference, skipping tools already
-    -- counted as non-deferred to avoid double-counting.
-    recordReferencedSchema schemaMap tn
-      | Set.member tn nonDeferred = pure ()
-      | otherwise = case Map.lookup tn schemaMap of
-          Just s -> record ItToolSchemas "" (estimateSchemaTokens s)
-          Nothing -> pure ()
-
-    nonDeferred = case toolSearch of
-      Nothing -> Set.fromList (map (.name) schemas)
-      Just neverDefer -> neverDefer
-
--- | Normalize an EventSource to a metrics label
 metricsSource :: EventSource -> Text
 metricsSource (TelegramSource _) = "telegram"
-metricsSource (WebhookSource n) = "webhook:" <> n
+metricsSource (WebhookSource name) = "webhook:" <> name
 metricsSource CallbackSource = "callback"
 
--- | Build an 'AgentObserver' that records metrics to a 'MetricsStore'.
--- The @model@ and @source@ labels are baked in at construction time.
 metricsObserver :: MetricsStore -> Text -> Text -> AgentObserver
 metricsObserver store model source =
   AgentObserver
-    { onInputEstimate = recordInputBreakdown store model source,
-      onApiResponse = recordApiResponse store model source,
-      onToolCall = recordToolCall store,
-      onCompaction = recordCompaction store
-    }
+    (recordInputBreakdown store model source)
+    (recordApiResponse store model source)
+    (recordToolCall store)
+    (recordCompaction store)
 
--- | Render all metrics in Prometheus text exposition format
-renderMetrics :: MetricsStore -> Claude.ConversationStore -> Tools.ToolRegistry -> IO LBS.ByteString
-renderMetrics store convStore registry = do
-  cs <- readIORef store.counters
-  mcpCount <- readIORef store.mcpServerCount
+renderMetrics :: MetricsStore -> Conversation.ConversationStore -> Tools.ToolRegistry -> IO LBS.ByteString
+renderMetrics store conversations registry = do
+  counters <- readIORef store.counters
+  mcp <- readIORef store.mcpServers
   now <- getCurrentTime
-  convs <- convStore.allConversations
-  let ts = Tools.allTools registry
-      uptimeSeconds = floor (diffUTCTime now store.startTime) :: Int64
-      builder =
-        renderCounters cs
-          <> renderConversationGauges convs
-          <> renderToolGauge ts
-          <> renderMCPGauge mcpCount
-          <> renderUptimeGauge uptimeSeconds
-  pure $ B.toLazyByteString builder
-
--- | Render all counter metrics
-renderCounters :: Map CounterKey Int64 -> B.Builder
-renderCounters cs =
-  renderTokenCounters "input" cs
-    <> renderTokenCounters "output" cs
-    <> renderTokenCounters "cache_read" cs
-    <> renderCacheWriteCounters cs
-    <> renderEstimatedInputTokenCounters cs
-    <> renderCostMetric cs
-    <> renderApiRequestCounters cs
-    <> renderToolCallCounters cs
-    <> renderCompactionCounter cs
-
--- | Render token counters for a given suffix
-renderTokenCounters :: Text -> Map CounterKey Int64 -> B.Builder
-renderTokenCounters suffix cs =
-  let metricName = "elwood_" <> suffix <> "_tokens_total"
-      matching = [(m, source, v) | (CkTokens s m source, v) <- Map.toList cs, s == suffix]
-   in if null matching
-        then mempty
-        else
-          helpLine metricName ("Total " <> suffix <> " tokens used")
-            <> typeLine metricName "counter"
-            <> mconcat
-              [ metricLine metricName [("model", m), ("source", source)] v
-              | (m, source, v) <- matching
-              ]
-
--- | Render cache-write token counters, labeled by TTL.
-renderCacheWriteCounters :: Map CounterKey Int64 -> B.Builder
-renderCacheWriteCounters cs =
-  let metricName = "elwood_cache_creation_tokens_total"
-      matching = [(m, source, ttl, v) | (CkCacheWriteTokens m source ttl, v) <- Map.toList cs]
-   in if null matching
-        then mempty
-        else
-          helpLine metricName "Total cache_creation tokens used, partitioned by cache TTL"
-            <> typeLine metricName "counter"
-            <> mconcat
-              [ metricLine metricName [("model", m), ("source", source), ("cache_ttl", Claude.cacheTtlLabel ttl)] v
-              | (m, source, ttl, v) <- matching
-              ]
-
--- | Render estimated input token counters by content type
-renderEstimatedInputTokenCounters :: Map CounterKey Int64 -> B.Builder
-renderEstimatedInputTokenCounters cs =
-  let metricName = "elwood_estimated_input_tokens_total"
-      matching =
-        [ (m, source, inputTokenTypeLabel typ, tool, v)
-        | (CkEstimatedInputTokens m source typ tool, v) <- Map.toList cs
+  history <- conversations.allConversations
+  let gauges :: [(Sample, Int64)]
+      gauges =
+        [ (("tools_registered", []), fromIntegral (length (Tools.allTools registry))),
+          (("mcp_servers_active", []), fromIntegral mcp),
+          (("uptime_seconds", []), floor (diffUTCTime now store.started))
         ]
-   in if null matching
-        then mempty
-        else
-          helpLine metricName "Estimated input tokens by content type"
-            <> typeLine metricName "counter"
-            <> mconcat
-              [ metricLine metricName (labels m source typ tool) v
-              | (m, source, typ, tool, v) <- matching
-              ]
+          <> [ ((name, [("session", c.sessionId)]), n)
+             | c <- Map.elems history,
+               (name, n) <-
+                 [ ("conversation_messages", fromIntegral (length c.messages)),
+                   ("conversation_estimated_tokens", fromIntegral (estimateTokens c.messages)),
+                   ("conversation_cache_expires_at", floor (utcTimeToPOSIXSeconds c.cacheExpiresAt))
+                 ]
+             ]
+      samples =
+        [(key, ("counter", T.pack (show value))) | (key, value) <- Map.toList counters]
+          <> [(key, ("gauge", T.pack (show value))) | (key, value) <- gauges]
+          <> costSamples counters
+      families = Map.fromListWith (<>) [(name, [(ls, kind, value)]) | ((name, ls), (kind, value)) <- samples]
+  pure . LBS.fromStrict . TE.encodeUtf8 . T.concat $
+    [ let name = "elwood_" <> suffix
+       in "# HELP "
+            <> name
+            <> " "
+            <> T.replace "_" " " suffix
+            <> "\n# TYPE "
+            <> name
+            <> " "
+            <> kind
+            <> "\n"
+            <> T.concat [name <> renderLabels ls <> " " <> value <> "\n" | (ls, _, value) <- rows]
+    | (suffix, rows@((_, kind, _) : _)) <- Map.toList families
+    ]
+
+renderLabels :: [(Text, Text)] -> Text
+renderLabels [] = ""
+renderLabels xs = "{" <> T.intercalate "," [k <> "=\"" <> escape v <> "\"" | (k, v) <- xs] <> "}"
   where
-    labels m source typ tool
-      | T.null tool = [("model", m), ("source", source), ("type", typ)]
-      | otherwise = [("model", m), ("source", source), ("type", typ), ("tool", tool)]
+    escape = T.replace "\n" "\\n" . T.replace "\"" "\\\"" . T.replace "\\" "\\\\"
 
--- | Render API request counters
-renderApiRequestCounters :: Map CounterKey Int64 -> B.Builder
-renderApiRequestCounters cs =
-  let metricName = "elwood_api_requests_total"
-      matching = [(m, source, reason, v) | (CkApiRequests m source reason, v) <- Map.toList cs]
-   in if null matching
-        then mempty
-        else
-          helpLine metricName "Total API requests"
-            <> typeLine metricName "counter"
-            <> mconcat
-              [ metricLine metricName [("model", m), ("source", source), ("stop_reason", reason)] v
-              | (m, source, reason, v) <- matching
-              ]
+costSamples :: Map Sample Int64 -> [(Sample, (Text, Text))]
+costSamples counters =
+  [ (("cost_dollars", ls), ("counter", T.pack (showFFloat (Just 6) cost "")))
+  | (model, source) <- Set.toList (Set.fromList [(m, s) | ((_, ("model", m) : ("source", s) : _), _) <- Map.toList counters]),
+    let ls = labels model source,
+    let value key = fromIntegral (Map.findWithDefault 0 key counters),
+    Just pricing <- [lookupPricing model],
+    let cost =
+          sum [value (suffix, ls) * rate | (suffix, rate) <- [("input_tokens_total", pricing.inputPerMTok), ("output_tokens_total", pricing.outputPerMTok), ("cache_read_tokens_total", pricing.cacheReadPerMTok)]] / 1e6
+            + sum [value ("cache_creation_tokens_total", ls <> [("cache_ttl", ttl)]) * rate | (ttl, rate) <- [("5m", pricing.cache5mWritePerMTok), ("1h", pricing.cache1hWritePerMTok)]] / 1e6
+  ]
 
--- | Render tool call counters
-renderToolCallCounters :: Map CounterKey Int64 -> B.Builder
-renderToolCallCounters cs =
-  let metricName = "elwood_tool_calls_total"
-      matching = [(n, v) | (CkToolCalls n, v) <- Map.toList cs]
-   in if null matching
-        then mempty
-        else
-          helpLine metricName "Total tool calls"
-            <> typeLine metricName "counter"
-            <> mconcat
-              [ metricLine metricName [("tool", n)] v
-              | (n, v) <- matching
-              ]
-
--- | Render compaction counter
-renderCompactionCounter :: Map CounterKey Int64 -> B.Builder
-renderCompactionCounter cs =
-  let metricName = "elwood_compactions_total"
-      value = Map.findWithDefault 0 CkCompactions cs
-   in if value == 0
-        then mempty
-        else
-          helpLine metricName "Total conversation compactions"
-            <> typeLine metricName "counter"
-            <> metricLine metricName [] value
-
--- | Render conversation gauges
-renderConversationGauges :: Map Text Claude.Conversation -> B.Builder
-renderConversationGauges convs
-  | Map.null convs = mempty
-  | otherwise =
-      helpLine "elwood_conversation_messages" "Number of messages in conversation"
-        <> typeLine "elwood_conversation_messages" "gauge"
-        <> mconcat
-          [ metricLine "elwood_conversation_messages" [("session", conv.sessionId)] (fromIntegral (length conv.messages))
-          | conv <- Map.elems convs
-          ]
-        <> helpLine "elwood_conversation_estimated_tokens" "Estimated tokens in conversation"
-        <> typeLine "elwood_conversation_estimated_tokens" "gauge"
-        <> mconcat
-          [ metricLine "elwood_conversation_estimated_tokens" [("session", conv.sessionId)] (fromIntegral (estimateTokens conv.messages))
-          | conv <- Map.elems convs
-          ]
-        <> helpLine "elwood_conversation_cache_expires_at" "Unix timestamp when prompt cache expires (0 = no cache)"
-        <> typeLine "elwood_conversation_cache_expires_at" "gauge"
-        <> mconcat
-          [ metricLine "elwood_conversation_cache_expires_at" [("session", conv.sessionId)] (cacheExpiryUnix conv.cacheExpiresAt)
-          | conv <- Map.elems convs
-          ]
-
--- | Convert a cache expiry time to Unix seconds, using 0 for the epoch sentinel
-cacheExpiryUnix :: UTCTime -> Int64
-cacheExpiryUnix t
-  | t == Claude.epoch = 0
-  | otherwise = floor (utcTimeToPOSIXSeconds t)
-
--- | Render tools registered gauge
-renderToolGauge :: [Tools.Tool] -> B.Builder
-renderToolGauge ts =
-  helpLine "elwood_tools_registered" "Number of registered tools"
-    <> typeLine "elwood_tools_registered" "gauge"
-    <> metricLine "elwood_tools_registered" [] (fromIntegral (length ts))
-
--- | Render MCP server count gauge
-renderMCPGauge :: Int -> B.Builder
-renderMCPGauge count =
-  helpLine "elwood_mcp_servers_active" "Number of active MCP servers"
-    <> typeLine "elwood_mcp_servers_active" "gauge"
-    <> metricLine "elwood_mcp_servers_active" [] (fromIntegral count)
-
--- | Render uptime gauge
-renderUptimeGauge :: Int64 -> B.Builder
-renderUptimeGauge seconds =
-  helpLine "elwood_uptime_seconds" "Time since process start in seconds"
-    <> typeLine "elwood_uptime_seconds" "gauge"
-    <> metricLine "elwood_uptime_seconds" [] seconds
-
--- | Build a # HELP line
-helpLine :: Text -> Text -> B.Builder
-helpLine n desc =
-  B.byteString "# HELP "
-    <> B.byteString (TE.encodeUtf8 n)
-    <> B.char7 ' '
-    <> B.byteString (TE.encodeUtf8 desc)
-    <> B.char7 '\n'
-
--- | Build a # TYPE line
-typeLine :: Text -> Text -> B.Builder
-typeLine n ty =
-  B.byteString "# TYPE "
-    <> B.byteString (TE.encodeUtf8 n)
-    <> B.char7 ' '
-    <> B.byteString (TE.encodeUtf8 ty)
-    <> B.char7 '\n'
-
--- | Build a metric line with optional labels
-metricLine :: Text -> [(Text, Text)] -> Int64 -> B.Builder
-metricLine n labels value =
-  B.byteString (TE.encodeUtf8 n)
-    <> renderLabels labels
-    <> B.char7 ' '
-    <> B.int64Dec value
-    <> B.char7 '\n'
-
--- | Render label set
-renderLabels :: [(Text, Text)] -> B.Builder
-renderLabels [] = mempty
-renderLabels labels =
-  B.char7 '{'
-    <> mconcat (intersperse (B.char7 ',') (map renderLabel labels))
-    <> B.char7 '}'
-  where
-    renderLabel (k, v) =
-      B.byteString (TE.encodeUtf8 k)
-        <> B.byteString "=\""
-        <> B.byteString (TE.encodeUtf8 (escapeLabelValue v))
-        <> B.char7 '"'
-
--- | Escape a label value for Prometheus text format
-escapeLabelValue :: Text -> Text
-escapeLabelValue = T.concatMap escape
-  where
-    escape '\\' = "\\\\"
-    escape '"' = "\\\""
-    escape '\n' = "\\n"
-    escape c = T.singleton c
-
--- | Pricing per model family (all rates in $/MTok)
 data ModelPricing = ModelPricing
   { inputPerMTok :: Double,
     outputPerMTok :: Double,
@@ -518,53 +235,3 @@ pricingTable =
 -- | Look up pricing for a model ID by prefix match
 lookupPricing :: Text -> Maybe ModelPricing
 lookupPricing model = snd <$> find (\(prefix, _) -> prefix `T.isPrefixOf` model) pricingTable
-
--- | Render cost metric derived from token counters and pricing table
-renderCostMetric :: Map CounterKey Int64 -> B.Builder
-renderCostMetric cs =
-  let -- Collect all distinct (model, source) pairs across token and cache-write counters
-      pairs =
-        nub $
-          [(m, source) | (CkTokens _ m source, _) <- Map.toList cs]
-            ++ [(m, source) | (CkCacheWriteTokens m source _, _) <- Map.toList cs]
-      -- Compute cost lines for models with known pricing
-      costLines =
-        [ (m, source, microDollars)
-        | (m, source) <- pairs,
-          Just pricing <- [lookupPricing m],
-          let get suffix = fromIntegral (Map.findWithDefault 0 (CkTokens suffix m source) cs) :: Double
-              getCacheWrite ttl =
-                fromIntegral (Map.findWithDefault 0 (CkCacheWriteTokens m source ttl) cs) :: Double
-              input = get "input"
-              output = get "output"
-              cacheWrite5m = getCacheWrite Claude.CacheTtl5Min
-              cacheWrite1h = getCacheWrite Claude.CacheTtl1Hour
-              cacheRead = get "cache_read"
-              -- tokens * rate_per_MTok = cost in microdollars
-              microDollars =
-                input * pricing.inputPerMTok
-                  + output * pricing.outputPerMTok
-                  + cacheWrite5m * pricing.cache5mWritePerMTok
-                  + cacheWrite1h * pricing.cache1hWritePerMTok
-                  + cacheRead * pricing.cacheReadPerMTok
-        ]
-   in if null costLines
-        then mempty
-        else
-          helpLine metricName "Approximate cumulative API cost in USD"
-            <> typeLine metricName "counter"
-            <> mconcat
-              [ metricLineDouble metricName [("model", m), ("source", source)] (microDollars / 1e6)
-              | (m, source, microDollars) <- costLines
-              ]
-  where
-    metricName = "elwood_cost_dollars"
-
--- | Build a metric line with a Double value (6 decimal places)
-metricLineDouble :: Text -> [(Text, Text)] -> Double -> B.Builder
-metricLineDouble n labels value =
-  B.byteString (TE.encodeUtf8 n)
-    <> renderLabels labels
-    <> B.char7 ' '
-    <> B.string7 (printf "%.6f" value)
-    <> B.char7 '\n'

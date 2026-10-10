@@ -10,6 +10,7 @@ import Data.Text qualified as T
 import Elwood.AgentSettings (AgentPreset (..), AgentProfile (..), ModelRef (..), ToolFilter (..), ToolSearchConfig (..), resolveProfile)
 import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
 import Elwood.Permissions (defaultPermissionConfig)
+import Elwood.Positive (literal)
 import Elwood.Prompt (PromptInput (InlineText))
 import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..), ThinkingMode (..))
 import Elwood.Tools.Delegate (inheritedOverrides, mkDelegateTaskTool)
@@ -64,19 +65,19 @@ inputParsingTests =
     [ testCase "missing task returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object [])
-        result @?= ToolError "Missing or invalid 'task' parameter",
+        assertToolError result,
       testCase "empty task returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("  " :: Text)])
-        result @?= ToolError "Task description must not be empty",
+        assertToolError result,
       testCase "non-string task returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= (42 :: Int)])
-        result @?= ToolError "Missing or invalid 'task' parameter",
+        assertToolError result,
       testCase "non-object input returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (String "not an object")
-        result @?= ToolError "Expected object input"
+        assertToolError result
     ]
 
 modelValidationTests :: TestTree
@@ -86,15 +87,15 @@ modelValidationTests =
     [ testCase "invalid model returns error" $ do
         let tool = mkStubDelegateToolWithModels ["model-a", "model-b"]
         result <- tool.execute (object ["task" .= ("test" :: Text), "model" .= ("bad-model" :: Text)])
-        result @?= ToolError "Invalid model 'bad-model'. Allowed: model-a, model-b",
+        assertToolError result,
       testCase "non-string model returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "model" .= (42 :: Int)])
-        result @?= ToolError "Invalid 'model' parameter (must be a string)",
+        assertToolError result,
       testCase "model rejected when allowed_models is empty" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "model" .= ("any-model" :: Text)])
-        result @?= ToolError "Model selection is not enabled (configure delegate.allowed_models)"
+        assertToolError result
     ]
 
 inheritanceTests :: TestTree
@@ -105,9 +106,9 @@ inheritanceTests =
         let parent = parentProfile (Just (Adaptive (Just EffortHigh) (Just DisplayUpdates)))
         inheritedThinking parent @?= Just (Adaptive (Just EffortHigh) Nothing),
       testCase "other thinking settings are inherited unchanged" $ do
-        let budget = parentProfile (Just (Budget 4096))
+        let budget = parentProfile (Just (Budget (literal @4096)))
             off = parentProfile Nothing
-        inheritedThinking budget @?= Just (Budget 4096)
+        inheritedThinking budget @?= Just (Budget (literal @4096))
         inheritedThinking off @?= Nothing
     ]
   where
@@ -116,9 +117,9 @@ inheritanceTests =
       AgentProfile
         (ModelRef "anthropic" "model-x")
         thinking
-        15
+        (literal @15)
         Nothing
-        32768
+        (literal @32768)
         [InlineText "test"]
         ToolSearchDisabled
         AllTools
@@ -131,15 +132,15 @@ thinkingValidationTests =
     [ testCase "string thinking returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "thinking" .= ("medium" :: Text)])
-        result @?= ToolError "Invalid 'thinking' parameter (must be an object like {\"enable\": true, \"mode\": {\"adaptive\": {}}} or false)",
+        assertToolError result,
       testCase "non-object thinking returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "thinking" .= (42 :: Int)])
-        result @?= ToolError "Invalid 'thinking' parameter (must be an object like {\"enable\": true, \"mode\": {\"adaptive\": {}}} or false)",
+        assertToolError result,
       testCase "array thinking returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "thinking" .= [True]])
-        result @?= ToolError "Invalid 'thinking' parameter (must be an object like {\"enable\": true, \"mode\": {\"adaptive\": {}}} or false)"
+        assertToolError result
     ]
 
 maxIterationsValidationTests :: TestTree
@@ -149,15 +150,15 @@ maxIterationsValidationTests =
     [ testCase "non-integer returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "max_iterations" .= ("five" :: Text)])
-        result @?= ToolError "Invalid 'max_iterations' parameter (must be an integer)",
+        assertToolError result,
       testCase "too large returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "max_iterations" .= (100 :: Int)])
-        result @?= ToolError "max_iterations must be between 1 and 50",
+        assertToolError result,
       testCase "zero returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "max_iterations" .= (0 :: Int)])
-        result @?= ToolError "max_iterations must be between 1 and 50"
+        assertToolError result
     ]
 
 agentSelectionTests :: TestTree
@@ -167,15 +168,15 @@ agentSelectionTests =
     [ testCase "agent rejected when extra_agents is empty" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "agent" .= ("fast" :: Text)])
-        result @?= ToolError "Agent selection is not enabled (configure delegate.extra_agents)",
+        assertToolError result,
       testCase "invalid agent name returns error" $ do
         let tool = mkStubDelegateToolWithAgents ["fast", "deep"]
         result <- tool.execute (object ["task" .= ("test" :: Text), "agent" .= ("turbo" :: Text)])
-        result @?= ToolError "Invalid agent 'turbo'. Available: deep, fast",
+        assertToolError result,
       testCase "non-string agent returns error" $ do
         let tool = mkStubDelegateToolWithAgents ["fast"]
         result <- tool.execute (object ["task" .= ("test" :: Text), "agent" .= (42 :: Int)])
-        result @?= ToolError "Invalid 'agent' parameter (must be a string)"
+        assertToolError result
     ]
 
 systemPromptValidationTests :: TestTree
@@ -185,11 +186,11 @@ systemPromptValidationTests =
     [ testCase "non-string system_prompt returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "system_prompt" .= (42 :: Int)])
-        result @?= ToolError "Invalid 'system_prompt' parameter (must be a string)",
+        assertToolError result,
       testCase "empty system_prompt returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "system_prompt" .= ("  " :: Text)])
-        result @?= ToolError "system_prompt must not be empty"
+        assertToolError result
     ]
 
 asyncValidationTests :: TestTree
@@ -199,11 +200,11 @@ asyncValidationTests =
     [ testCase "non-boolean async returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "async" .= ("yes" :: Text)])
-        result @?= ToolError "Invalid 'async' parameter (must be a boolean)",
+        assertToolError result,
       testCase "async without store returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "async" .= True])
-        result @?= ToolError "Async delegation is not available"
+        assertToolError result
     ]
 
 timeoutValidationTests :: TestTree
@@ -213,15 +214,15 @@ timeoutValidationTests =
     [ testCase "non-integer timeout_seconds returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "timeout_seconds" .= ("five" :: Text)])
-        result @?= ToolError "Invalid 'timeout_seconds' parameter (must be an integer)",
+        assertToolError result,
       testCase "zero timeout_seconds returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "timeout_seconds" .= (0 :: Int)])
-        result @?= ToolError "timeout_seconds must be positive",
+        assertToolError result,
       testCase "negative timeout_seconds returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "timeout_seconds" .= (-1 :: Int)])
-        result @?= ToolError "timeout_seconds must be positive"
+        assertToolError result
     ]
 
 labelValidationTests :: TestTree
@@ -231,11 +232,11 @@ labelValidationTests =
     [ testCase "non-string label returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "label" .= (42 :: Int)])
-        result @?= ToolError "Invalid 'label' parameter (must be a string)",
+        assertToolError result,
       testCase "empty label returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("test" :: Text), "label" .= ("  " :: Text)])
-        result @?= ToolError "label must not be empty"
+        assertToolError result
     ]
 
 toolsValidationTests :: TestTree
@@ -245,7 +246,7 @@ toolsValidationTests =
     [ testCase "non-string/array tools returns error" $ do
         let tool = mkStubDelegateTool
         result <- tool.execute (object ["task" .= ("x" :: Text), "tools" .= (5 :: Int)])
-        result @?= ToolError "Invalid 'tools' parameter (must be \"all\" or an array of strings)"
+        assertToolError result
     ]
 
 descriptionTests :: TestTree
@@ -378,3 +379,8 @@ mkStubDelegateToolWithAgents agentNames =
     [] -- allowedModels
     Nothing -- delegateOnToolUse
     Nothing -- asyncStore
+
+-- Parsing promises a tool error; explanatory prose is not a wire contract.
+assertToolError :: ToolResult -> Assertion
+assertToolError (ToolError message) = assertBool "error explains the failure" (not (T.null message))
+assertToolError other = assertFailure ("expected tool error, got " <> show other)

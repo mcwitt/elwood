@@ -1,26 +1,5 @@
-module Elwood.MCP
-  ( -- * Server Lifecycle
-    spawnServer,
-    stopServer,
+module Elwood.MCP (module MCP) where
 
-    -- * Tool Discovery
-    discoverTools,
-    toTool,
-    startMCPServers,
-
-    -- * Communication
-    sendRequest,
-
-    -- * Types
-    MCPServer (..),
-    MCPTool (..),
-    MCPError (..),
-    JsonRpcRequest (..),
-    JsonRpcResponse (..),
-    JsonRpcError (..),
-  )
-where
-
-import Elwood.MCP.Client
-import Elwood.MCP.Registry
-import Elwood.MCP.Types
+import Elwood.MCP.Client as MCP
+import Elwood.MCP.Registry as MCP
+import Elwood.MCP.Types as MCP

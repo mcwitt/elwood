@@ -8,7 +8,6 @@ module Elwood.Telegram.Client
     sendMessageWithKeyboard,
     answerCallbackQuery,
     editMessageReplyMarkup,
-    notify,
     notifyHtml,
     getFile,
     downloadFile,
@@ -23,9 +22,11 @@ module Elwood.Telegram.Client
 where
 
 import Control.Applicative ((<|>))
-import Control.Exception (Exception, throwIO)
-import Control.Monad (when)
-import Data.Aeson (eitherDecode, encode, object, (.=))
+import Control.Exception (Exception, catch, throwIO)
+import Control.Monad (unless, void)
+import Data.Aeson
+import Data.Aeson.Types (Pair, parseEither)
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy (ByteString)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Int (Int64)
@@ -33,437 +34,174 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Elwood.Logging (Logger, logInfo, logWarn)
+import Elwood.Exception (catchSync)
+import Elwood.Logging (Logger, logWarn)
 import Elwood.Telegram.Markdown (markdownToTelegramHtml)
 import Elwood.Telegram.Types
-  ( AnswerCallbackQueryRequest (..),
-    EditMessageReplyMarkupRequest (..),
-    GetFileResponse (..),
-    GetUpdatesResponse (..),
-    InlineKeyboardMarkup,
-    Message (..),
-    SendMessageRequest (..),
-    SendMessageResponse (..),
-    SendMessageWithKeyboardRequest (..),
-    TelegramFile (..),
-    Update,
-  )
 import Network.HTTP.Client
-  ( Manager,
-    Request,
-    RequestBody (RequestBodyLBS),
-    httpLbs,
-    method,
-    newManager,
-    parseRequest,
-    requestBody,
-    requestHeaders,
-    responseBody,
-    responseStatus,
-    responseTimeout,
-    responseTimeoutMicro,
-  )
 import Network.HTTP.Client.MultipartFormData (formDataBody, partBS, partFileSource)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Status (statusCode)
 
--- | Telegram API client
 data TelegramClient = TelegramClient
-  { -- | HTTP connection manager
-    tcManager :: Manager,
-    -- | Bot token
-    tcToken :: Text,
-    -- | Base URL for API calls
-    tcBaseUrl :: String,
-    -- | Logger for warnings/diagnostics
-    tcLogger :: Logger
-  }
+  {tcManager :: Manager, tcToken :: Text, tcBaseUrl :: String, tcLogger :: Logger}
 
--- | Errors from Telegram API calls
-data TelegramError
-  = TelegramHttpError Int ByteString
-  | TelegramParseError String
-  | TelegramApiError String
+data TelegramError = TelegramHttpError Int ByteString | TelegramParseError String | TelegramApiError String
   deriving stock (Show)
 
 instance Exception TelegramError
 
--- | Create a new Telegram client
 newClient :: Logger -> Text -> IO TelegramClient
 newClient logger token = do
-  mgr <- newManager tlsManagerSettings
-  pure
-    TelegramClient
-      { tcManager = mgr,
-        tcToken = token,
-        tcBaseUrl = "https://api.telegram.org/bot" <> T.unpack token,
-        tcLogger = logger
+  manager <- newManager tlsManagerSettings
+  pure (TelegramClient manager token ("https://api.telegram.org/bot" <> T.unpack token) logger)
+
+-- All Telegram methods use the same envelope; missing required results are errors.
+call :: (FromJSON a) => TelegramClient -> String -> [Pair] -> IO a
+call client endpoint fields = do
+  request <- parseRequest (client.tcBaseUrl <> "/" <> endpoint)
+  execute
+    client
+    request
+      { method = "POST",
+        requestBody = RequestBodyLBS (encode (object fields)),
+        requestHeaders = [("Content-Type", "application/json")],
+        responseTimeout = responseTimeoutMicro 35000000
       }
 
--- | Build a request for a Telegram API method
-buildRequest :: TelegramClient -> String -> IO Request
-buildRequest client method_ = do
-  req <- parseRequest $ client.tcBaseUrl <> "/" <> method_
-  pure
-    req
-      { requestHeaders =
-          [ ("Content-Type", "application/json")
-          ]
-      }
+execute :: (FromJSON a) => TelegramClient -> Request -> IO a
+execute client request = do
+  body <- fetch client request
+  value <- either (throwIO . TelegramParseError) pure (eitherDecode body)
+  either (throwIO . TelegramApiError) pure $
+    parseEither
+      ( withObject "Telegram response" $ \o -> do
+          ok <- o .: "ok"
+          unless ok (fail "Telegram returned ok=false")
+          o .: "result"
+      )
+      value
 
--- | Get updates with custom allowed update types
---
--- Parameters:
---   - client: The Telegram client
---   - offset: Update offset (use last update_id + 1)
---   - allowedUpdates: List of update types to receive (e.g., ["message", "callback_query"])
---
--- Returns a list of updates
+fetch :: TelegramClient -> Request -> IO ByteString
+fetch client request = do
+  response <- httpLbs request client.tcManager
+  let status = statusCode response.responseStatus
+  if status == 200
+    then pure response.responseBody
+    else throwIO (TelegramHttpError status response.responseBody)
+
 getUpdatesAllowed :: TelegramClient -> Int -> [Text] -> IO [Update]
-getUpdatesAllowed client offset allowedUpdates = do
-  req <- buildRequest client "getUpdates"
-  let body =
-        encode $
-          object
-            [ "offset" .= offset,
-              "timeout" .= (30 :: Int),
-              "allowed_updates" .= allowedUpdates
-            ]
-      req' =
-        req
-          { method = "POST",
-            requestBody = RequestBodyLBS body,
-            -- Set timeout longer than Telegram's 30s long poll
-            responseTimeout = responseTimeoutMicro (35 * 1000000)
-          }
+getUpdatesAllowed client offset allowed =
+  call
+    client
+    "getUpdates"
+    ["offset" .= offset, "timeout" .= (30 :: Int), "allowed_updates" .= allowed]
 
-  response <- httpLbs req' client.tcManager
-
-  let status = statusCode $ responseStatus response
-  if status /= 200
-    then throwIO $ TelegramHttpError status (responseBody response)
-    else case eitherDecode (responseBody response) :: Either String GetUpdatesResponse of
-      Left err -> throwIO $ TelegramParseError err
-      Right resp
-        | resp.ok -> pure resp.result
-        | otherwise -> throwIO $ TelegramApiError "API returned ok=false"
-
--- | Send a message to a chat
---
--- Converts the message text from markdown to Telegram HTML, then sends with
--- HTML parse mode. If Telegram rejects the HTML, falls back to sending the
--- original markdown as plain text so the message is never silently lost.
 sendMessage :: TelegramClient -> Int64 -> Text -> IO ()
-sendMessage client chatId_ msgText =
-  mapM_ (sendChunk client chatId_) (filter (not . T.null) $ splitForTelegram msgText)
+sendMessage client chat =
+  mapM_ (\chunk -> sendMessageHtml client chat (markdownToTelegramHtml chunk) chunk)
+    . filter (not . T.null)
+    . splitForTelegram
 
--- | Send a single markdown chunk: convert to HTML, fall back to the raw
--- markdown as plain text if Telegram rejects the HTML.
-sendChunk :: TelegramClient -> Int64 -> Text -> IO ()
-sendChunk client chatId_ chunk =
-  sendMessageHtml client chatId_ (markdownToTelegramHtml chunk) chunk
-
--- | Send a message with pre-rendered Telegram HTML and a plain-text
--- fallback. If Telegram rejects the HTML with a parse error, the fallback
--- text is sent without a parse mode so the message is never silently lost.
 sendMessageHtml :: TelegramClient -> Int64 -> Text -> Text -> IO ()
-sendMessageHtml client chatId_ htmlText plainText = do
-  let msgReq =
-        SendMessageRequest
-          { chatId = chatId_,
-            text = htmlText,
-            parseMode = Just "HTML"
-          }
-  sendMessageRaw client msgReq >>= \case
-    Right () -> pure ()
-    Left (status, body)
-      | status == 400,
-        isParseEntityError body || isMessageTooLongError body -> do
-          -- The HTML rendering can be longer than its plain-text form (tags
-          -- plus entity escaping), so a length rejection is worth retrying as
-          -- the (shorter, guaranteed-fitting) plain text.
-          logWarn client.tcLogger "HTML send failed, falling back to plain text" []
-          let plainReq =
-                SendMessageRequest
-                  { chatId = msgReq.chatId,
-                    text = plainText,
-                    parseMode = Nothing
-                  }
-           in sendMessageRaw client plainReq >>= \case
-                Right () -> pure ()
-                Left (s, b) -> throwIO $ TelegramHttpError s b
-      | otherwise -> throwIO $ TelegramHttpError status body
+sendMessageHtml client chat html plain = void (sendFormatted client chat [] html plain)
 
--- | Telegram's hard API limit on message text length (UTF-16 code units).
+sendFormatted :: TelegramClient -> Int64 -> [Pair] -> Text -> Text -> IO Value
+sendFormatted client chat extra html plain =
+  send html ["parse_mode" .= ("HTML" :: Text)] `catch` \err ->
+    case err of
+      TelegramHttpError 400 body
+        | any
+            (`T.isInfixOf` TE.decodeUtf8Lenient (LBS.toStrict body))
+            ["can't parse entities", "message is too long"] ->
+            send plain []
+      _ -> throwIO err
+  where
+    send text mode = call client "sendMessage" (["chat_id" .= chat, "text" .= text] <> mode <> extra)
+
+sendMessageWithKeyboard :: TelegramClient -> Int64 -> Text -> InlineKeyboardMarkup -> IO Int
+sendMessageWithKeyboard client chat text keyboard = do
+  value <- sendFormatted client chat ["reply_markup" .= keyboard] (markdownToTelegramHtml text) text
+  either (throwIO . TelegramParseError) pure (parseEither (withObject "sent message" (.: "message_id")) value)
+
+answerCallbackQuery :: TelegramClient -> Text -> Maybe Text -> IO ()
+answerCallbackQuery client query text =
+  void $
+    call @Value
+      client
+      "answerCallbackQuery"
+      (["callback_query_id" .= query] <> maybe [] (\t -> ["text" .= t]) text)
+
+editMessageReplyMarkup :: TelegramClient -> Int64 -> Int -> Maybe InlineKeyboardMarkup -> IO ()
+editMessageReplyMarkup client chat message keyboard =
+  void $
+    call @Value
+      client
+      "editMessageReplyMarkup"
+      ["chat_id" .= chat, "message_id" .= message, "reply_markup" .= fromMaybe (InlineKeyboardMarkup []) keyboard]
+
+notifyHtml :: Logger -> TelegramClient -> Int64 -> Text -> Text -> IO ()
+notifyHtml _ = sendMessageHtml
+
+getFile :: TelegramClient -> Text -> IO (Maybe TelegramFile)
+getFile client file = call client "getFile" ["file_id" .= file]
+
+downloadFile :: TelegramClient -> Text -> IO ByteString
+downloadFile client path = parseRequest ("https://api.telegram.org/file/bot" <> T.unpack client.tcToken <> "/" <> T.unpack path) >>= fetch client
+
+sendPhoto, sendDocument :: TelegramClient -> Int64 -> FilePath -> Maybe Text -> IO ()
+sendPhoto = upload "sendPhoto" "photo"
+sendDocument = upload "sendDocument" "document"
+
+upload :: String -> Text -> TelegramClient -> Int64 -> FilePath -> Maybe Text -> IO ()
+upload endpoint field client chat path caption = do
+  request <- parseRequest (client.tcBaseUrl <> "/" <> endpoint)
+  body <-
+    formDataBody
+      ( [partBS "chat_id" (TE.encodeUtf8 (T.pack (show chat))), partFileSource field path]
+          <> maybe [] (\c -> [partBS "caption" (TE.encodeUtf8 c)]) caption
+      )
+      request
+  void (execute @Value client body)
+
+sendChatAction :: TelegramClient -> Int64 -> IO ()
+sendChatAction client chat =
+  catchSync
+    (void $ call @Value client "sendChatAction" ["chat_id" .= chat, "action" .= ("typing" :: Text)])
+    (\err -> logWarn client.tcLogger "Typing indicator failed" [("error", T.pack (show err))])
+
 telegramApiLimit :: Int
 telegramApiLimit = 4096
 
--- | Initial split target for markdown text. Below the API limit to leave
--- room for HTML tag expansion; 'splitForTelegram' re-splits if HTML still
--- exceeds 'telegramApiLimit'.
-telegramMaxLength :: Int
-telegramMaxLength = 4000
+utf16Length :: Text -> Int
+utf16Length = (`div` 2) . BS.length . TE.encodeUtf16LE
 
--- | Split a markdown message into chunks whose HTML representations each fit
--- within 'telegramApiLimit'. First splits markdown at 'telegramMaxLength',
--- then re-splits any chunk whose HTML conversion exceeds the API limit.
-splitForTelegram :: Text -> [Text]
-splitForTelegram = concatMap ensureHtmlFits . splitMessage
-  where
-    ensureHtmlFits chunk
-      | T.length (markdownToTelegramHtml chunk) <= telegramApiLimit = [chunk]
-      | otherwise =
-          concatMap ensureHtmlFits $
-            filter (not . T.null) $
-              splitMessageAt (T.length chunk `div` 2) chunk
-
--- | Split a message into chunks that fit within Telegram's limit.
--- Splits on paragraph boundaries (double newlines) when possible,
--- falls back to single newlines, then hard-cuts as a last resort.
 splitMessage :: Text -> [Text]
-splitMessage = splitMessageAt telegramMaxLength
+splitMessage = splitMessageAt 4000
 
--- | Split a message into chunks of at most @maxLen@ characters.
+-- Prefer paragraph boundaries without discarding any source text.
 splitMessageAt :: Int -> Text -> [Text]
-splitMessageAt maxLen msg
-  | maxLen <= 0 = [msg]
-  | T.length msg <= maxLen = [msg]
-  | otherwise = go msg
+splitMessageAt limit text
+  | limit <= 0 = [text]
+  | utf16Length text <= limit = [text]
+  | otherwise = chunk : splitMessageAt limit rest
   where
-    go remaining
-      | T.null remaining = []
-      | T.length remaining <= maxLen = [remaining]
-      | otherwise =
-          let (chunk, rest) = splitAt' remaining
-           in chunk : go rest
+    candidate = T.pack $ takeUnits limit (T.unpack text)
+    takeUnits _ [] = []
+    takeUnits n (c : cs)
+      | n < cost = []
+      | otherwise = c : takeUnits (n - cost) cs
+      where
+        cost = if fromEnum c > 65535 then 2 else 1
+    boundary sep =
+      let (before, _) = T.breakOnEnd sep candidate
+       in if T.length before > T.length candidate `div` 4 then Just before else Nothing
+    chunk = fromMaybe (if T.null candidate then T.take 1 text else candidate) (boundary "\n\n" <|> boundary "\n")
+    rest = T.drop (T.length chunk) text
 
-    -- Take up to maxLen characters, breaking at the best boundary found.
-    -- Whitespace between chunks (trailing newlines at the break point) is
-    -- intentionally dropped so chunks don't start/end with blank lines.
-    splitAt' txt =
-      let candidate = T.take maxLen txt
-          tryBreak sep = case T.breakOnEnd sep candidate of
-            (before, _)
-              | not (T.null before) && T.length before > maxLen `div` 4 ->
-                  Just (T.stripEnd before, T.drop (T.length before) txt)
-            _ -> Nothing
-       in fromMaybe (candidate, T.drop maxLen txt) $
-            tryBreak "\n\n" <|> tryBreak "\n"
-
--- | Low-level send: returns Right () on success, Left (status, body) on HTTP error
-sendMessageRaw :: TelegramClient -> SendMessageRequest -> IO (Either (Int, ByteString) ())
-sendMessageRaw client msgReq = do
-  req <- buildRequest client "sendMessage"
-  let req' =
-        req
-          { method = "POST",
-            requestBody = RequestBodyLBS (encode msgReq)
-          }
-  response <- httpLbs req' client.tcManager
-  let status = statusCode $ responseStatus response
-  if status /= 200
-    then pure $ Left (status, responseBody response)
-    else case eitherDecode (responseBody response) :: Either String SendMessageResponse of
-      Left err -> throwIO $ TelegramParseError err
-      Right resp
-        | resp.ok -> pure $ Right ()
-        | otherwise -> throwIO $ TelegramApiError "sendMessage returned ok=false"
-
--- | Check if a Telegram error response indicates a markdown entity parsing failure
-isParseEntityError :: ByteString -> Bool
-isParseEntityError body =
-  "can't parse entities" `T.isInfixOf` TE.decodeUtf8Lenient (LBS.toStrict body)
-
--- | Check if a Telegram error response indicates the message exceeded the
--- length limit.
-isMessageTooLongError :: ByteString -> Bool
-isMessageTooLongError body =
-  "message is too long" `T.isInfixOf` TE.decodeUtf8Lenient (LBS.toStrict body)
-
--- | Send a message with an inline keyboard
---
--- Converts markdown to Telegram HTML with plain-text fallback (same as sendMessage).
-sendMessageWithKeyboard :: TelegramClient -> Int64 -> Text -> InlineKeyboardMarkup -> IO Int
-sendMessageWithKeyboard client chatIdVal msgText keyboard = do
-  let htmlText = markdownToTelegramHtml msgText
-      send txt pm = do
-        req <- buildRequest client "sendMessage"
-        let body =
-              encode
-                SendMessageWithKeyboardRequest
-                  { chatId = chatIdVal,
-                    text = txt,
-                    parseMode = pm,
-                    replyMarkup = keyboard
-                  }
-            req' =
-              req
-                { method = "POST",
-                  requestBody = RequestBodyLBS body
-                }
-        response <- httpLbs req' client.tcManager
-        let status = statusCode $ responseStatus response
-        pure (status, responseBody response)
-
-  (status, body) <- send htmlText (Just "HTML")
-  (finalStatus, finalBody) <-
-    if status == 400 && isParseEntityError body
-      then do
-        logWarn client.tcLogger "HTML parse failed for keyboard message, falling back to plain text" []
-        send msgText Nothing
-      else pure (status, body)
-
-  if finalStatus /= 200
-    then throwIO $ TelegramHttpError finalStatus finalBody
-    else case eitherDecode finalBody :: Either String SendMessageResponse of
-      Left err -> throwIO $ TelegramParseError err
-      Right resp
-        | resp.ok -> pure $ maybe 0 (.id_) resp.result
-        | otherwise -> throwIO $ TelegramApiError "sendMessage with keyboard returned ok=false"
-
--- | Answer a callback query (acknowledge button press)
-answerCallbackQuery :: TelegramClient -> Text -> Maybe Text -> IO ()
-answerCallbackQuery client callbackQueryId_ responseText = do
-  req <- buildRequest client "answerCallbackQuery"
-  let body =
-        encode
-          AnswerCallbackQueryRequest
-            { callbackQueryId = callbackQueryId_,
-              text = responseText,
-              showAlert = False
-            }
-      req' =
-        req
-          { method = "POST",
-            requestBody = RequestBodyLBS body
-          }
-
-  response <- httpLbs req' client.tcManager
-
-  let status = statusCode $ responseStatus response
-  when (status /= 200) $
-    throwIO $
-      TelegramHttpError status (responseBody response)
-
--- | Edit the reply markup of a message (to remove buttons after response)
-editMessageReplyMarkup :: TelegramClient -> Int64 -> Int -> Maybe InlineKeyboardMarkup -> IO ()
-editMessageReplyMarkup client chatIdVal msgId newMarkup = do
-  req <- buildRequest client "editMessageReplyMarkup"
-  let body =
-        encode
-          EditMessageReplyMarkupRequest
-            { chatId = chatIdVal,
-              messageId = msgId,
-              replyMarkup = newMarkup
-            }
-      req' =
-        req
-          { method = "POST",
-            requestBody = RequestBodyLBS body
-          }
-
-  response <- httpLbs req' client.tcManager
-
-  let status = statusCode $ responseStatus response
-  when (status /= 200) $
-    throwIO $
-      TelegramHttpError status (responseBody response)
-
--- | Send a proactive notification with logging
-notify :: Logger -> TelegramClient -> Int64 -> Text -> IO ()
-notify logger client chatIdVal msgText = do
-  logInfo logger "Sending notification" [("chat_id", T.pack (show chatIdVal))]
-  sendMessage client chatIdVal msgText
-
--- | Send a proactive pre-rendered HTML notification with logging.
-notifyHtml :: Logger -> TelegramClient -> Int64 -> Text -> Text -> IO ()
-notifyHtml logger client chatIdVal htmlText plainText = do
-  logInfo logger "Sending notification" [("chat_id", T.pack (show chatIdVal))]
-  sendMessageHtml client chatIdVal htmlText plainText
-
--- | Get file information for downloading
-getFile :: TelegramClient -> Text -> IO (Maybe TelegramFile)
-getFile client fileId_ = do
-  req <- buildRequest client "getFile"
-  let body = encode $ object ["file_id" .= fileId_]
-      req' =
-        req
-          { method = "POST",
-            requestBody = RequestBodyLBS body
-          }
-
-  response <- httpLbs req' client.tcManager
-
-  let status = statusCode $ responseStatus response
-  if status /= 200
-    then throwIO $ TelegramHttpError status (responseBody response)
-    else case eitherDecode (responseBody response) :: Either String GetFileResponse of
-      Left err -> throwIO $ TelegramParseError err
-      Right resp
-        | resp.ok -> pure resp.result
-        | otherwise -> pure Nothing
-
--- | Download file content as raw bytes
-downloadFile :: TelegramClient -> Text -> IO ByteString
-downloadFile client fp = do
-  let url = "https://api.telegram.org/file/bot" <> T.unpack client.tcToken <> "/" <> T.unpack fp
-  req <- parseRequest url
-  response <- httpLbs req client.tcManager
-
-  let status = statusCode $ responseStatus response
-  if status /= 200
-    then throwIO $ TelegramHttpError status (responseBody response)
-    else pure (responseBody response)
-
--- | Send a photo to a chat via multipart upload
-sendPhoto :: TelegramClient -> Int64 -> FilePath -> Maybe Text -> IO ()
-sendPhoto client chatIdVal path mCaption = do
-  req <- parseRequest $ client.tcBaseUrl <> "/sendPhoto"
-  let parts =
-        [ partBS "chat_id" (TE.encodeUtf8 $ T.pack $ show chatIdVal),
-          partFileSource "photo" path
-        ]
-          <> maybe [] (\c -> [partBS "caption" (TE.encodeUtf8 c)]) mCaption
-  req' <- formDataBody parts req
-  response <- httpLbs req' client.tcManager
-  let status = statusCode $ responseStatus response
-  when (status /= 200) $
-    throwIO $
-      TelegramHttpError status (responseBody response)
-
--- | Send a document to a chat via multipart upload
-sendDocument :: TelegramClient -> Int64 -> FilePath -> Maybe Text -> IO ()
-sendDocument client chatIdVal path mCaption = do
-  req <- parseRequest $ client.tcBaseUrl <> "/sendDocument"
-  let parts =
-        [ partBS "chat_id" (TE.encodeUtf8 $ T.pack $ show chatIdVal),
-          partFileSource "document" path
-        ]
-          <> maybe [] (\c -> [partBS "caption" (TE.encodeUtf8 c)]) mCaption
-  req' <- formDataBody parts req
-  response <- httpLbs req' client.tcManager
-  let status = statusCode $ responseStatus response
-  when (status /= 200) $
-    throwIO $
-      TelegramHttpError status (responseBody response)
-
--- | Send a chat action (e.g., "typing" indicator). Best-effort: logs a
--- warning on failure instead of throwing.
-sendChatAction :: TelegramClient -> Int64 -> IO ()
-sendChatAction client chatIdVal = do
-  req <- buildRequest client "sendChatAction"
-  let body =
-        encode $
-          object
-            [ "chat_id" .= chatIdVal,
-              "action" .= ("typing" :: Text)
-            ]
-      req' =
-        req
-          { method = "POST",
-            requestBody = RequestBodyLBS body
-          }
-  response <- httpLbs req' client.tcManager
-  let status = statusCode $ responseStatus response
-  when (status /= 200) $
-    logWarn client.tcLogger "sendChatAction failed" [("status", T.pack (show status))]
+splitForTelegram :: Text -> [Text]
+splitForTelegram = concatMap fit . splitMessage
+  where
+    fit chunk
+      | utf16Length (markdownToTelegramHtml chunk) <= telegramApiLimit = [chunk]
+      | otherwise = concatMap fit (splitMessageAt (max 2 (utf16Length chunk `div` 2)) chunk)

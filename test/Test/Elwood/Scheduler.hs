@@ -115,7 +115,7 @@ storeOps =
           lgr <- newLogger Error
           store <- newCallbackStore lgr dir
           -- Make the temp path unwritable so persist throws.
-          createDirectory (dir </> "callbacks.json.tmp")
+          createDirectory (dir </> "callbacks.json")
           res <- scheduleCallback store (mkCallback "a" (mkUTC 3000 1 1))
           case res of
             Left _ -> pure ()

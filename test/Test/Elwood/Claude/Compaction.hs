@@ -5,6 +5,7 @@ import Data.Text qualified as T
 import Elwood.Claude.Compaction (estimateTokens, extractText, formatMessagesForSummary, strategySplit)
 import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolResultPart (..), ToolUseId (..), turnBoundaryIndices)
 import Elwood.Config (CompactionStrategy (..))
+import Elwood.Positive (literal)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
@@ -136,7 +137,7 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 3"],
                     ClaudeMessage Assistant [TextBlock "Response 3"]
                   ]
-            case strategySplit (CKeepTurns 2) msgs of
+            case strategySplit (CKeepTurns (literal @2)) msgs of
               Nothing -> assertFailure "Expected Just, got Nothing"
               Just (old, recent) -> do
                 length old @?= 2 -- Turn 1 + Response 1
@@ -148,10 +149,10 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 2"],
                     ClaudeMessage Assistant [TextBlock "Response 2"]
                   ]
-            strategySplit (CKeepTurns 2) msgs @?= Nothing
-            strategySplit (CKeepTurns 3) msgs @?= Nothing,
+            strategySplit (CKeepTurns (literal @2)) msgs @?= Nothing
+            strategySplit (CKeepTurns (literal @3)) msgs @?= Nothing,
           testCase "splits at turn boundary with tool pairs before it" $ do
-            -- Turn boundaries at 0, 3, 5. CKeepTurns 2 splits at index 3.
+            -- Turn boundaries at 0, 3, 5. CKeepTurns (literal @2) splits at index 3.
             -- Tool pairs before the boundary stay in old.
             let msgs =
                   [ ClaudeMessage User [TextBlock "Turn 1"],
@@ -162,13 +163,13 @@ strategySplitTests =
                     ClaudeMessage User [TextBlock "Turn 3"],
                     ClaudeMessage Assistant [TextBlock "Response 3"]
                   ]
-            case strategySplit (CKeepTurns 2) msgs of
+            case strategySplit (CKeepTurns (literal @2)) msgs of
               Nothing -> assertFailure "Expected Just, got Nothing"
               Just (old, recent) -> do
                 length old @?= 3 -- Turn 1 + tool_use + tool_result
                 length recent @?= 4,
           testCase "empty message list returns Nothing" $
-            strategySplit (CKeepTurns 5) [] @?= Nothing
+            strategySplit (CKeepTurns (literal @5)) [] @?= Nothing
         ],
       testGroup
         "CKeepFraction"
@@ -213,7 +214,9 @@ strategySplitTests =
         ],
       testGroup
         "turnBoundaryIndices"
-        [ testCase "identifies user messages with TextBlock" $ do
+        [ testCase "image-only user messages begin turns" $
+            turnBoundaryIndices [ClaudeMessage User [ImageBlock "image/png" "bytes"]] @?= [0],
+          testCase "identifies user messages with TextBlock" $ do
             let msgs =
                   [ ClaudeMessage User [TextBlock "Hello"],
                     ClaudeMessage Assistant [TextBlock "Hi"],

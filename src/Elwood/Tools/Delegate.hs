@@ -1,440 +1,156 @@
-module Elwood.Tools.Delegate
-  ( mkDelegateTaskTool,
-    labelMaxLen,
+module Elwood.Tools.Delegate (mkDelegateTaskTool, labelMaxLen, inheritedOverrides) where
 
-    -- * Exported for testing
-    inheritedOverrides,
-  )
-where
-
-import Control.Concurrent.Async qualified as Async
 import Control.Exception (SomeException)
-import Data.Aeson (Value, object, (.=))
-import Data.Aeson qualified as Aeson
-import Data.Aeson.KeyMap qualified as KM
+import Control.Monad ((>=>))
+import Data.Aeson
+import Data.Aeson.Types (Parser)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Monoid (Last (..))
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time (NominalDiffTime)
 import Data.UUID qualified as UUID
 import Data.UUID.V4 qualified as UUID
-import Data.Vector qualified as V
-import Elwood.AgentSettings (AgentOverrides (..), AgentPreset (..), AgentProfile (..), CacheOverrides (..), ModelRef (..), ModelRefOverrides (..), ToolFilter (..), ToolSearchConfig (..), resolveProfile, toOverrides)
-import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), ExhaustionInfo (..), formatExhaustion, runAgentTurn)
+import Elwood.AgentSettings
+import Elwood.AgentSettings qualified as Override (AgentOverrides (..))
+import Elwood.Claude.AgentLoop
 import Elwood.Claude.Client (ClaudeClient)
 import Elwood.Claude.Observer (ToolUseCallback)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolSchema (..), jsonSchemaFormat)
+import Elwood.Claude.Types
 import Elwood.Config (PruningConfig)
 import Elwood.Exception (catchSync)
-import Elwood.Logging (Logger, logError, logInfo)
+import Elwood.Logging (Logger)
 import Elwood.Metrics (MetricsStore, metricsObserver)
 import Elwood.Notify (truncateText)
-import Elwood.Positive (Positive (getPositive))
+import Elwood.Positive (literal, positive)
 import Elwood.Prompt (PromptInput (InlineText), assemblePrompt)
-import Elwood.Thinking (ThinkingMode (..), ThinkingOverrides (..))
-import Elwood.Tools.AsyncTask (AsyncTaskStore, TaskId (..), insertTask, storeTtlSeconds, toMicroseconds)
+import Elwood.Thinking
+import Elwood.Tools.AsyncTask
+import Elwood.Tools.Builder qualified as B
 import Elwood.Tools.Command (mkRunCommandTool)
-import Elwood.Tools.Registry (ToolRegistry, applyToolFilter, registerTool)
+import Elwood.Tools.Registry
 import Elwood.Tools.Types
 import System.Timeout (timeout)
 
--- | Maximum length for task labels in notifications and async task names.
 labelMaxLen :: Int
 labelMaxLen = 30
 
--- | Default overrides for delegate sub-agents.
--- Sets max_iterations to 10 (lower than the parent's default of 20).
--- Other fields (model, provider, thinking, system_prompt, tool_search, tools, permissions)
--- inherit from parent via 'inheritedOverrides'.
-delegateDefaults :: AgentOverrides
-delegateDefaults = AgentOverrides mempty Nothing (Last (Just 10)) (Just (CacheOverrides (Last (Just False)) (Last Nothing))) (Last Nothing) (Last Nothing) (Last Nothing) (Last Nothing) Nothing
-
--- | The parent profile as sub-agents inherit it.
---
--- Thinking display is a presentation setting for the parent's delivery
--- channel, so it is not inherited: a sub-agent has no user to show progress
--- updates to, and its final response goes back to the parent as a tool
--- result (possibly parsed against an output schema), where narration would
--- only get in the way. Not inheriting it also keeps the beta flag off
--- requests to worker models that may not accept it. A delegate preset or
--- tool parameter can still set @display@ explicitly.
 inheritedOverrides :: AgentProfile -> AgentOverrides
-inheritedOverrides parent = toOverrides parent <> withoutDisplay
+inheritedOverrides parent =
+  toOverrides parent <> case parent.thinking of
+    Just (Adaptive effort (Just _)) -> (mempty :: AgentOverrides) {Override.thinking = Just (ThinkingOverrides mempty (Last (Just (Adaptive effort Nothing))))}
+    _ -> mempty
+
+data Input = Input {task :: Text, agent :: Maybe Text, overrides :: AgentOverrides, outputSchema :: Maybe Value, background :: Bool, label :: Maybe Text, seconds :: Maybe Int}
+
+mkDelegateTaskTool :: Logger -> ClaudeClient -> ToolRegistry -> ApprovalFunction -> AgentProfile -> Maybe PruningConfig -> FilePath -> Maybe Int -> MetricsStore -> AgentPreset -> Map Text AgentPreset -> [Text] -> Maybe (Text -> ToolUseCallback) -> Maybe AsyncTaskStore -> Tool
+mkDelegateTaskTool logger client registry approve parent pruning workspace imageDimension metrics preset presets models notify store =
+  B.tool "delegate_task" description fields (parseInput models (Map.keys presets)) $ \input ->
+    if input.background && isNothing store
+      then pure (toolError "Async delegation is not available")
+      else do
+        let defaults = (mempty :: AgentOverrides) {Override.maxIterations = Last (Just (literal @10)), Override.cache = Just (CacheOverrides (Last (Just False)) mempty)}
+            named = maybe mempty (maybe mempty (.overrides) . (`Map.lookup` presets)) input.agent
+            profile = resolveProfile (inheritedOverrides parent <> defaults <> preset.overrides <> named <> input.overrides)
+            taskLabel = truncateText labelMaxLen (fromMaybe input.task input.label)
+            tools = applyToolFilter profile.toolFilter $ (if input.background then filterRegistry (/= ToolName "queue_attachment") else id) (registerTool (mkRunCommandTool logger workspace profile.permissions) registry)
+        prompt <- assemblePrompt workspace profile.systemPrompt
+        let config =
+              AgentConfig
+                { logger,
+                  client,
+                  registry = tools,
+                  requestApproval = approve,
+                  systemPrompt = prompt,
+                  agentProfile = profile,
+                  observer = metricsObserver metrics profile.model.model "delegate",
+                  onRateLimit = Nothing,
+                  onText = Nothing,
+                  onToolUse = if input.background then Nothing else ($ taskLabel) <$> notify,
+                  onBeforeApiCall = Nothing,
+                  toolSearch = case profile.toolSearch of
+                    ToolSearchDisabled -> Nothing
+                    ToolSearchEnabled names -> Just (Set.fromList (map ToolName names)),
+                  pruningConfig = pruning,
+                  pruneHorizon = 0,
+                  outputFormat = jsonSchemaFormat <$> input.outputSchema,
+                  maxImageDimension = imageDimension,
+                  isCancelled = maybe (pure False) isTurnCancelled store
+                }
+            run = runAgentTurn config [] (ClaudeMessage User [TextBlock input.task]) `catchSync` \(e :: SomeException) -> pure (AgentError (taggedError Unexpected (T.pack (show e))))
+            bounded duration = fromMaybe (AgentError (taggedError Timeout "Delegate task timed out")) <$> timeout duration run
+        case (input.background, store) of
+          (True, Just tasks) -> do
+            key <- TaskId . UUID.toText <$> UUID.nextRandom
+            let limit = maybe 3600 fromIntegral input.seconds
+            startTask tasks key taskLabel (bounded (toMicroseconds limit))
+            pure (toolSuccess ("Task started: " <> key.unTaskId <> " (" <> taskLabel <> ")"))
+          _ -> resultTool <$> maybe run (bounded . (* 1000000)) input.seconds
   where
-    withoutDisplay = case parent.thinking of
-      Just (Adaptive effort (Just _)) ->
-        AgentOverrides mempty (Just (ThinkingOverrides mempty (Last (Just (Adaptive effort Nothing))))) mempty Nothing mempty mempty mempty mempty Nothing
-      _ -> mempty
-
--- | Parsed delegate_task input
-data DelegateInput = DelegateInput
-  { task :: Text,
-    agentName :: Maybe Text,
-    overrides :: AgentOverrides,
-    outputSchema :: Maybe Value,
-    async :: Bool,
-    label :: Maybe Text,
-    timeoutSeconds :: Maybe NominalDiffTime
-  }
-
--- | Construct a delegate_task tool that spawns a sub-agent with an isolated
--- conversation. The sub-agent receives the base tool registry (which does not
--- contain delegate_task), preventing recursive nesting.
-mkDelegateTaskTool ::
-  Logger ->
-  ClaudeClient ->
-  ToolRegistry ->
-  ApprovalFunction ->
-  AgentProfile ->
-  Maybe PruningConfig ->
-  FilePath ->
-  -- | Maximum dimension for tool-result images (Nothing = no resizing)
-  Maybe Int ->
-  MetricsStore ->
-  AgentPreset ->
-  Map Text AgentPreset ->
-  [Text] ->
-  -- | Factory for delegate tool-use callbacks (Nothing = no notifications)
-  Maybe (Text -> ToolUseCallback) ->
-  -- | Async task store (Nothing = async not available)
-  Maybe AsyncTaskStore ->
-  Tool
-mkDelegateTaskTool logger client baseRegistry approve parentProfile pruning workspace maxImageDim metrics delegateAgentPreset extraAgents allowedModels delegateOnToolUse asyncStore =
-  Tool
-    { schema =
-        ToolSchema
-          { name = "delegate_task",
-            description =
-              "Delegate a task to a sub-agent with its own isolated conversation context. "
-                <> "The sub-agent has access to all the same tools (except delegate_task) "
-                <> "and runs independently, returning only a text summary. "
-                <> "Sub-agents share the same workspace, so they have full access to the filesystem "
-                <> "(e.g., reading/writing files, running scripts, using git). Reference existing files "
-                <> "by path rather than including their contents in the task description. "
-                <> "Use this to keep the main conversation context clean when a task "
-                <> "requires many tool calls (e.g., multi-file edits, long research). "
-                <> "Pass output_schema to constrain the sub-agent's final response to a JSON schema, "
-                <> "making it easy to parse structured results programmatically. "
-                <> "Set async: true to run the task in the background and get a task ID back immediately. "
-                <> "Use check_task to poll for results later. "
-                <> "When using a named agent preset, you can further override individual "
-                <> "settings (model, thinking, max_iterations) via tool parameters. "
-                <> "Note: when overriding model or thinking, ensure they are compatible "
-                <> "(e.g., Haiku does not support adaptive thinking)."
-                <> maybe "" (\d -> " Default agent: " <> d <> ".") delegateAgentPreset.description,
-            inputSchema = delegateSchema allowedModels extraAgents
-          },
-      execute = executeDelegateTask
-    }
-  where
-    extraAgentKeys = Map.keys extraAgents
-
-    executeDelegateTask :: Value -> IO ToolResult
-    executeDelegateTask input = case parseDelegateInput allowedModels extraAgentKeys input of
-      Left err -> pure $ toolError err
-      Right di
-        | di.async,
-          Nothing <- asyncStore ->
-            pure $ toolError "Async delegation is not available"
-        | otherwise -> do
-            -- Layering: parent profile < delegate defaults < config agent < extra agent < tool params
-            let extraAgentOvr = maybe mempty (\n -> maybe mempty (.overrides) (Map.lookup n extraAgents)) di.agentName
-                baseOverrides = inheritedOverrides parentProfile <> delegateDefaults <> delegateAgentPreset.overrides <> extraAgentOvr
-                subProfile = resolveProfile (baseOverrides <> di.overrides)
-
-            logInfo
-              logger
-              "Delegating task to sub-agent"
-              [ ("task_length", T.pack (show (T.length di.task))),
-                ("model", subProfile.model.model),
-                ("max_iterations", T.pack (show subProfile.maxIterations.getPositive))
-              ]
-
-            -- Assemble sub-agent system prompt from workspace files
-            subSystemPrompt <- assemblePrompt workspace subProfile.systemPrompt
-
-            -- Convert sub-profile's tool search to Maybe (Set ToolName)
-            let subToolSearch = case subProfile.toolSearch of
-                  ToolSearchDisabled -> Nothing
-                  ToolSearchEnabled names -> Just (Set.fromList (map ToolName names))
-
-            -- Re-register run_command with sub-profile's permissions (so delegate
-            -- permission overrides affect command-pattern checking)
-            let subRunCmd = mkRunCommandTool logger workspace subProfile.permissions
-                subRegistry = applyToolFilter subProfile.toolFilter (registerTool subRunCmd baseRegistry)
-
-            let resolvedLabel = fromMaybe di.task di.label
-                notifyLabel = truncateText labelMaxLen resolvedLabel
-                outputFmt = fmap jsonSchemaFormat di.outputSchema
-                subConfig =
-                  AgentConfig
-                    { logger = logger,
-                      client = client,
-                      registry = subRegistry,
-                      requestApproval = approve,
-                      systemPrompt = subSystemPrompt,
-                      agentProfile = subProfile,
-                      observer = metricsObserver metrics subProfile.model.model "delegate",
-                      onRateLimit = Nothing,
-                      onText = Nothing,
-                      onToolUse = fmap (\f -> f notifyLabel) delegateOnToolUse,
-                      onBeforeApiCall = Nothing,
-                      toolSearch = subToolSearch,
-                      pruningConfig = pruning,
-                      pruneHorizon = 0,
-                      outputFormat = outputFmt,
-                      maxImageDimension = maxImageDim,
-                      isCancelled = pure False
-                    }
-                userMsg = ClaudeMessage User [TextBlock di.task]
-
-            let runWithCatch =
-                  runAgentTurn subConfig [] userMsg `catchSync` \(e :: SomeException) -> do
-                    logError logger "Delegate sub-agent error" [("error", T.pack (show e))]
-                    pure $ AgentError $ taggedError Unexpected $ "Sub-agent error: " <> T.pack (show e)
-
-            case (di.async, asyncStore) of
-              (True, Just store) -> do
-                taskId <- TaskId . UUID.toText <$> UUID.nextRandom
-                let taskLabel = truncateText labelMaxLen resolvedLabel
-                    taskTimeout = toMicroseconds $ maybe (storeTtlSeconds store) (min (storeTtlSeconds store)) di.timeoutSeconds
-                -- Fork the sub-agent, then insert into the store.
-                -- Async.async calls forkIO which eagerly schedules the
-                -- new thread, so there is a brief window where the task
-                -- is running but not yet in the store. This is benign:
-                -- check_task would return "Unknown task" rather than
-                -- "still running", and in practice the insert runs before
-                -- the forked thread makes meaningful progress.
-                a <-
-                  Async.async $ do
-                    mResult <- timeout taskTimeout runWithCatch
-                    pure $ fromMaybe (AgentError (taggedError Timeout "Async task timed out")) mResult
-                insertTask store taskId taskLabel a
-                logInfo
-                  logger
-                  "Async delegate task started"
-                  [ ("task_id", taskId.unTaskId),
-                    ("label", taskLabel)
-                  ]
-                pure $ toolSuccess $ "Task started: " <> taskId.unTaskId <> " (" <> taskLabel <> ")"
-              _ -> do
-                mResult <- case di.timeoutSeconds of
-                  Nothing -> Just <$> runWithCatch
-                  Just secs -> timeout (toMicroseconds secs) runWithCatch
-
-                case mResult of
-                  Nothing -> do
-                    logInfo logger "Delegate task timed out" []
-                    pure $ toolError $ taggedError Timeout "Delegate task timed out."
-                  Just (AgentSuccess responseText _) -> do
-                    logInfo
-                      logger
-                      "Delegate task completed"
-                      [("response_length", T.pack (show (T.length responseText)))]
-                    pure $ toolSuccess responseText
-                  Just (AgentExhausted info) -> do
-                    logInfo
-                      logger
-                      "Delegate task hit iteration cap"
-                      [ ("iterations_used", T.pack (show info.iterationsUsed)),
-                        ("tools_called", T.pack (show info.toolsCalled)),
-                        ("partial_output_length", T.pack (show (T.length info.partialOutput)))
-                      ]
-                    pure $ toolError (formatExhaustion info)
-                  Just AgentCancelled -> do
-                    logInfo logger "Delegate task cancelled" []
-                    pure $ toolError $ taggedError Cancelled "Task was cancelled"
-                  Just (AgentError err) -> do
-                    logError logger "Delegate task failed" [("error", err)]
-                    pure $ toolError err
-
--- | JSON Schema for delegate_task input
-delegateSchema :: [Text] -> Map Text AgentPreset -> Value
-delegateSchema allowedModels presets =
-  object
-    [ "type" .= ("object" :: Text),
-      "properties"
-        .= object
-          ( [ "task"
-                .= object
-                  [ "type" .= ("string" :: Text),
-                    "description" .= ("Description of the task to delegate. Be specific about what you want accomplished." :: Text)
-                  ],
-              "thinking"
-                .= object
-                  [ "description" .= ("Thinking config for the sub-agent. Use {\"enable\": true, \"mode\": {\"adaptive\": {\"effort\": \"medium\"}}} to enable, or {\"enable\": false} to disable. Omit to inherit. Ensure model compatibility (e.g., Haiku does not support adaptive thinking)." :: Text),
-                    "type" .= ("object" :: Text),
-                    "properties"
-                      .= object
-                        [ "enable"
-                            .= object
-                              [ "type" .= ("boolean" :: Text)
-                              ],
-                          "mode"
-                            .= object
-                              [ "type" .= ("object" :: Text),
-                                "description" .= ("Thinking mode: {\"adaptive\": {\"effort\": \"medium\"}} or {\"fixed\": {\"budget_tokens\": 4096}}" :: Text)
-                              ]
-                        ]
-                  ],
-              "max_iterations"
-                .= object
-                  [ "type" .= ("integer" :: Text),
-                    "description" .= ("Maximum agent loop iterations for the sub-agent (default: 10, max: 50)" :: Text),
-                    "minimum" .= (1 :: Int),
-                    "maximum" .= (50 :: Int)
-                  ],
-              "system_prompt"
-                .= object
-                  [ "type" .= ("string" :: Text),
-                    "description" .= ("Override the sub-agent's system prompt with this text." :: Text)
-                  ],
-              "output_schema"
-                .= object
-                  [ "type" .= ("object" :: Text),
-                    "description" .= ("JSON Schema to constrain the sub-agent's final response. When provided, the response will be valid JSON matching this schema." :: Text)
-                  ],
-              "async"
-                .= object
-                  [ "type" .= ("boolean" :: Text),
-                    "description" .= ("If true, run the task in the background and return a task ID immediately. Use check_task to poll or await_task to block for results." :: Text)
-                  ],
-              "timeout_seconds"
-                .= object
-                  [ "type" .= ("integer" :: Text),
-                    "description" .= ("Maximum seconds to wait for the task to complete. In sync mode, returns a timeout error if exceeded. In async mode, sets a shorter timeout than the default store TTL (capped at the store TTL)." :: Text),
-                    "minimum" .= (1 :: Int)
-                  ],
-              "label"
-                .= object
-                  [ "type" .= ("string" :: Text),
-                    "description" .= ("Short human-readable label for this task, e.g. \"fetch weather data\". Used in status messages and tool-use notifications. Truncated to " <> T.pack (show labelMaxLen) <> " characters." :: Text)
-                  ],
-              "tools"
-                .= object
-                  [ "description" .= ("Restrict the sub-agent to these tool names (array of strings), or the string \"all\" for every tool. Omit to inherit. Useful for local/small models that load every tool schema eagerly." :: Text),
-                    "oneOf"
-                      .= ( [ object ["type" .= ("string" :: Text), "enum" .= (["all"] :: [Text])],
-                             object ["type" .= ("array" :: Text), "items" .= object ["type" .= ("string" :: Text)]]
-                           ] ::
-                             [Value]
-                         )
-                  ]
-            ]
-              ++ modelProp
-              ++ agentProp
-          ),
-      "required" .= (["task"] :: [Text])
-    ]
-  where
-    agentKeys = Map.keys presets
-    modelProp
-      | null allowedModels = []
-      | otherwise =
-          [ "model"
-              .= object
-                [ "type" .= ("string" :: Text),
-                  "description" .= ("Model to use for the sub-agent" :: Text),
-                  "enum" .= allowedModels
-                ]
+    description = "Delegate an isolated conversation sharing the workspace and non-delegating tools. Background tasks return an ID; use await_task or check_task to observe results. Background tasks cannot queue attachments or send progress notifications; return artifact paths in their result. " <> fromMaybe "" preset.description
+    fields =
+      B.schema
+        ( [ ("task", B.field "string" "Task instructions"),
+            ("thinking", B.field "object" "Thinking configuration: enable and mode"),
+            ("max_iterations", B.field "integer" "Model requests, 1–50"),
+            ("system_prompt", B.field "string" "Override system prompt"),
+            ("output_schema", B.field "object" "JSON schema constraining final output"),
+            ("async", B.field "boolean" "Run in background"),
+            ("label", B.field "string" "Task label"),
+            ("timeout_seconds", B.field "integer" "Positive execution timeout; background default 3600 seconds"),
+            ("tools", object ["description" .= ("Tool names, or all" :: Text), "anyOf" .= [B.field "array" "Tool names", B.field "string" "all"]])
           ]
-    agentProp
-      | null agentKeys = []
-      | otherwise =
-          [ "agent"
-              .= object
-                [ "type" .= ("string" :: Text),
-                  "description" .= agentDescription,
-                  "enum" .= agentKeys
-                ]
-          ]
-    agentDescription :: Text
-    agentDescription =
-      let descs =
-            [ n <> maybe "" (\d -> " (" <> d <> ")") p.description
-            | (n, p) <- Map.toAscList presets
-            ]
-       in "Named agent preset. Available: " <> T.intercalate ", " descs
+            <> enumField "model" "Allowed model" models
+            <> enumField "agent" (T.intercalate ", " [name <> maybe "" (\d -> " (" <> d <> ")") p.description | (name, p) <- Map.toAscList presets]) (Map.keys presets)
+        )
+        ["task"]
+    enumField :: Key -> Text -> [Text] -> [(Key, Value)]
+    enumField key explanation values = [(key, object ["type" .= ("string" :: Text), "description" .= explanation, "enum" .= values]) | not (null values)]
 
--- | Parse delegate_task input
-parseDelegateInput :: [Text] -> [Text] -> Value -> Either Text DelegateInput
-parseDelegateInput allowedModels agentKeys (Aeson.Object obj) = do
-  task <- case KM.lookup "task" obj of
-    Just (Aeson.String t)
-      | T.null (T.strip t) -> Left "Task description must not be empty"
-      | otherwise -> Right t
-    _ -> Left "Missing or invalid 'task' parameter"
-  agentParam <- case KM.lookup "agent" obj of
-    Just (Aeson.String a)
-      | null agentKeys ->
-          Left "Agent selection is not enabled (configure delegate.extra_agents)"
-      | a `notElem` agentKeys ->
-          Left $ "Invalid agent '" <> a <> "'. Available: " <> T.intercalate ", " agentKeys
-      | otherwise -> Right (Just a)
-    Just _ -> Left "Invalid 'agent' parameter (must be a string)"
-    Nothing -> Right Nothing
-  modelParam <- case KM.lookup "model" obj of
-    Just (Aeson.String m)
-      | null allowedModels ->
-          Left "Model selection is not enabled (configure delegate.allowed_models)"
-      | m `notElem` allowedModels ->
-          Left $ "Invalid model '" <> m <> "'. Allowed: " <> T.intercalate ", " allowedModels
-      | otherwise -> Right (Just m)
-    Just _ -> Left "Invalid 'model' parameter (must be a string)"
-    Nothing -> Right Nothing
-  thinkingParam <- case KM.lookup "thinking" obj of
-    Just (Aeson.Bool False) -> Right (Just (ThinkingOverrides (Last (Just False)) (Last Nothing)))
-    Just (Aeson.Bool True) -> Right (Just (ThinkingOverrides (Last (Just True)) (Last Nothing)))
-    Just val@(Aeson.Object _) -> case Aeson.fromJSON val of
-      Aeson.Success ovr -> Right (Just ovr)
-      Aeson.Error err -> Left $ "Invalid thinking config: " <> T.pack err
-    Just _ -> Left "Invalid 'thinking' parameter (must be an object like {\"enable\": true, \"mode\": {\"adaptive\": {}}} or false)"
-    Nothing -> Right Nothing
-  maxIterParam <- case KM.lookup "max_iterations" obj of
-    Just (Aeson.Number n) ->
-      let i = round n :: Int
-       in if i < 1 || i > 50
-            then Left "max_iterations must be between 1 and 50"
-            else Right (Just (fromIntegral i))
-    Just _ -> Left "Invalid 'max_iterations' parameter (must be an integer)"
-    Nothing -> Right Nothing
-  systemPromptParam <- case KM.lookup "system_prompt" obj of
-    Just (Aeson.String t)
-      | T.null (T.strip t) -> Left "system_prompt must not be empty"
-      | otherwise -> Right (Just [InlineText t])
-    Just _ -> Left "Invalid 'system_prompt' parameter (must be a string)"
-    Nothing -> Right Nothing
-  outputSchemaParam <- case KM.lookup "output_schema" obj of
-    Just val@(Aeson.Object _) -> Right (Just val)
-    Just _ -> Left "Invalid 'output_schema' parameter (must be a JSON object)"
-    Nothing -> Right Nothing
-  asyncParam <- case KM.lookup "async" obj of
-    Just (Aeson.Bool b) -> Right b
-    Just _ -> Left "Invalid 'async' parameter (must be a boolean)"
-    Nothing -> Right False
-  labelParam <- case KM.lookup "label" obj of
-    Just (Aeson.String t)
-      | T.null (T.strip t) -> Left "label must not be empty"
-      | otherwise -> Right (Just t)
-    Just _ -> Left "Invalid 'label' parameter (must be a string)"
-    Nothing -> Right Nothing
-  timeoutParam <- case KM.lookup "timeout_seconds" obj of
-    Just (Aeson.Number n) ->
-      let i = round n :: Int
-       in if i <= 0
-            then Left "timeout_seconds must be positive"
-            else Right (Just (fromIntegral i :: NominalDiffTime))
-    Just _ -> Left "Invalid 'timeout_seconds' parameter (must be an integer)"
-    Nothing -> Right Nothing
-  toolsParam <- case KM.lookup "tools" obj of
-    Just (Aeson.String "all") -> Right (Last (Just AllTools))
-    Just (Aeson.Array arr) -> Right (Last (Just (OnlyTools (Set.fromList [ToolName t | Aeson.String t <- V.toList arr]))))
-    Just _ -> Left "Invalid 'tools' parameter (must be \"all\" or an array of strings)"
-    Nothing -> Right (Last Nothing)
-  let ovr = AgentOverrides {model = ModelRefOverrides (Last Nothing) (Last modelParam), thinking = thinkingParam, maxIterations = Last maxIterParam, cache = Nothing, maxTokens = Last Nothing, systemPrompt = Last systemPromptParam, toolSearch = Last Nothing, toolFilter = toolsParam, permissions = Nothing}
-  Right DelegateInput {task, agentName = agentParam, overrides = ovr, outputSchema = outputSchemaParam, async = asyncParam, label = labelParam, timeoutSeconds = timeoutParam}
-parseDelegateInput _ _ _ = Left "Expected object input"
+resultTool :: AgentResult -> ToolResult
+resultTool = \case
+  AgentSuccess text _ -> toolSuccess text
+  AgentTruncated text _ -> toolError ("[truncated] " <> text)
+  AgentExhausted info -> toolError (formatExhaustion info)
+  AgentCancelled -> toolError (taggedError Cancelled "Task was cancelled")
+  AgentError message -> toolError message
+
+parseInput :: [Text] -> [Text] -> Value -> Parser Input
+parseInput models agents = withObject "delegate_task" $ \value -> do
+  task <- B.nonempty value "task"
+  agent <- selection value "agent" agents
+  model <- selection value "model" models
+  thinking <-
+    value .:! "thinking"
+      >>= traverse
+        ( \case
+            Bool enabled -> pure (ThinkingOverrides (Last (Just enabled)) mempty)
+            input -> parseJSON input
+        )
+  iterations <- value .:! "max_iterations" >>= traverse (B.integer 1 50 >=> maybe (fail "Invalid iterations") pure . positive)
+  system <-
+    value .:! "system_prompt"
+      >>= traverse
+        ( \input -> do
+            text <- parseJSON @Text input
+            if T.null (T.strip text) then fail "system_prompt must not be empty" else pure [InlineText text]
+        )
+  output <- value .:! "output_schema" >>= traverse (withObject "output_schema" (pure . Object))
+  background <- value .:! "async" .!= False
+  label <- value .:! "label" >>= traverse (\text -> if T.null (T.strip text) then fail "label must not be empty" else pure text)
+  seconds <- value .:! "timeout_seconds" >>= traverse (B.integer 1 (maxBound `div` 1000000))
+  tools <-
+    value .:! "tools"
+      >>= traverse
+        ( \case
+            String "all" -> pure AllTools
+            input -> OnlyTools . Set.fromList . map ToolName <$> parseJSON @[Text] input
+        )
+  let overrides = (mempty :: AgentOverrides) {Override.model = ModelRefOverrides mempty (Last model), Override.thinking = thinking, Override.maxIterations = Last iterations, Override.systemPrompt = Last system, Override.toolFilter = Last tools}
+  pure Input {task, agent, overrides, outputSchema = output, background, label, seconds}
+  where
+    selection value key allowed = do
+      selected <- value .:! key
+      traverse (\name -> if name `elem` allowed then pure name else fail ("Invalid " <> show key <> "; allowed: " <> show allowed)) selected

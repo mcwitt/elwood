@@ -3,29 +3,38 @@ module Test.Elwood.Claude.AgentLoop (tests) where
 import Colog.Core (LogAction (..))
 import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent.STM (atomically, newTVarIO, writeTVar)
 import Control.Exception (SomeException, bracket, try)
-import Data.Aeson (Value, encode, object, (.=))
+import Data.Aeson (Value, encode, object, toJSON, (.=))
 import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
-import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Elwood.AgentSettings (AgentProfile (..), ModelRef (..), ToolFilter (..), ToolSearchConfig (..))
-import Elwood.Claude.AgentLoop (AgentAction (..), AgentConfig (..), AgentResult (..), classifyResponse, perceiveResultImages, runAgentTurn)
+import Elwood.AgentSettings (AgentPreset (..), AgentProfile (..), ModelRef (..), ToolFilter (..), ToolSearchConfig (..))
+import Elwood.Claude.AgentLoop (AgentConfig (..), AgentResult (..), ExhaustionInfo (..), perceiveResultImages, runAgentTurn)
 import Elwood.Claude.Client (ClaudeClient (..))
-import Elwood.Claude.Observer (AgentObserver (..))
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), StopReason (..), ToolName (..), ToolResultPart (..), ToolUseId (..))
+import Elwood.Claude.Compaction (compactMessages)
+import Elwood.Claude.Observer (AgentObserver (..), ToolUseCallback)
+import Elwood.Claude.Turn qualified as Turn
+import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), StopReason (..), ToolName (..), ToolResultPart (..), ToolSchema (..), ToolUseId (..))
+import Elwood.Config (CompactionConfig (..), CompactionStrategy (..))
+import Elwood.Metrics (newMetricsStore)
 import Elwood.Permissions (resolvePermissions)
+import Elwood.Positive (literal)
 import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ToolResultImageMode (..))
 import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..), ThinkingMode (..))
-import Elwood.Tools.Registry (newToolRegistry)
-import Elwood.Tools.Types (ToolResult (..), noApprovalChannel)
+import Elwood.Tools.AsyncTask qualified as Tasks
+import Elwood.Tools.Delegate (mkDelegateTaskTool)
+import Elwood.Tools.Registry (ToolRegistry, newToolRegistry, registerTool)
+import Elwood.Tools.Types (Tool (..), ToolResult (..), noApprovalChannel)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
-import Network.HTTP.Types (status200)
+import Network.HTTP.Types (Status, status200, status429)
 import Network.Wai (responseLBS)
 import Network.Wai.Handler.Warp (defaultSettings, openFreePort, runSettingsSocket, setPort)
+import System.Timeout (timeout)
 import Test.Elwood.TestImage (mkPngBytes)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -35,8 +44,10 @@ tests =
   testGroup
     "Claude.AgentLoop"
     [ cancellationTests,
-      classifyResponseTests,
+      decisionTests,
       intermediateDeliveryTests,
+      protocolTests,
+      turnExecutionTests,
       perceiveResultImagesTests
     ]
 
@@ -74,47 +85,70 @@ progressBlocks note =
     ToolUseBlock (ToolUseId "tu_1") (ToolName "run_command") (object ["command" .= ("git commit" :: Text)])
   ]
 
-classifyResponseTests :: TestTree
-classifyResponseTests =
+decisionTests :: TestTree
+decisionTests =
   testGroup
-    "classifyResponse"
+    "Turn decisions"
     [ testCase "progress-update thinking text before a tool call is intermediate text when updates are requested" $ do
         let blocks = progressBlocks "Here is your weekly plan. Two questions: ..."
-        case classifyResponse True ToolUse blocks [] of
-          ContinueWithTools toolUses intermediate _ -> do
-            length toolUses @?= 1
-            intermediate @?= "Here is your weekly plan. Two questions: ..."
-          other -> assertFailure $ "expected ContinueWithTools, got: " <> show other,
+        case Turn.decide ToolUse blocks of
+          Right (Turn.Continue pending) -> do
+            length (Turn.pendingCalls pending) @?= 1
+            Turn.outputText True (Turn.pendingMessage pending) @?= "Here is your weekly plan. Two questions: ..."
+          other -> assertFailure $ "expected tool continuation, got: " <> show other,
       testCase "text blocks and progress updates are delivered in content order" $ do
         let blocks = TextBlock "First" : progressBlocks "Then this"
-        case classifyResponse True ToolUse blocks [] of
-          ContinueWithTools _ intermediate _ -> intermediate @?= "First\nThen this"
-          other -> assertFailure $ "expected ContinueWithTools, got: " <> show other,
+        case Turn.decide ToolUse blocks of
+          Right (Turn.Continue pending) -> Turn.outputText True (Turn.pendingMessage pending) @?= "First\nThen this"
+          other -> assertFailure $ "expected tool continuation, got: " <> show other,
       testCase "empty thinking blocks never contribute text" $ do
         let blocks = [ThinkingBlock "" "sig", TextBlock "Only this", ToolUseBlock (ToolUseId "tu_1") (ToolName "t") (object [])]
-        case classifyResponse True ToolUse blocks [] of
-          ContinueWithTools _ intermediate _ -> intermediate @?= "Only this"
-          other -> assertFailure $ "expected ContinueWithTools, got: " <> show other,
+        case Turn.decide ToolUse blocks of
+          Right (Turn.Continue pending) -> Turn.outputText True (Turn.pendingMessage pending) @?= "Only this"
+          other -> assertFailure $ "expected tool continuation, got: " <> show other,
       testCase "thinking text is not user-facing unless updates were requested" $ do
         -- Under display: summarized (or budget thinking) non-empty thinking
         -- blocks are reasoning, which must never be sent to the user.
         let blocks = [ThinkingBlock "The user probably wants..." "sig", TextBlock "Sure", ToolUseBlock (ToolUseId "tu_1") (ToolName "t") (object [])]
-        case classifyResponse False ToolUse blocks [] of
-          ContinueWithTools _ intermediate _ -> intermediate @?= "Sure"
-          other -> assertFailure $ "expected ContinueWithTools, got: " <> show other,
+        case Turn.decide ToolUse blocks of
+          Right (Turn.Continue pending) -> Turn.outputText False (Turn.pendingMessage pending) @?= "Sure"
+          other -> assertFailure $ "expected tool continuation, got: " <> show other,
       testCase "end_turn response text is unaffected" $ do
         let blocks = [ThinkingBlock "" "sig", TextBlock "Done"]
-        case classifyResponse True EndTurn blocks [] of
-          Complete text _ -> text @?= "Done"
+        case Turn.decide EndTurn blocks of
+          Right (Turn.Finish (Turn.Completed message)) -> Turn.outputText True message @?= "Done"
           other -> assertFailure $ "expected Complete, got: " <> show other,
       testCase "the interrupted-response sentinel is not delivered as a progress update" $ do
         -- A max_tokens stop soon after a tool call ends in a progress block
         -- whose text is a fixed placeholder for the unfinished work.
         let blocks = [TextBlock "Checking the calendar", ThinkingBlock "This part of the response was interrupted before it finished." "sig"]
-        case classifyResponse True MaxTokens blocks [] of
-          TruncatedResponse text _ -> text @?= "Checking the calendar"
-          other -> assertFailure $ "expected TruncatedResponse, got: " <> show other
+        case Turn.decide MaxTokens blocks of
+          Right (Turn.Finish (Turn.Truncated message)) -> Turn.outputText True message @?= "Checking the calendar"
+          other -> assertFailure $ "expected truncation, got: " <> show other
     ]
+
+-- Malformed stop states must never turn into successful answers or empty tool loops.
+protocolTests :: TestTree
+protocolTests =
+  testGroup
+    "protocol contract"
+    [ testCase "scalar tool inputs reject" $ rejects ToolUse [ToolUseBlock (ToolUseId "id") "tool" (encodeValue 1)],
+      testCase "empty call IDs reject" $ rejects ToolUse [call ""],
+      testCase "unknown stop reason rejects" $ rejects (StopReasonOther "new") [TextBlock "partial"],
+      testCase "tool_use without calls rejects" $ rejects ToolUse [TextBlock "waiting"],
+      testCase "end_turn with calls rejects" $ rejects EndTurn [call "one"],
+      testCase "duplicate call IDs reject" $ rejects ToolUse [call "same", call "same"],
+      testCase "max_tokens never requests tool execution" $ case Turn.decide MaxTokens [call "one"] of
+        Right (Turn.Finish (Turn.Truncated _)) -> pure ()
+        other -> assertFailure (show other)
+    ]
+  where
+    encodeValue :: Int -> Value
+    encodeValue = toJSON
+    call ident = ToolUseBlock (ToolUseId ident) "tool" (object [])
+    rejects stop blocks = case Turn.decide stop blocks of
+      Left _ -> pure ()
+      other -> assertFailure ("expected protocol rejection, got " <> show other)
 
 -- | Canned API responses, served in order by the fake endpoint.
 fakeResponses :: [Value]
@@ -148,22 +182,30 @@ fakeResponses =
 -- | Run an action against a fake Messages API that serves 'fakeResponses'
 -- in order, passing it the endpoint's base URL.
 withFakeApi :: (Text -> IO a) -> IO a
-withFakeApi action = do
-  queue <- newIORef fakeResponses
+withFakeApi = withReplies fakeResponses
+
+withReplies :: [Value] -> (Text -> IO a) -> IO a
+withReplies replies action = withHttpReplies (map (status200,) replies) (\url _ -> action url)
+
+withHttpReplies :: [(Status, Value)] -> (Text -> IO Int -> IO a) -> IO a
+withHttpReplies replies action = do
+  queue <- newIORef replies
+  requests <- newIORef (0 :: Int)
   (port, socket) <- openFreePort
   ready <- newEmptyMVar
   let app _req respond = do
+        modifyIORef' requests (+ 1)
         next <- atomicModifyIORef' queue $ \case
           [] -> ([], Nothing)
           (r : rest) -> (rest, Just r)
         case next of
           Nothing -> fail "fake API: no more canned responses"
-          Just r -> respond $ responseLBS status200 [("Content-Type", "application/json")] (encode r)
+          Just (status, r) -> respond $ responseLBS status [("Content-Type", "application/json")] (encode r)
       settings = setPort port defaultSettings
   bracket
     (forkIO $ putMVar ready () >> runSettingsSocket settings socket app)
     killThread
-    (\_ -> takeMVar ready >> action ("http://127.0.0.1:" <> T.pack (show port)))
+    (\_ -> takeMVar ready >> action ("http://127.0.0.1:" <> T.pack (show port)) (readIORef requests))
 
 intermediateDeliveryTests :: TestTree
 intermediateDeliveryTests =
@@ -181,6 +223,125 @@ intermediateDeliveryTests =
           texts <- readIORef delivered
           texts @?= ["Filed the research; committing it now."]
     ]
+
+-- Whole-turn specifications use a scripted provider and actual tool handles.
+turnExecutionTests :: TestTree
+turnExecutionTests =
+  testGroup
+    "turn execution contract"
+    [ testCase "tools execute in declared order and results retain call IDs" $
+        withReplies [reply "tool_use" [call "a" "first", call "b" "second"], reply "end_turn" [TextBlock "done"]] $ \url -> do
+          seen <- newIORef ([] :: [Text])
+          cfg <- mkTestConfigWith url Nothing (pure False)
+          let registry =
+                registerTool (tool "second" (modifyIORef' seen (<> ["second"]))) $
+                  registerTool (tool "first" (modifyIORef' seen (<> ["first"]))) newToolRegistry
+          result <- runAgentTurn cfg {registry = registry} [] input
+          readIORef seen >>= (@?= ["first", "second"])
+          case result of
+            AgentSuccess _ [_, _, ClaudeMessage User [ToolResultBlock a _ _, ToolResultBlock b _ _], _] ->
+              [a, b] @?= [ToolUseId "a", ToolUseId "b"]
+            other -> assertFailure (show other),
+      testCase "cancellation after the first tool prevents the second" $
+        withReplies [reply "tool_use" [call "a" "first", call "b" "second"]] $ \url -> do
+          cancelled <- newIORef False
+          second <- newIORef False
+          cfg <- mkTestConfigWith url Nothing (readIORef cancelled)
+          let registry =
+                registerTool (tool "second" (writeIORef second True)) $
+                  registerTool (tool "first" (writeIORef cancelled True)) newToolRegistry
+          result <- runAgentTurn cfg {registry = registry} [] input
+          case result of AgentCancelled -> pure (); other -> assertFailure (show other)
+          readIORef second >>= (@?= False),
+      testCase "exhaustion counts only this turn and returns only its delta" $
+        withReplies [reply "tool_use" [call "now" "tool"]] $ \url -> do
+          cfg <- mkTestConfigWith url Nothing (pure False)
+          let history = [input, ClaudeMessage Assistant [call "old" "tool"], ClaudeMessage User [ToolResultBlock (ToolUseId "old") [] False]]
+          result <- runAgentTurn cfg {agentProfile = cfg.agentProfile {maxIterations = literal @1}} history input
+          case result of
+            AgentExhausted info -> do
+              info.iterationsUsed @?= 1
+              info.toolsCalled @?= 1
+              length info.messages @?= 3
+            other -> assertFailure (show other),
+      testCase "truncated calls never execute and outcome remains distinct" $
+        withReplies [reply "max_tokens" [TextBlock "partial", call "a" "tool"]] $ \url -> do
+          executed <- newIORef False
+          cfg <- mkTestConfigWith url Nothing (pure False)
+          result <- runAgentTurn cfg {registry = registerTool (tool "tool" (writeIORef executed True)) newToolRegistry} [] input
+          case result of
+            AgentTruncated text delta -> do
+              text @?= "partial"
+              delta @?= [input, ClaudeMessage Assistant [TextBlock "partial"]]
+            other -> assertFailure (show other)
+          readIORef executed >>= (@?= False),
+      testCase "cancellation during retry backoff prevents another provider request" $
+        withHttpReplies [(status429, object []), (status200, reply "end_turn" [TextBlock "must not request"])] $ \url requestCount -> do
+          cancelled <- newIORef False
+          cfg <- mkTestConfigWith url Nothing (readIORef cancelled)
+          result <- runAgentTurn cfg {onRateLimit = Just (\_ _ -> writeIORef cancelled True)} [] input
+          case result of
+            AgentCancelled -> pure ()
+            other -> assertFailure (show other)
+          requestCount >>= (@?= 1),
+      testCase "synchronous delegates observe parent cancellation between tools and requests" $
+        withReplies [reply "tool_use" [call "stop" "stop"]] $ \url -> do
+          cfg <- mkTestConfigWith url Nothing (pure False)
+          token <- newTVarIO False
+          bracket (Tasks.newAsyncTaskStore 60) Tasks.closeTaskStore $ \store -> do
+            let registry = registerTool (tool "stop" (atomically (writeTVar token True))) newToolRegistry
+            worker <- delegate cfg registry (Tasks.forTurn token store) Nothing
+            result <- worker.execute (object ["task" .= ("work" :: Text)])
+            case result of
+              ToolError message -> assertBool "delegate cancelled" ("[cancelled]" `T.isPrefixOf` message)
+              other -> assertFailure (show other),
+      testCase "background execution outlives zero result-retention TTL" $
+        withReplies [reply "tool_use" [call "attachment" "queue_attachment", call "block" "block"], reply "end_turn" [TextBlock "done"]] $ \url -> do
+          cfg <- mkTestConfigWith url Nothing (pure False)
+          entered <- newEmptyMVar
+          release <- newEmptyMVar
+          queued <- newIORef False
+          notified <- newIORef False
+          bracket (Tasks.newAsyncTaskStore 0) Tasks.closeTaskStore $ \store -> do
+            let registry =
+                  registerTool (tool "queue_attachment" (writeIORef queued True)) $
+                    registerTool (tool "block" (putMVar entered () >> takeMVar release)) newToolRegistry
+            worker <- delegate cfg registry store (Just (\_ _ _ -> writeIORef notified True))
+            _ <- worker.execute (object ["task" .= ("work" :: Text), "async" .= True])
+            timeout 1000000 (takeMVar entered) >>= (@?= Just ())
+            readIORef queued >>= (@?= False)
+            readIORef notified >>= (@?= False)
+            observed <- (Tasks.mkCheckTaskTool store).execute (object [])
+            case observed of
+              ToolSuccess parts -> assertBool "running task remains alive" ("running" `T.isInfixOf` T.unlines [text | ToolResultText text <- parts])
+              other -> assertFailure (show other)
+            putMVar release (),
+      testCase "malformed compaction retains original history without persisting" $
+        withReplies [reply "max_tokens" [TextBlock "incomplete summary"]] $ \url -> do
+          persisted <- newIORef False
+          cfg <- mkTestConfigWith url Nothing (pure False)
+          let history = [input, ClaudeMessage Assistant [TextBlock "answer"], input]
+              config = CompactionConfig (literal @1) (ModelRef "anthropic" "test") Nothing (CKeepTurns (literal @1))
+          actual <- compactMessages cfg.logger cfg.client config (pure ()) (\_ _ -> pure ()) (\_ -> writeIORef persisted True) history
+          actual @?= history
+          readIORef persisted >>= (@?= False)
+    ]
+  where
+    delegate :: AgentConfig -> ToolRegistry -> Tasks.AsyncTaskStore -> Maybe (Text -> ToolUseCallback) -> IO Tool
+    delegate cfg registry store notify = do
+      metrics <- newMetricsStore
+      pure (mkDelegateTaskTool cfg.logger cfg.client registry noApprovalChannel cfg.agentProfile Nothing "/tmp" Nothing metrics (AgentPreset Nothing mempty) Map.empty [] notify (Just store))
+    input = ClaudeMessage User [TextBlock "hello"]
+    call ident name = ToolUseBlock (ToolUseId ident) name (object [])
+    tool name action = Tool (ToolSchema name "test" (object [])) (\_ -> action >> pure (ToolSuccess [ToolResultText "ok"]))
+    reply :: Text -> [ContentBlock] -> Value
+    reply stop blocks =
+      object
+        [ "id" .= ("test" :: Text),
+          "stop_reason" .= stop,
+          "content" .= blocks,
+          "usage" .= object ["input_tokens" .= (1 :: Int), "output_tokens" .= (1 :: Int)]
+        ]
 
 perceiveResultImagesTests :: TestTree
 perceiveResultImagesTests =
@@ -233,9 +394,9 @@ mkTestConfigWith baseUrl thinkingMode isCancelled = do
         AgentProfile
           { model = ModelRef "anthropic" "test-model",
             thinking = thinkingMode,
-            maxIterations = 5,
+            maxIterations = literal @5,
             cache = Nothing,
-            maxTokens = 1024,
+            maxTokens = literal @1024,
             systemPrompt = [],
             toolSearch = ToolSearchDisabled,
             toolFilter = AllTools,

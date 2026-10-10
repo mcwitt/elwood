@@ -1,6 +1,5 @@
 module Elwood.Tools.Registry
-  ( -- * Tool Registry
-    ToolRegistry,
+  ( ToolRegistry,
     newToolRegistry,
     registerTool,
     lookupTool,
@@ -11,44 +10,39 @@ module Elwood.Tools.Registry
   )
 where
 
-import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Elwood.AgentSettings (ToolFilter (..))
 import Elwood.Claude.Types (ToolName, ToolSchema (..))
 import Elwood.Tools.Types (Tool (..))
 
--- | Registry of available tools
-newtype ToolRegistry = ToolRegistry (Map ToolName Tool)
+-- Composition is right biased: later registrations replace earlier definitions.
+newtype ToolRegistry = ToolRegistry (Map.Map ToolName Tool)
 
--- | Create an empty tool registry
+instance Semigroup ToolRegistry where
+  ToolRegistry earlier <> ToolRegistry later = ToolRegistry (Map.union later earlier)
+
+instance Monoid ToolRegistry where
+  mempty = ToolRegistry Map.empty
+
 newToolRegistry :: ToolRegistry
-newToolRegistry = ToolRegistry Map.empty
+newToolRegistry = mempty
 
--- | Register a tool in the registry
 registerTool :: Tool -> ToolRegistry -> ToolRegistry
-registerTool tool (ToolRegistry reg) =
-  ToolRegistry $ Map.insert tool.schema.name tool reg
+registerTool tool registry = registry <> ToolRegistry (Map.singleton tool.schema.name tool)
 
--- | Look up a tool by name
 lookupTool :: ToolName -> ToolRegistry -> Maybe Tool
-lookupTool n (ToolRegistry reg) = Map.lookup n reg
+lookupTool name (ToolRegistry tools) = Map.lookup name tools
 
--- | Get all registered tools
 allTools :: ToolRegistry -> [Tool]
-allTools (ToolRegistry reg) = Map.elems reg
+allTools (ToolRegistry tools) = Map.elems tools
 
--- | Generate tool schemas for the API request (all tools)
 toolSchemas :: ToolRegistry -> [ToolSchema]
-toolSchemas registry = map (.schema) (allTools registry)
+toolSchemas = map (.schema) . allTools
 
--- | Keep only the tools whose name satisfies the predicate.
 filterRegistry :: (ToolName -> Bool) -> ToolRegistry -> ToolRegistry
-filterRegistry keep (ToolRegistry reg) =
-  ToolRegistry (Map.filterWithKey (\n _ -> keep n) reg)
+filterRegistry keep (ToolRegistry tools) = ToolRegistry (Map.filterWithKey (\name _ -> keep name) tools)
 
--- | Apply a 'ToolFilter' to a registry: 'AllTools' is identity; 'OnlyTools'
--- keeps exactly the named subset (unknown names select nothing).
 applyToolFilter :: ToolFilter -> ToolRegistry -> ToolRegistry
 applyToolFilter AllTools = id
-applyToolFilter (OnlyTools keep) = filterRegistry (`Set.member` keep)
+applyToolFilter (OnlyTools names) = filterRegistry (`Set.member` names)

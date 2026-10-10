@@ -35,6 +35,10 @@ tests =
   testGroup
     "Claude.Pruning"
     [ -- softPrune unit tests
+      testCase "huge retention counts never wrap to negative" $
+        protectedBoundary (KeepTurns 18446744073709551615) [ClaudeMessage User [TextBlock "keep"]] @?= 0,
+      testCase "huge character limits never overflow" $
+        softPrune maxBound maxBound "keep" @?= Nothing,
       softPruneShortContent,
       softPruneLongContent,
       softPruneIdempotent,

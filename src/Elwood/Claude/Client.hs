@@ -2,11 +2,8 @@ module Elwood.Claude.Client
   ( ClaudeClient (..),
     newClient,
     sendMessages,
-    sendMessagesWithRetry,
     RetryConfig (..),
     defaultRetryConfig,
-
-    -- * Exported for testing
     buildRequest,
     hoistToolResultImages,
     requestBetas,
@@ -16,20 +13,21 @@ module Elwood.Claude.Client
   )
 where
 
-import Control.Concurrent (threadDelay)
-import Data.Aeson (eitherDecode, encode, withObject, (.:))
-import Data.Aeson qualified as Aeson
+import Control.Exception (try)
+import Data.Aeson (Value, eitherDecode, encode, withObject, (.:))
 import Data.Aeson.Types (parseMaybe)
-import Data.ByteString.Char8 qualified as BS8
-import Data.ByteString.Lazy (ByteString)
+import Data.Bifunctor (first)
+import Data.ByteString.Char8 qualified as BS
 import Data.ByteString.Lazy qualified as LBS
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Text.Encoding.Error (lenientDecode)
 import Elwood.Claude.Types
-import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ToolResultImageMode (..))
+import Elwood.Claude.Types qualified as Request (MessagesRequest (..))
+import Elwood.Provider (ProviderConfig (..), ToolResultImageMode (..))
 import Elwood.Thinking (ThinkingDisplay (..))
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
@@ -37,217 +35,103 @@ import Network.HTTP.Types.Header (hRetryAfter)
 import Network.HTTP.Types.Status (statusCode)
 import Text.Read (readMaybe)
 
--- | Claude API client: shared HTTP manager + the configured provider endpoints.
-data ClaudeClient = ClaudeClient
-  { manager :: Manager,
-    providers :: Map Text ProviderConfig
-  }
+data ClaudeClient = ClaudeClient {manager :: Manager, providers :: Map Text ProviderConfig}
 
--- | Retry configuration for API calls
 data RetryConfig = RetryConfig
-  { -- | Maximum number of retry attempts
-    maxRetries :: Int,
-    -- | Base delay for exponential backoff (seconds) when no retry-after header
-    baseDelay :: Int,
-    -- | Maximum delay cap (seconds)
-    maxDelay :: Int,
-    -- | Callback for retry notifications (retry number, wait seconds, error)
-    onRetry :: Maybe (Int -> Int -> ClaudeError -> IO ())
-  }
+  {maxRetries :: Int, baseDelay :: Int, maxDelay :: Int, onRetry :: Maybe (Int -> Int -> ClaudeError -> IO ())}
 
--- | Default retry configuration
 defaultRetryConfig :: RetryConfig
-defaultRetryConfig =
-  RetryConfig
-    { maxRetries = 3,
-      baseDelay = 5,
-      maxDelay = 60,
-      onRetry = Nothing
-    }
+defaultRetryConfig = RetryConfig 3 5 60 Nothing
 
--- | Create a new client from the resolved provider map.
 newClient :: Map Text ProviderConfig -> IO ClaudeClient
-newClient provs = do
-  let settings = tlsManagerSettings {managerResponseTimeout = responseTimeoutMicro (10 * 60 * 1000000)}
-  mgr <- newManager settings
-  pure ClaudeClient {manager = mgr, providers = provs}
+newClient providers = (`ClaudeClient` providers) <$> newManager tlsManagerSettings {managerResponseTimeout = responseTimeoutMicro 600000000}
 
--- | Send a messages request to a named provider (single attempt, no retry).
 sendMessages :: ClaudeClient -> Text -> MessagesRequest -> IO (Either ClaudeError MessagesResponse)
-sendMessages client providerName req =
-  case Map.lookup providerName client.providers of
-    Nothing -> pure (Left (ClaudeUnknownProvider providerName))
-    Just provider -> do
-      httpReq <- buildRequest provider
-      let body = encode (adaptForProvider provider req)
-          betaHeaders = case requestBetas req of
-            [] -> []
-            betas -> [("anthropic-beta", TE.encodeUtf8 (T.intercalate "," betas))]
-          httpReq' =
-            httpReq
-              { method = "POST",
-                requestBody = RequestBodyLBS body,
-                requestHeaders = requestHeaders httpReq ++ betaHeaders
-              }
-      response <- httpLbs httpReq' client.manager
-      let status = statusCode $ responseStatus response
-          respBody = responseBody response
-          retryAfter = parseRetryAfter response
-      pure $ parseResponse status respBody retryAfter
+sendMessages client providerName request@MessagesRequest {} = case Map.lookup providerName client.providers of
+  Nothing -> pure (Left (ClaudeUnknownProvider providerName))
+  Just provider -> do
+    response <- try @HttpException $ do
+      base <- buildRequest provider
+      let adapted = case provider.toolResultImages of
+            ImagesEmbedded -> request
+            ImagesHoisted -> request {Request.messages = hoistToolResultImages request.messages}
+          betas = requestBetas request
+      httpLbs
+        base
+          { method = "POST",
+            requestBody = RequestBodyLBS (encode adapted),
+            requestHeaders = requestHeaders base <> [("anthropic-beta", TE.encodeUtf8 (T.intercalate "," betas)) | not (null betas)]
+          }
+        client.manager
+    pure $ case response of
+      Left err -> Left (ClaudeHttpError 0 (T.pack (show err)))
+      Right reply ->
+        decodeResponse
+          (statusCode (responseStatus reply))
+          (responseBody reply)
+          (lookup hRetryAfter (responseHeaders reply) >>= readMaybe . BS.unpack)
 
--- | Beta feature flags a request depends on, in the order they are sent in
--- the (single, comma-separated) @anthropic-beta@ header.
+buildRequest :: ProviderConfig -> IO Request
+buildRequest provider = do
+  request <- parseRequest (T.unpack (T.dropWhileEnd (== '/') provider.baseUrl) <> "/v1/messages")
+  pure
+    request
+      { requestHeaders =
+          [("Content-Type", "application/json"), ("anthropic-version", "2023-06-01")]
+            <> [("x-api-key", TE.encodeUtf8 key) | Just key <- [provider.apiKey]]
+      }
+
 requestBetas :: MessagesRequest -> [Text]
-requestBetas req =
-  ["extended-cache-ttl-2025-04-11" | Just CacheTtl1Hour <- [req.cacheControl]]
-    ++ ["thinking-display-updates-2026-08-18" | Just (ThinkingConfigAdaptive _ (Just DisplayUpdates)) <- [req.thinking]]
+requestBetas request =
+  ["extended-cache-ttl-2025-04-11" | Just CacheTtl1Hour <- [request.cacheControl]]
+    <> ["thinking-display-updates-2026-08-18" | Just (ThinkingConfigAdaptive _ (Just DisplayUpdates)) <- [request.thinking]]
 
--- | Check if an error is retryable (rate limits and overload)
+decodeResponse :: Int -> LBS.ByteString -> Maybe Int -> Either ClaudeError MessagesResponse
+decodeResponse status body retryAfter = case status of
+  200 -> first ClaudeParseError (eitherDecode body)
+  429 -> Left (ClaudeRateLimited retryAfter)
+  529 -> Left (ClaudeOverloaded retryAfter)
+  _ -> Left $ case eitherDecode @Value body >>= maybe (Left "Invalid API error") Right . parseMaybe errorParser of
+    Right (kind, message) -> ClaudeApiError kind message
+    Left _ -> ClaudeHttpError status (TE.decodeUtf8With lenientDecode (LBS.toStrict body))
+  where
+    errorParser = withObject "API error" $ \v -> v .: "error" >>= \e -> (,) <$> e .: "type" <*> e .: "message"
+
 isRetryableError :: ClaudeError -> Bool
 isRetryableError (ClaudeRateLimited _) = True
 isRetryableError (ClaudeOverloaded _) = True
 isRetryableError _ = False
 
--- | Calculate retry delay based on error and attempt number
---
--- Uses retry-after header if available, otherwise exponential backoff
 calculateRetryDelay :: RetryConfig -> ClaudeError -> Int -> Int
-calculateRetryDelay config err attempt =
-  case err of
-    ClaudeRateLimited (Just secs) -> min secs config.maxDelay
-    ClaudeOverloaded (Just secs) -> min secs config.maxDelay
-    _ ->
-      -- Exponential backoff: baseDelay * 2^attempt, capped at maxDelay
-      min (config.baseDelay * (2 ^ attempt)) config.maxDelay
-
--- | Generic retry combinator with configurable delay function
---
--- Takes the action and delay function as parameters for testability
-retryWithBackoff ::
-  RetryConfig ->
-  -- | Action to retry
-  IO (Either ClaudeError a) ->
-  -- | Delay function (seconds -> IO ())
-  (Int -> IO ()) ->
-  IO (Either ClaudeError a)
-retryWithBackoff config action delayFn = go 0
+calculateRetryDelay config err attempt = fromInteger (max 0 (min (toInteger config.maxDelay) seconds))
   where
-    go attempt = do
-      result <- action
-      case result of
-        Right resp -> pure (Right resp)
-        Left err
-          | isRetryableError err && attempt < config.maxRetries -> do
-              let waitSeconds = calculateRetryDelay config err attempt
-              -- Notify about retry if callback is configured
-              case config.onRetry of
-                Just notify -> notify (attempt + 1) waitSeconds err
-                Nothing -> pure ()
-              -- Wait and retry
-              delayFn waitSeconds
-              go (attempt + 1)
-          | otherwise -> pure (Left err)
+    seconds = case err of
+      ClaudeRateLimited (Just value) -> toInteger value
+      ClaudeOverloaded (Just value) -> toInteger value
+      _ -> toInteger config.baseDelay * 2 ^ max 0 (min 63 attempt)
 
--- | Send a messages request with automatic retry on rate limits
-sendMessagesWithRetry ::
-  ClaudeClient ->
-  RetryConfig ->
-  Text ->
-  MessagesRequest ->
-  IO (Either ClaudeError MessagesResponse)
-sendMessagesWithRetry client config providerName req =
-  retryWithBackoff config (sendMessages client providerName req) delaySeconds
+retryWithBackoff :: RetryConfig -> IO (Either ClaudeError a) -> (Int -> IO ()) -> IO (Either ClaudeError a)
+retryWithBackoff config action delay = go 0
   where
-    delaySeconds s = threadDelay (s * 1000000)
+    go attempt =
+      action >>= \case
+        Left err | isRetryableError err && attempt < config.maxRetries -> do
+          let seconds = calculateRetryDelay config err attempt
+          mapM_ (\notify -> notify (attempt + 1) seconds err) config.onRetry
+          delay seconds
+          go (attempt + 1)
+        result -> pure result
 
--- | Parse the retry-after header from response
-parseRetryAfter :: Response a -> Maybe Int
-parseRetryAfter response =
-  lookup hRetryAfter (responseHeaders response)
-    >>= readMaybe . BS8.unpack
-
--- | Adapt the wire shape of a request to the provider's quirks. The
--- conversation history keeps the canonical (Anthropic) representation;
--- only the encoded request differs per provider.
-adaptForProvider :: ProviderConfig -> MessagesRequest -> MessagesRequest
-adaptForProvider provider req = case provider.toolResultImages of
-  ImagesEmbedded -> req
-  ImagesHoisted ->
-    MessagesRequest
-      { model = req.model,
-        maxTokens = req.maxTokens,
-        system = req.system,
-        messages = hoistToolResultImages req.messages,
-        tools = req.tools,
-        thinking = req.thinking,
-        cacheControl = req.cacheControl,
-        toolSearch = req.toolSearch,
-        outputFormat = req.outputFormat
-      }
-
--- | Rewrite messages for endpoints whose anthropic-compat layer drops
--- image blocks inside @tool_result@ content (e.g. llama.cpp): each image
--- part is replaced with a placeholder text part, and the image is
--- re-attached as a user-message image block after the tool results,
--- labeled with the originating tool_use_id.
+-- Hoisting is a wire projection; canonical conversation state never changes.
 hoistToolResultImages :: [ClaudeMessage] -> [ClaudeMessage]
-hoistToolResultImages = map hoistMessage
+hoistToolResultImages = map $ \case
+  ClaudeMessage User blocks -> let pairs = map hoist blocks in ClaudeMessage User (map fst pairs <> concatMap snd pairs)
+  message -> message
   where
-    hoistMessage (ClaudeMessage User blocks) =
-      let hoisted = map hoistBlock blocks
-       in ClaudeMessage User (map fst hoisted ++ concatMap snd hoisted)
-    hoistMessage msg = msg
-
-    hoistBlock :: ContentBlock -> (ContentBlock, [ContentBlock])
-    hoistBlock (ToolResultBlock tid parts isErr)
-      | imgs@(_ : _) <- [(mt, d) | ToolResultImage mt d <- parts] =
-          ( ToolResultBlock tid (map placeholder parts) isErr,
-            TextBlock ("[Image from tool result " <> tid.unToolUseId <> ":]")
-              : [ImageBlock mt d | (mt, d) <- imgs]
-          )
-    hoistBlock block = (block, [])
-
-    placeholder (ToolResultImage _ _) = ToolResultText "[image attached below]"
+    hoist block@(ToolResultBlock ident parts isError)
+      | images@(_ : _) <- [ImageBlock media bytes | ToolResultImage media bytes <- parts] =
+          (ToolResultBlock ident (map placeholder parts) isError, TextBlock ("[Image from tool result " <> ident.unToolUseId <> ":]") : images)
+      | otherwise = (block, [])
+    hoist block = (block, [])
+    placeholder (ToolResultImage {}) = ToolResultText "[image attached below]"
     placeholder part = part
-
--- | Build the HTTP request for a provider (URL + auth headers by format).
-buildRequest :: ProviderConfig -> IO Request
-buildRequest provider = do
-  req <- parseRequest $ T.unpack (T.dropWhileEnd (== '/') provider.baseUrl) <> "/v1/messages"
-  let headers = case provider.format of
-        AnthropicFormat ->
-          ("Content-Type", "application/json")
-            : ("anthropic-version", "2023-06-01")
-            : [("x-api-key", TE.encodeUtf8 k) | Just k <- [provider.apiKey]]
-  pure req {requestHeaders = headers}
-
--- | Parse the API response, handling errors appropriately
-parseResponse :: Int -> ByteString -> Maybe Int -> Either ClaudeError MessagesResponse
-parseResponse status body retryAfter
-  | status == 200 =
-      case eitherDecode body of
-        Left err -> Left $ ClaudeParseError err
-        Right resp -> Right resp
-  | status == 429 =
-      Left $ ClaudeRateLimited retryAfter
-  | status == 529 =
-      Left $ ClaudeOverloaded retryAfter
-  | otherwise =
-      Left $ parseApiError status body
-
--- | Parse an API error response
-parseApiError :: Int -> ByteString -> ClaudeError
-parseApiError status body =
-  case Aeson.decode body of
-    Just obj -> case parseErrorFromJson obj of
-      Just (errType, errMsg) -> ClaudeApiError errType errMsg
-      Nothing -> ClaudeHttpError status (decodeBody body)
-    Nothing -> ClaudeHttpError status (decodeBody body)
-  where
-    decodeBody :: ByteString -> Text
-    decodeBody = TE.decodeUtf8 . LBS.toStrict
-
-    parseErrorFromJson :: Aeson.Value -> Maybe (Text, Text)
-    parseErrorFromJson = parseMaybe $ withObject "ErrorResponse" $ \v -> do
-      errObj <- v .: "error"
-      (,) <$> errObj .: "type" <*> errObj .: "message"
