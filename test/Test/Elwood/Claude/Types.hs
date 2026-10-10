@@ -79,17 +79,17 @@ contentBlockTests =
         case decode (encode block) :: Maybe Value of
           Just (Object obj) -> KM.lookup "content" obj @?= Just (String "file contents")
           _ -> assertFailure "Expected JSON object",
-      testCase "legacy string content decodes to single text part" $ do
+      testCase "string tool-result content decodes to a single text part" $ do
         let json =
               Aeson.object
                 [ "type" Aeson..= ("tool_result" :: Text),
-                  "tool_use_id" Aeson..= ("toolu_old" :: Text),
-                  "content" Aeson..= ("legacy result" :: Text)
+                  "tool_use_id" Aeson..= ("toolu_text" :: Text),
+                  "content" Aeson..= ("text result" :: Text)
                 ]
         case Aeson.fromJSON json :: Aeson.Result ContentBlock of
           Aeson.Success block ->
-            block @?= ToolResultBlock (ToolUseId "toolu_old") [ToolResultText "legacy result"] False
-          Aeson.Error err -> assertFailure $ "Failed to parse legacy tool_result: " <> err,
+            block @?= ToolResultBlock (ToolUseId "toolu_text") [ToolResultText "text result"] False
+          Aeson.Error err -> assertFailure $ "Failed to parse string tool_result: " <> err,
       testCase "ToolResultBlock with image round-trips" $ do
         let block =
               ToolResultBlock
@@ -237,7 +237,7 @@ roundTripTests =
             length decoded.messages @?= length conv.messages
             decoded.cacheExpiresAt @?= conv.cacheExpiresAt
           Nothing -> assertFailure "Failed to decode Conversation",
-      testCase "old JSON without cacheExpiresAt defaults to epoch" $ do
+      testCase "missing cacheExpiresAt defaults to epoch" $ do
         let json =
               Aeson.object
                 [ "sessionId" Aeson..= ("test" :: String),
@@ -246,7 +246,7 @@ roundTripTests =
                 ]
         case Aeson.fromJSON json :: Aeson.Result Conversation of
           Aeson.Success conv -> conv.cacheExpiresAt @?= epoch
-          Aeson.Error err -> assertFailure $ "Failed to parse old Conversation JSON: " <> err,
+          Aeson.Error err -> assertFailure $ "Failed to parse Conversation without cacheExpiresAt: " <> err,
       testCase "ToolSchema encodes name and description" $ do
         let schema =
               ToolSchema

@@ -67,7 +67,7 @@ compactionConfigTests =
       testCase "null root pruning inherits defaults" $ withConfig "pruning: null" setup $ \cfg ->
         case cfg.pruning of
           Just pruning -> pruning.strategy @?= KeepTurns 3
-          Nothing -> assertFailure "root null historically inherits defaults"
+          Nothing -> assertFailure "root null must inherit defaults"
     ]
   where
     setup = setEnv "ANTHROPIC_API_KEY" "test"
@@ -162,8 +162,7 @@ thinkingOverridesTests =
 -- resolvePruning tests
 -- ---------------------------------------------------------------------------
 
--- These tests exercise the parsed, resolved contract, without freezing a
--- second hierarchy of temporary configuration DTOs.
+-- Exercise parsing and resolution together.
 pruningResolutionTests :: TestTree
 pruningResolutionTests =
   testGroup

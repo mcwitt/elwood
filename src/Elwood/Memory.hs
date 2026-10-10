@@ -1,4 +1,4 @@
-module Elwood.Memory (MemoryStore, newMemoryStore, saveMemory, searchMemory, listMemories, MemoryResult (..), sanitizeKey) where
+module Elwood.Memory (MemoryStore, newMemoryStore, saveMemory, searchMemory, listMemories, MemoryResult (..), parseKey) where
 
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
@@ -24,13 +24,13 @@ newMemoryStore directory = do
   pure (MemoryStore path)
 
 -- Keys are preserved exactly: accepting an input must not alias another key.
-sanitizeKey :: Text -> Maybe Text
-sanitizeKey key
+parseKey :: Text -> Maybe Text
+parseKey key
   | not (T.null key), T.length key <= 100, BS.length (T.encodeUtf8 key) <= 240, T.all (\c -> isAlphaNum c || c `elem` ['-', '_']) key = Just key
   | otherwise = Nothing
 
 saveMemory :: MemoryStore -> Text -> Text -> IO (Either Text ())
-saveMemory (MemoryStore directory) key content = case sanitizeKey key of
+saveMemory (MemoryStore directory) key content = case parseKey key of
   Nothing -> pure (Left "Invalid memory key: use 1–100 letters, digits, hyphens or underscores, at most 240 UTF-8 bytes")
   Just safe -> Right <$> Persistence.writeBytes (directory </> T.unpack safe <> ".md") (BL.fromStrict (T.encodeUtf8 content))
 

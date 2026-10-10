@@ -137,7 +137,7 @@ checkTaskRoundTripTests =
         store <- newAsyncTaskStore 3600
         a <- Async.async $ pure $ AgentSuccess "one-time result" []
         _ <- Async.wait a
-        insertTask store (TaskId "re-id") "consume-once" a
+        insertTask store (TaskId "re-id") "repeatable result" a
         let tool = mkCheckTaskTool store
         r1 <- tool.execute (object ["task_id" .= ("re-id" :: Text)])
         r1 @?= toolSuccess "one-time result"
@@ -248,11 +248,11 @@ awaitTaskRoundTripTests =
         store <- newAsyncTaskStore 3600
         a <- Async.async $ pure $ AgentSuccess "one-time" []
         _ <- Async.wait a
-        insertTask store (TaskId "consume-id") "consume-once" a
+        insertTask store (TaskId "repeatable-id") "repeatable result" a
         let tool = mkAwaitTaskTool store
-        r1 <- tool.execute (object ["task_id" .= ("consume-id" :: Text)])
+        r1 <- tool.execute (object ["task_id" .= ("repeatable-id" :: Text)])
         r1 @?= toolSuccess "one-time"
-        r2 <- tool.execute (object ["task_id" .= ("consume-id" :: Text)])
+        r2 <- tool.execute (object ["task_id" .= ("repeatable-id" :: Text)])
         r2 @?= r1,
       testCase "await running task with short timeout returns timeout error" $ do
         store <- newAsyncTaskStore 3600

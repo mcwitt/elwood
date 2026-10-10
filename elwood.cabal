@@ -11,7 +11,10 @@ author:          Matt
 maintainer:      matt@example.com
 category:        AI, Bot
 build-type:      Simple
-extra-doc-files: CHANGELOG.md
+extra-doc-files:
+  docs/design.md
+  README.md
+
 data-files:      config.yaml.example
 
 common warnings
@@ -37,6 +40,7 @@ library
     Elwood.Claude.Turn
     Elwood.Claude.Types
     Elwood.Command
+    Elwood.Compat.Conversation
     Elwood.Config
     Elwood.Event
     Elwood.Event.Types

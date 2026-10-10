@@ -4,13 +4,13 @@ import Control.Concurrent.MVar
 import Control.Exception (mask_)
 import Control.Monad (when)
 import Data.ByteString qualified as BS
-import Data.Char (isAlphaNum)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as Text
 import Data.Time (getCurrentTime)
 import Elwood.Claude.Types
+import Elwood.Compat.Conversation qualified as Compat
 import Elwood.Persistence qualified as Persistence
 import Numeric (showHex)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -37,17 +37,11 @@ newConversationStore directory = do
   createDirectoryIfMissing True root
   let load sid = do
         current <- doesFileExist (path sid)
-        let legacy = directory </> "conversations" </> map (\ch -> if isAlphaNum ch || ch `elem` ['-', '_', '.'] then ch else '_') (T.unpack sid) <> ".json"
-        old <- doesFileExist legacy
-        if current || not old
+        if current
           then Persistence.readJSON (path sid) (empty sid)
           else do
-            conversation <- Persistence.readJSON legacy (empty sid)
-            if conversation.sessionId /= sid
-              then ioError (userError "Legacy conversation filename collision: explicit migration required")
-              else do
-                persist conversation
-                pure conversation
+            imported <- Compat.load directory sid
+            maybe (pure (empty sid)) (\conversation -> persist conversation >> pure conversation) imported
   store load persist
 
 newInMemoryConversationStore :: IO ConversationStore

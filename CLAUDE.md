@@ -24,7 +24,7 @@ Before completing a task:
 
 When adding or changing a config field in `Config.hs`, update all of:
 
-1. **`config.yaml.example`** — must exhaustively document every config option with comments showing defaults and valid values. Every field in `ConfigFile` and its nested types (`CompactionConfigFile`, `PermissionConfigFile`, `MCPServerConfigFile`, `WebhookServerConfigFile`, `WebhookConfigFile`) should have a corresponding entry.
+1. **`config.yaml.example`** — must exhaustively document every config option with comments showing defaults and valid values. Cover the keys accepted by `Config`'s parsers and the settings, permissions, provider and webhook parsers they use, including defaults, inheritance and disabling behavior.
 2. **`modules/assistant.nix`** — the NixOS module must expose a matching option in the `agentModule` and include it in `configContent` generation so it lands in the generated YAML.
 3. **`README.md`** — the config example and NixOS deployment example should reflect the current options. The architecture diagram, feature list, and workspace files section should stay accurate. In particular:
    - The architecture diagram should reflect how components actually interact (e.g. cron scheduling is done by systemd timers that POST to webhook endpoints, not by an internal scheduler).
@@ -35,7 +35,7 @@ When adding or changing a config field in `Config.hs`, update all of:
 
 - **Turn** = one `runAgentTurn` invocation = human sends a message → agent processes it (possibly calling many tools) → agent returns a response.
 - **Iteration** = one step in `agentLoop`, bounded by `maxIterations` = one API call + tool execution within a turn.
-- A **turn boundary** in the message history is identified by user messages containing a `TextBlock` (human input), as opposed to user messages containing only `ToolResultBlock` (tool results from iterations).
+- A **turn boundary** in the message history is a user message containing any block other than `ToolResultBlock`, including image-only input. User messages containing only tool results continue the current turn.
 
 ## Architecture
 

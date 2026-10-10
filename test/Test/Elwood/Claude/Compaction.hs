@@ -48,8 +48,7 @@ estimateTokensTests =
         -- A 400KB base64 payload would be ~100k tokens under the text
         -- heuristic; as an image it must count at the flat per-image estimate,
         -- not its base64 length. On high-resolution-vision models (Opus 4.7+)
-        -- a single image costs ~2.5-3.3k tokens, so the flat estimate sits
-        -- well above the old ~1.6k cap but far below the base64 text cost.
+        -- a single image costs ~2.5-3.3k tokens, far below the base64 text cost.
         let bigB64 = T.replicate 400000 "A"
             toolResultImage =
               [ClaudeMessage User [ToolResultBlock (ToolUseId "t1") [ToolResultImage "image/jpeg" bigB64] False]]

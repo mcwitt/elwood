@@ -1,7 +1,7 @@
 module Test.Elwood.Memory (tests) where
 
 import Data.Text qualified as T
-import Elwood.Memory (sanitizeKey)
+import Elwood.Memory (parseKey)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
@@ -10,59 +10,59 @@ tests :: TestTree
 tests =
   testGroup
     "Memory"
-    [ sanitizeKeyTests,
-      sanitizeKeyProperties
+    [ parseKeyTests,
+      parseKeyProperties
     ]
 
-sanitizeKeyTests :: TestTree
-sanitizeKeyTests =
+parseKeyTests :: TestTree
+parseKeyTests =
   testGroup
-    "sanitizeKey"
+    "parseKey"
     [ testCase "accepts alphanumeric" $
-        sanitizeKey "hello123" @?= Just "hello123",
+        parseKey "hello123" @?= Just "hello123",
       testCase "accepts hyphens" $
-        sanitizeKey "my-key" @?= Just "my-key",
+        parseKey "my-key" @?= Just "my-key",
       testCase "accepts underscores" $
-        sanitizeKey "my_key" @?= Just "my_key",
+        parseKey "my_key" @?= Just "my_key",
       testCase "rejects special characters" $
-        sanitizeKey "hello!@#world" @?= Nothing,
+        parseKey "hello!@#world" @?= Nothing,
       testCase "rejects spaces" $
-        sanitizeKey "hello world" @?= Nothing,
+        parseKey "hello world" @?= Nothing,
       testCase "rejects path separators" $
-        sanitizeKey "../../../etc/passwd" @?= Nothing,
-      testCase "returns Nothing for empty result" $
-        sanitizeKey "!@#$%^&*()" @?= Nothing,
+        parseKey "../../../etc/passwd" @?= Nothing,
+      testCase "rejects punctuation-only input" $
+        parseKey "!@#$%^&*()" @?= Nothing,
       testCase "returns Nothing for empty input" $
-        sanitizeKey "" @?= Nothing,
+        parseKey "" @?= Nothing,
       testCase "rejects keys longer than 100 chars" $
         let longKey = T.replicate 150 "a"
-            result = sanitizeKey longKey
+            result = parseKey longKey
          in result @?= Nothing,
       testCase "rejects keys exceeding filename byte limit" $
-        sanitizeKey (T.replicate 100 "界") @?= Nothing,
+        parseKey (T.replicate 100 "界") @?= Nothing,
       testCase "mixed case preserved" $
-        sanitizeKey "HelloWorld" @?= Just "HelloWorld"
+        parseKey "HelloWorld" @?= Just "HelloWorld"
     ]
 
-sanitizeKeyProperties :: TestTree
-sanitizeKeyProperties =
+parseKeyProperties :: TestTree
+parseKeyProperties =
   testGroup
-    "sanitizeKey properties"
+    "parseKey properties"
     [ testProperty "never returns empty Just" $
         \(s :: String) ->
-          case sanitizeKey (T.pack s) of
+          case parseKey (T.pack s) of
             Nothing -> True
             Just t -> not (T.null t),
       testProperty "result only contains ASCII safe chars" $
         \(s :: String) ->
-          -- Only test ASCII inputs since sanitizeKey allows Unicode alphanumeric
+          -- Only test ASCII inputs since parseKey allows Unicode alphanumeric
           let asciiOnly = filter (\c -> fromEnum c < 128) s
-           in case sanitizeKey (T.pack asciiOnly) of
+           in case parseKey (T.pack asciiOnly) of
                 Nothing -> True
                 Just t -> T.all isSafeChar t,
       testProperty "result length <= 100" $
         \(s :: String) ->
-          case sanitizeKey (T.pack s) of
+          case parseKey (T.pack s) of
             Nothing -> True
             Just t -> T.length t <= 100
     ]

@@ -4,7 +4,8 @@ import Control.Concurrent.Async qualified as Async
 import Control.Concurrent.MVar
 import Control.Concurrent.STM (atomically, newTVarIO, writeTVar)
 import Control.Exception (SomeException, try)
-import Data.Aeson (encodeFile, object, (.=))
+import Data.Aeson (Value (Null), encodeFile, object, (.=))
+import Data.ByteString qualified as BS
 import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.Approval qualified as Approval
@@ -47,15 +48,28 @@ tests =
         mapM_ (\name -> store.appendMessages name [message name] Nothing) names
         reloaded <- newConversationStore root
         mapM_ (\name -> assertMessages reloaded name [message name]) names,
-      testCase "legacy migration checks identity and writes v2" $ withSystemTempDirectory "conversation" $ \root -> do
+      testCase "flat-file import checks identity and writes encoded path" $ withSystemTempDirectory "conversation" $ \root -> do
         store <- newConversationStore root
-        let legacy = root </> "conversations" </> "old_session.json"
-        encodeFile legacy (Conversation "old/session" [message "legacy"] epoch)
-        assertMessages store "old/session" [message "legacy"]
-        removeFile legacy
+        let source = root </> "conversations" </> "saved_session.json"
+        encodeFile source (Conversation "saved/session" [message "source"] epoch)
+        original <- BS.readFile source
+        assertMessages store "saved/session" [message "source"]
+        BS.readFile source >>= (@?= original)
+        removeFile source
         reloaded <- newConversationStore root
-        assertMessages reloaded "old/session" [message "legacy"],
-      testCase "legacy filename aliases cannot load another conversation" $ withSystemTempDirectory "conversation" $ \root -> do
+        assertMessages reloaded "saved/session" [message "source"],
+      testCase "encoded conversations take precedence over flat files" $ withSystemTempDirectory "conversation" $ \root -> do
+        store <- newConversationStore root
+        store.appendMessages "s" [message "current"] Nothing
+        encodeFile (root </> "conversations" </> "s.json") (Conversation "s" [message "source"] epoch)
+        reloaded <- newConversationStore root
+        assertMessages reloaded "s" [message "current"],
+      testCase "invalid flat-file contents fail instead of starting an empty session" $ withSystemTempDirectory "conversation" $ \root -> do
+        store <- newConversationStore root
+        encodeFile (root </> "conversations" </> "s.json") Null
+        result <- try @SomeException (store.getConversation "s")
+        either (const (pure ())) (const (assertFailure "accepted invalid conversation")) result,
+      testCase "flat-file aliases cannot load another conversation" $ withSystemTempDirectory "conversation" $ \root -> do
         store <- newConversationStore root
         encodeFile (root </> "conversations" </> "a_b.json") (Conversation "a/b" [message "private"] epoch)
         result <- try @SomeException (store.getConversation "a_b")

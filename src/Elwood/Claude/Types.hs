@@ -287,7 +287,7 @@ data ClaudeError
 
 instance Exception ClaudeError
 
--- Legacy history is canonical: image hoisting is restricted to HTTP projection.
+-- Stored history is canonical: image hoisting is restricted to HTTP projection.
 turnBoundaryIndices :: [ClaudeMessage] -> [Int]
 turnBoundaryIndices messages_ = [index | (index, ClaudeMessage User blocks) <- zip [0 ..] messages_, any input blocks]
   where

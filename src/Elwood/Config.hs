@@ -154,8 +154,7 @@ parseCompaction = withObject "compaction" $ \v -> do
       <*> v .:? "strategy" .!= CKeepTurns (literal @10)
   pure (if enabled then Just config else Nothing)
 
--- Resolve inherited values while parsing, rather than constructing a second
--- hierarchy of optional runtime records. Missing children inherit; null disables.
+-- Resolve inherited values while parsing. Missing children inherit; null disables.
 resolvePruning :: Value -> Parser (Maybe PruningConfig)
 resolvePruning = component "pruning" ["strategy", "thinking", "tools"] $ \v -> do
   strategy <- v .:? "strategy" .!= KeepTurns 3
@@ -200,8 +199,7 @@ nonnegative fallback v key = do
   when (n < 0) (fail (show key <> " must be nonnegative"))
   pure n
 
--- Parse the full file before resolving secrets. Optional nested records are
--- interpreted once; no second tree of transport-specific configuration mirrors.
+-- Parse the full file and resolve nested settings before resolving secrets.
 parseConfig :: Value -> Parser (Config, Map Text ProviderConfigFile)
 parseConfig = withObject "Config" $ \v -> do
   rejectUnknownKeys "Config" ["state_dir", "workspace", "channels", "agent", "compaction", "pruning", "mcp_servers", "providers", "webhook", "tool_use_messages", "delegate", "max_image_dimension"] v

@@ -307,7 +307,7 @@ in
       config = machine.succeed(f"cat {config_path}")
 
       # Verify key config values are present (JSON format)
-      # Note: heartbeat config is no longer in the YAML - it's handled via systemd timers
+      # Systemd timers handle heartbeat scheduling outside the YAML config.
       assert "claude-test-model" in config, f"Model not in config: {config}"
       assert '"token_threshold":50000' in config, f"token_threshold not in config: {config}"
       assert '"port":9000' in config, f"webhook port not in config: {config}"

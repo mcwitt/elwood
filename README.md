@@ -373,20 +373,20 @@ MIT
 
 ## Core model and behavioral contracts
 
-The GHC2024 implementation separates a pure turn model (`Elwood.Claude.Turn`) from IO handles. A model reply becomes either a terminal outcome or a validated, nonempty batch of tool calls. Traversing a batch creates paired calls and results in order. Named sessions admit turns in FIFO order; different sessions and explicitly delegated tasks can run concurrently. Configuration overrides compose as a right-biased monoid before being resolved.
+Elwood separates a pure turn model (`Elwood.Claude.Turn`) from IO handles. A model reply becomes either a terminal outcome or a validated, nonempty batch of tool calls. Traversing a batch creates paired calls and results in order. Named sessions admit turns in FIFO order; different sessions and explicitly delegated tasks can run concurrently. Configuration overrides compose as a right-biased monoid before being resolved.
 
-The rewrite deliberately changes these behaviors:
+The following contracts govern execution:
 
 - Tools requested in one model reply execute in their declared order. Use `delegate_task` for explicit concurrency.
 - Integer settings reject fractions and overflow. Permission regular expressions compile during configuration loading, and malformed tool-name arrays are rejected.
-- Memory keys must already be valid; Elwood no longer silently removes characters or truncates keys into collisions.
+- Memory keys are accepted unchanged or rejected when invalid.
 - Background delegates cannot use `queue_attachment` or emit turn-local progress notifications; return artifact paths in the task result. Synchronous delegates retain those capabilities.
 - Completed delegate results can be read repeatedly. Retention starts at completion; an execution deadline is independent of retention. `/stop` affects the active turn and its delegates, and `/clear` waits its turn in the session.
 - Truncated replies remain distinct from completed replies. Malformed tool continuations are errors. Failed or incomplete compaction leaves the original conversation intact.
 - Webhook suppression controls delivery without changing the destination captured by scheduled callbacks. Explicit `send_message` remains immediate.
 
-Conversation files now live under `conversations/v2/`, using collision-free UTF-8 encodings split into filesystem-safe path components. On first access, a legacy conversation is imported only when its embedded `sessionId` matches the requested session. The legacy file remains intact. A conflicting legacy identifier produces an error instead of mixing histories; resolve that conflict explicitly from a backup. Callback files retain their existing format.
+Conversation files live under `conversations/v2/`, using collision-free UTF-8 encodings split into filesystem-safe path components. The store also accepts flat files under `conversations/`: it checks the embedded `sessionId` before copying a conversation to its encoded path and leaves the source file intact. A filename collision produces an error; resolve the conflicting identifier explicitly from a backup.
 
 Persistence uses atomic file replacement and serialized publication; it does not promise power-loss durability. A due callback is removed from persistent pending work before dispatch, so a process crash between those steps can lose that callback. External effects are not claimed to be exactly-once.
 
-The behavioral specification includes the existing suite plus protocol, persistence, cancellation, process-lifetime and adapter integration tests. Design decisions and review records are in [`docs/rewrite/`](docs/rewrite/). Run `python3 scripts/haskell-sloc.py` to reproduce the production source count; `--revision a0355507af9d43b8a6777f6c91b818debf9b29d9` reproduces the 8,709-line baseline.
+The test suite specifies protocol, persistence, cancellation, process-lifetime and adapter behavior. See [the design and behavioral contracts](docs/design.md) for the core model and resource guarantees.
