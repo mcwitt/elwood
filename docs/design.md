@@ -22,9 +22,9 @@ Configuration overrides compose associatively and resolve once at the input boun
 
 ## Lifetimes and concurrency
 
-Named sessions admit turns in FIFO order, with at most one active turn per session. Independent sessions can run concurrently. A reply's tools execute in declared order; asynchronous delegation explicitly starts background work.
+Named sessions admit turns in FIFO order, with at most one active turn per session. Independent sessions can run concurrently. A reply's tools execute concurrently through the `Concurrently` Applicative, while the traversal retains call/result pairing and declared order. Dependent operations require separate replies. Asynchronous delegation starts background work that can outlive its initiating reply.
 
-Each active turn owns a fresh cancellation token. An idle session reports no active turn to cancel. `/stop` cancels the active turn and its delegates without affecting queued successors or unrelated sessions. `/clear` participates in session serialization. Approval waits observe turn cancellation and release their registrations on exit.
+Each tool batch is scoped: turn cancellation or an asynchronous exception cancels its running calls and waits for their cleanup. A synchronous tool exception becomes that call's error result without cancelling its siblings. Each active turn owns a fresh cancellation token. An idle session reports no active turn to cancel. `/stop` cancels the active turn and its delegates without affecting queued successors or unrelated sessions. `/clear` participates in session serialization. Approval waits observe turn cancellation and release their registrations on exit.
 
 `Elwood.Workers` owns background jobs and FIFO named lanes. Task registration and shutdown share an ownership boundary. Synchronous exceptions may become domain errors; asynchronous cancellation propagates. Shell commands and MCP transports own their child processes and clean them up when their scope exits.
 

@@ -1,20 +1,39 @@
 module Test.Elwood.Tools.Delegate (tests) where
 
+import Colog.Core (LogAction (..))
+import Control.Concurrent (threadDelay)
+import Control.Exception (bracket)
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
+import Data.Either (fromRight)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
+import Data.Monoid (Last (..))
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Elwood.AgentSettings (AgentPreset (..), AgentProfile (..), ModelRef (..), ToolFilter (..), ToolSearchConfig (..), resolveProfile)
-import Elwood.Claude.Types (ToolName (..), ToolSchema (..))
+import Elwood.AgentSettings (AgentOverrides, AgentPreset (..), AgentProfile (..), ModelRef (..), ToolFilter (..), ToolSearchConfig (..), resolveProfile)
+import Elwood.AgentSettings qualified as Override (AgentOverrides (..))
+import Elwood.Claude.Client (newClient)
+import Elwood.Claude.Types (ContentBlock (..), ToolName (..), ToolResultPart (..), ToolSchema (..))
+import Elwood.Logging (LogMsg (..))
+import Elwood.Metrics (estimateTextTokens, estimateToolTokens, newMetricsStore)
 import Elwood.Permissions (defaultPermissionConfig)
 import Elwood.Positive (literal)
 import Elwood.Prompt (PromptInput (InlineText))
+import Elwood.Provider (ApiFormat (..), ProviderConfig (..), ToolResultImageMode (..))
 import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..), ThinkingMode (..))
+import Elwood.Tools.AsyncTask qualified as Tasks
+import Elwood.Tools.Command (mkRunCommandTool)
 import Elwood.Tools.Delegate (inheritedOverrides, mkDelegateTaskTool)
+import Elwood.Tools.Registry (registerTool)
 import Elwood.Tools.Types
+import Network.HTTP.Types (status200)
+import Network.Wai (responseLBS, strictRequestBody)
+import Network.Wai.Handler.Warp (testWithApplication)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -40,6 +59,7 @@ tests =
       timeoutValidationTests,
       labelValidationTests,
       toolsValidationTests,
+      toolSelectionTests,
       descriptionTests
     ]
 
@@ -55,7 +75,13 @@ schemaTests =
         assertBool "description should not be empty" (tool.schema.description /= ("" :: Text)),
       testCase "schema advertises a tools property" $ do
         let tool = mkStubDelegateTool
-        assertBool "tools property present" (hasProperty "tools" tool.schema.inputSchema)
+        assertBool "tools property present" (hasProperty "tools" tool.schema.inputSchema),
+      testCase "tools schema describes string items and restricts string alternative to all" $
+        property "anyOf" (property "tools" (property "properties" mkStubDelegateTool.schema.inputSchema))
+          @?= Aeson.toJSON
+            [ object ["type" .= ("array" :: Text), "items" .= object ["type" .= ("string" :: Text)]],
+              object ["type" .= ("string" :: Text), "enum" .= ["all" :: Text]]
+            ]
     ]
 
 inputParsingTests :: TestTree
@@ -248,6 +274,123 @@ toolsValidationTests =
         result <- tool.execute (object ["task" .= ("x" :: Text), "tools" .= (5 :: Int)])
         assertToolError result
     ]
+
+-- The provider's tool-use JSON is decoded before the delegate receives it.
+-- Observe the actual outgoing request to test selection beyond input parsing.
+toolSelectionTests :: TestTree
+toolSelectionTests =
+  testGroup
+    "tool selection"
+    [ testCase "array from a model response selects only the requested tool" $
+        withDelegate ToolSearchDisabled 0 $ \tool requests _ -> do
+          let wire = object ["type" .= ("tool_use" :: Text), "id" .= ("delegate" :: Text), "name" .= ("delegate_task" :: Text), "input" .= arguments ["tools" .= ["run_command" :: Text]]]
+          case Aeson.eitherDecode @ContentBlock (Aeson.encode wire) of
+            Right (ToolUseBlock _ _ input) -> tool.execute input >>= (@?= toolSuccess "done")
+            other -> assertFailure (show other)
+          sent <- requests
+          map toolNames sent @?= [["run_command"]],
+      testCase "omitting tools preserves the named preset" $
+        withDelegate ToolSearchDisabled 0 $ \tool requests _ -> do
+          tool.execute (arguments []) >>= (@?= toolSuccess "done")
+          requests >>= (\sent -> map toolNames sent @?= [["run_command"]]),
+      testCase "empty tools array removes every tool" $
+        withDelegate ToolSearchDisabled 0 $ \tool requests _ -> do
+          tool.execute (arguments ["tools" .= ([] :: [Text])]) >>= (@?= toolSuccess "done")
+          requests >>= (\sent -> map toolNames sent @?= [[]]),
+      testCase "all explicitly overrides preset and reports eager catalog cost" $
+        withDelegate ToolSearchDisabled 0 $ \tool requests logs -> do
+          tool.execute (arguments ["tools" .= ("all" :: Text)]) >>= (@?= toolSuccess "done")
+          requests >>= (\sent -> map toolNames sent @?= [["large", "run_command"]])
+          entries <- logs
+          let expected = catalogEstimate ToolSearchDisabled
+          assertBool "full catalog estimate logged" (any (elem ("catalog", expected) . (.context)) entries),
+      testCase "all preserves configured search and estimates only upfront schemas" $
+        withDelegate (ToolSearchEnabled ["run_command"]) 0 $ \tool requests logs -> do
+          tool.execute (arguments ["tools" .= ("all" :: Text)]) >>= (@?= toolSuccess "done")
+          sent <- requests
+          case sent of
+            [request] -> do
+              toolNames request @?= ["tool_search_tool_bm25", "large", "run_command"]
+              case property "tools" request of
+                Array schemas -> do
+                  let deferred = [(property "name" schema, property "defer_loading" schema) | schema <- foldr (:) [] schemas]
+                  assertBool "large schema deferred" ((String "large", Bool True) `elem` deferred)
+                  assertBool "run_command upfront" ((String "run_command", Bool False) `elem` deferred)
+                other -> assertFailure (show other)
+            other -> assertFailure (show other)
+          entries <- logs
+          assertBool "deferred schema excluded from upfront estimate" (any (elem ("catalog", catalogEstimate (ToolSearchEnabled ["run_command"])) . (.context)) entries),
+      testCase "encoded arrays get an actionable error without a model request" $
+        withDelegate ToolSearchDisabled 0 $ \tool requests _ -> do
+          result <- tool.execute (arguments ["tools" .= ("[\"run_command\"]" :: Text)])
+          case result of
+            ToolError message -> assertBool "explains expected JSON shape" ("tools must be an array of tool names" `T.isInfixOf` message)
+            other -> assertFailure (show other)
+          requests >>= (@?= []),
+      testCase "non-string array elements fail before a model request" $
+        withDelegate ToolSearchDisabled 0 $ \tool requests _ -> do
+          tool.execute (arguments ["tools" .= [Number 42]]) >>= assertToolError
+          requests >>= (@?= []),
+      testCase "timeout reports initial catalog size and actionable selection guidance" $
+        withDelegate ToolSearchDisabled 2000000 $ \tool _ _ -> do
+          result <- tool.execute (arguments ["tools" .= ("all" :: Text), "timeout_seconds" .= (1 :: Int)])
+          case result of
+            ToolError message -> do
+              assertBool "catalog size and token estimate" (catalogEstimate ToolSearchDisabled `T.isInfixOf` message)
+              assertBool "smaller catalog guidance" ("pass a smaller tools array" `T.isInfixOf` message)
+            other -> assertFailure (show other),
+      testCase "background admission reports initial catalog cost" $
+        withDelegate ToolSearchDisabled 0 $ \tool _ _ -> do
+          result <- tool.execute (arguments ["tools" .= ("all" :: Text), "async" .= True])
+          case result of
+            ToolSuccess parts -> assertBool "cost visible before task completes" (any (\case ToolResultText message -> catalogEstimate ToolSearchDisabled `T.isInfixOf` message; _ -> False) parts)
+            other -> assertFailure (show other)
+    ]
+  where
+    arguments fields = object (["agent" .= ("local" :: Text), "task" .= ("test task" :: Text)] <> fields)
+
+property :: Aeson.Key -> Value -> Value
+property key (Object fields) = fromMaybe Null (KM.lookup key fields)
+property _ _ = Null
+
+toolNames :: Value -> [Value]
+toolNames request = case property "tools" request of
+  Array schemas -> map (property "name") (foldr (:) [] schemas)
+  _ -> []
+
+largeTool :: Tool
+largeTool = Tool (ToolSchema "large" (T.replicate 4000 "large catalog ") (object [])) (\_ -> pure (toolSuccess "unused"))
+
+catalogEstimate :: ToolSearchConfig -> Text
+catalogEstimate search =
+  "2 tools (" <> T.pack (show (length eager)) <> " upfront); approximately " <> T.pack (show tokens) <> " initial input tokens"
+  where
+    eager = case search of
+      ToolSearchDisabled -> [largeTool.schema, command.schema]
+      ToolSearchEnabled _ -> [command.schema]
+    tokens = estimateTextTokens "system" + estimateTextTokens "test task" + sum (map estimateToolTokens eager)
+    command = mkRunCommandTool (LogAction (const (pure ()))) "/tmp" defaultPermissionConfig
+
+withDelegate :: ToolSearchConfig -> Int -> (Tool -> IO [Value] -> IO [LogMsg] -> Assertion) -> Assertion
+withDelegate search delay action = do
+  requests <- newIORef []
+  logs <- newIORef []
+  let append ref value = atomicModifyIORef' ref (\values -> (values <> [value], ()))
+      logger = LogAction (append logs)
+      response = object ["id" .= ("test" :: Text), "stop_reason" .= ("end_turn" :: Text), "content" .= [TextBlock "done"], "usage" .= object ["input_tokens" .= (1 :: Int), "output_tokens" .= (1 :: Int)]]
+      application request respond = do
+        body <- strictRequestBody request
+        append requests (fromRight Null (Aeson.eitherDecode body))
+        threadDelay delay
+        respond (responseLBS status200 [] (Aeson.encode response))
+  testWithApplication (pure application) $ \port -> do
+    client <- newClient (Map.singleton "local" (ProviderConfig "local" ("http://127.0.0.1:" <> T.pack (show port)) Nothing AnthropicFormat ImagesEmbedded))
+    metrics <- newMetricsStore
+    let parent = (resolveProfile mempty) {model = ModelRef "local" "test", systemPrompt = [InlineText "system"]}
+        preset = AgentPreset Nothing ((mempty :: AgentOverrides) {Override.toolFilter = Last (Just (OnlyTools (Set.singleton "run_command"))), Override.toolSearch = Last (Just search)})
+    bracket (Tasks.newAsyncTaskStore 0) Tasks.closeTaskStore $ \store -> do
+      let tool = mkDelegateTaskTool logger client (registerTool largeTool mempty) noApprovalChannel parent Nothing "/tmp" Nothing metrics (AgentPreset Nothing mempty) (Map.singleton "local" preset) [] Nothing (Just store)
+      action tool (readIORef requests) (readIORef logs)
 
 descriptionTests :: TestTree
 descriptionTests =

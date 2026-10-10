@@ -9,9 +9,9 @@ module Elwood.Claude.AgentLoop
 where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (Concurrently (..), race)
 import Control.Exception (SomeException)
-import Control.Monad (unless, when)
-import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
+import Control.Monad (unless)
 import Data.Aeson (Value (Object), encode, object, (.=))
 import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as LBS
@@ -119,7 +119,7 @@ runAgentTurn cfg history input = loop 0 (Turn.begin input)
                             calls = toList (Turn.pendingCalls pending)
                         unless (T.null text) $ mapM_ ($ text) cfg.onText
                         mapM_ (\notify -> notify requests [(call.name.unToolName, Object call.input) | call <- calls]) cfg.onToolUse
-                        exchange <- runExceptT $ Turn.complete execute pending
+                        exchange <- race awaitCancellation (runConcurrently (Turn.complete (Concurrently . execute) pending))
                         case exchange of
                           Left () -> pure AgentCancelled
                           Right completed -> loop (requests + 1) (Turn.append completed progress)
@@ -138,12 +138,16 @@ runAgentTurn cfg history input = loop 0 (Turn.begin input)
       Just p -> pruneThinkingBlocks p.thinking cfg.pruneHorizon $ case p.tools of
         Nothing -> transcript
         Just t -> pruneToolInputs t cfg.pruneHorizon (pruneToolResults t cfg.pruneHorizon transcript)
+    awaitCancellation = do
+      cancelled <- stopped
+      unless cancelled (threadDelay 100000 >> awaitCancellation)
     execute call = do
-      ExceptT ((\yes -> if yes then Left () else Right ()) <$> stopped)
-      result <- ExceptT $ Right <$> (executeCall call `catchSync` \(err :: SomeException) -> pure (ToolError (T.take 500 (T.pack (show err)))))
-      after <- ExceptT (Right <$> stopped)
-      when after (throwE ())
-      pure (perceiveResultImages cfg.maxImageDimension result)
+      cancelled <- stopped
+      if cancelled
+        then pure (ToolError "Turn cancelled")
+        else
+          perceiveResultImages cfg.maxImageDimension
+            <$> (executeCall call `catchSync` \(err :: SomeException) -> pure (ToolError (T.take 500 (T.pack (show err)))))
     executeCall call = do
       cfg.observer.onToolCall call.name.unToolName
       case lookupTool call.name cfg.registry of

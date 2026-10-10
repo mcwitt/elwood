@@ -34,6 +34,7 @@ import Data.String (IsString)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (NominalDiffTime, UTCTime (..), addUTCTime, fromGregorian)
+import Elwood.Claude.OutputSchema qualified as OutputSchema
 import Elwood.Thinking (ThinkingDisplay (..), ThinkingEffort (..))
 
 newtype ToolName = ToolName {unToolName :: Text}
@@ -203,7 +204,7 @@ newtype OutputFormat = OutputFormat {unOutputFormat :: Value}
   deriving newtype (ToJSON)
 
 jsonSchemaFormat :: Value -> OutputFormat
-jsonSchemaFormat schema = OutputFormat (blockObject "json_schema" ["schema" .= schema])
+jsonSchemaFormat schema = OutputFormat (blockObject "json_schema" ["schema" .= OutputSchema.normalize schema])
 
 data MessagesRequest = MessagesRequest
   { model :: Text,

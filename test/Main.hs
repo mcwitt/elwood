@@ -7,6 +7,7 @@ import Test.Elwood.Boundary qualified
 import Test.Elwood.Claude.AgentLoop qualified
 import Test.Elwood.Claude.Client qualified
 import Test.Elwood.Claude.Compaction qualified
+import Test.Elwood.Claude.OutputSchema qualified
 import Test.Elwood.Claude.Pruning qualified
 import Test.Elwood.Claude.Types qualified
 import Test.Elwood.Config qualified
@@ -52,6 +53,7 @@ tests =
       Test.Elwood.Claude.AgentLoop.tests,
       Test.Elwood.Claude.Types.tests,
       Test.Elwood.Claude.Compaction.tests,
+      Test.Elwood.Claude.OutputSchema.tests,
       Test.Elwood.Claude.Pruning.tests,
       Test.Elwood.Claude.Client.tests,
       Test.Elwood.MCP.tests,

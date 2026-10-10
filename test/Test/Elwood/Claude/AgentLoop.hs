@@ -2,9 +2,10 @@ module Test.Elwood.Claude.AgentLoop (tests) where
 
 import Colog.Core (LogAction (..))
 import Control.Concurrent (forkIO, killThread)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent.Async qualified as Async
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar, takeMVar, tryTakeMVar)
 import Control.Concurrent.STM (atomically, newTVarIO, writeTVar)
-import Control.Exception (SomeException, bracket, try)
+import Control.Exception (SomeException, bracket, finally, try)
 import Data.Aeson (Value, encode, object, toJSON, (.=))
 import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
@@ -229,30 +230,68 @@ turnExecutionTests :: TestTree
 turnExecutionTests =
   testGroup
     "turn execution contract"
-    [ testCase "tools execute in declared order and results retain call IDs" $
+    [ testCase "tools start together and results retain call order after reverse completion" $
         withReplies [reply "tool_use" [call "a" "first", call "b" "second"], reply "end_turn" [TextBlock "done"]] $ \url -> do
+          firstStarted <- newEmptyMVar
+          secondFinished <- newEmptyMVar
           seen <- newIORef ([] :: [Text])
           cfg <- mkTestConfigWith url Nothing (pure False)
-          let registry =
-                registerTool (tool "second" (modifyIORef' seen (<> ["second"]))) $
-                  registerTool (tool "first" (modifyIORef' seen (<> ["first"]))) newToolRegistry
-          result <- runAgentTurn cfg {registry = registry} [] input
-          readIORef seen >>= (@?= ["first", "second"])
+          let record name = atomicModifyIORef' seen (\names -> (names <> [name], ()))
+              registry =
+                registerTool (tool "second" (readMVar firstStarted >> record "second" >> putMVar secondFinished ())) $
+                  registerTool (tool "first" (putMVar firstStarted () >> readMVar secondFinished >> record "first")) newToolRegistry
+          result <- timeout 2000000 (runAgentTurn cfg {registry = registry} [] input)
+          readIORef seen >>= (@?= ["second", "first"])
           case result of
-            AgentSuccess _ [_, _, ClaudeMessage User [ToolResultBlock a _ _, ToolResultBlock b _ _], _] ->
-              [a, b] @?= [ToolUseId "a", ToolUseId "b"]
+            Just (AgentSuccess _ [_, _, ClaudeMessage User results, _]) ->
+              results @?= [ToolResultBlock (ToolUseId "a") [ToolResultText "first"] False, ToolResultBlock (ToolUseId "b") [ToolResultText "second"] False]
             other -> assertFailure (show other),
-      testCase "cancellation after the first tool prevents the second" $
+      testCase "a synchronous tool exception leaves its concurrent sibling running" $
+        withReplies [reply "tool_use" [call "a" "fails", call "b" "succeeds"], reply "end_turn" [TextBlock "done"]] $ \url -> do
+          siblingStarted <- newEmptyMVar
+          failed <- newEmptyMVar
+          cfg <- mkTestConfigWith url Nothing (pure False)
+          let registry =
+                registerTool (tool "fails" ((readMVar siblingStarted >> fail "tool failed") `finally` putMVar failed ())) $
+                  registerTool (tool "succeeds" (putMVar siblingStarted () >> readMVar failed)) newToolRegistry
+          result <- timeout 2000000 (runAgentTurn cfg {registry = registry} [] input)
+          case result of
+            Just (AgentSuccess _ [_, _, ClaudeMessage User [ToolResultBlock a [ToolResultText err] True, success], _]) -> do
+              a @?= ToolUseId "a"
+              assertBool "exception becomes its own error result" ("tool failed" `T.isInfixOf` err)
+              success @?= ToolResultBlock (ToolUseId "b") [ToolResultText "succeeds"] False
+            other -> assertFailure (show other),
+      testCase "cancellation during batch notification prevents tool admission" $
         withReplies [reply "tool_use" [call "a" "first", call "b" "second"]] $ \url -> do
           cancelled <- newIORef False
-          second <- newIORef False
+          invoked <- newIORef (0 :: Int)
           cfg <- mkTestConfigWith url Nothing (readIORef cancelled)
-          let registry =
-                registerTool (tool "second" (writeIORef second True)) $
-                  registerTool (tool "first" (writeIORef cancelled True)) newToolRegistry
-          result <- runAgentTurn cfg {registry = registry} [] input
+          let count = atomicModifyIORef' invoked (\n -> (n + 1, ()))
+              registry = registerTool (tool "first" count) (registerTool (tool "second" count) newToolRegistry)
+          result <- runAgentTurn cfg {registry = registry, onToolUse = Just (\_ _ -> writeIORef cancelled True)} [] input
           case result of AgentCancelled -> pure (); other -> assertFailure (show other)
-          readIORef second >>= (@?= False),
+          readIORef invoked >>= (@?= 0),
+      testCase "turn cancellation waits for cleanup of every running tool" $
+        withReplies [reply "tool_use" [call "a" "first", call "b" "second"]] $ \url -> do
+          cancelled <- newIORef False
+          cfg <- mkTestConfigWith url Nothing (readIORef cancelled)
+          withBlockedTools $ \registry started cleaned ->
+            Async.withAsync (runAgentTurn cfg {registry = registry} [] input) $ \worker -> do
+              timeout 2000000 started >>= (@?= Just ())
+              writeIORef cancelled True
+              result <- timeout 2000000 (Async.wait worker)
+              case result of Just AgentCancelled -> pure (); other -> assertFailure (show other)
+              cleaned,
+      testCase "external cancellation waits for cleanup of every running tool" $
+        withReplies [reply "tool_use" [call "a" "first", call "b" "second"]] $ \url -> do
+          cfg <- mkTestConfigWith url Nothing (pure False)
+          withBlockedTools $ \registry started cleaned ->
+            Async.withAsync (runAgentTurn cfg {registry = registry} [] input) $ \worker -> do
+              timeout 2000000 started >>= (@?= Just ())
+              timeout 2000000 (Async.cancel worker) >>= (@?= Just ())
+              outcome <- Async.waitCatch worker
+              case outcome of Left _ -> pure (); Right other -> assertFailure (show other)
+              cleaned,
       testCase "exhaustion counts only this turn and returns only its delta" $
         withReplies [reply "tool_use" [call "now" "tool"]] $ \url -> do
           cfg <- mkTestConfigWith url Nothing (pure False)
@@ -327,13 +366,26 @@ turnExecutionTests =
           readIORef persisted >>= (@?= False)
     ]
   where
+    withBlockedTools action = do
+      firstStarted <- newEmptyMVar
+      secondStarted <- newEmptyMVar
+      firstCleaned <- newEmptyMVar
+      secondCleaned <- newEmptyMVar
+      blocked <- newEmptyMVar @()
+      let blocking started cleaned = (putMVar started () >> takeMVar blocked) `finally` putMVar cleaned ()
+          registry =
+            registerTool (tool "first" (blocking firstStarted firstCleaned)) $
+              registerTool (tool "second" (blocking secondStarted secondCleaned)) newToolRegistry
+      action registry (takeMVar firstStarted >> takeMVar secondStarted) $ do
+        tryTakeMVar firstCleaned >>= (@?= Just ())
+        tryTakeMVar secondCleaned >>= (@?= Just ())
     delegate :: AgentConfig -> ToolRegistry -> Tasks.AsyncTaskStore -> Maybe (Text -> ToolUseCallback) -> IO Tool
     delegate cfg registry store notify = do
       metrics <- newMetricsStore
       pure (mkDelegateTaskTool cfg.logger cfg.client registry noApprovalChannel cfg.agentProfile Nothing "/tmp" Nothing metrics (AgentPreset Nothing mempty) Map.empty [] notify (Just store))
     input = ClaudeMessage User [TextBlock "hello"]
     call ident name = ToolUseBlock (ToolUseId ident) name (object [])
-    tool name action = Tool (ToolSchema name "test" (object [])) (\_ -> action >> pure (ToolSuccess [ToolResultText "ok"]))
+    tool name action = Tool (ToolSchema name "test" (object [])) (\_ -> action >> pure (ToolSuccess [ToolResultText name.unToolName]))
     reply :: Text -> [ContentBlock] -> Value
     reply stop blocks =
       object

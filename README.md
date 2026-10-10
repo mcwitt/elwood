@@ -185,6 +185,15 @@ delegate:
 overrides, and per-webhook-endpoint overrides). Omitting `provider:` defaults to
 `anthropic`.
 
+For a `delegate_task` call, pass `tools` as a JSON array such as
+`["run_command"]`, or omit it to retain the selected agent preset. The string
+`"all"` explicitly overrides the preset with the full available catalog; it can
+substantially increase prompt processing time. Configured `tool_search` is
+preserved, but requires support from the provider. Startup logs, background-task
+admission, and timeout errors report the tool count, upfront schema count, and
+approximate initial input-token count. These estimates help select a smaller
+catalog; they are not provider token counts or context-limit checks.
+
 **Operator notes for local model instances:**
 
 - Start each `llama-server` command with `--jinja` to enable tool use over the
@@ -373,11 +382,11 @@ MIT
 
 ## Core model and behavioral contracts
 
-Elwood separates a pure turn model (`Elwood.Claude.Turn`) from IO handles. A model reply becomes either a terminal outcome or a validated, nonempty batch of tool calls. Traversing a batch creates paired calls and results in order. Named sessions admit turns in FIFO order; different sessions and explicitly delegated tasks can run concurrently. Configuration overrides compose as a right-biased monoid before being resolved.
+Elwood separates a pure turn model (`Elwood.Claude.Turn`) from IO handles. A model reply becomes either a terminal outcome or a validated, nonempty batch of tool calls. Traversing a batch creates paired calls and results in order. The concurrent Applicative interpreter runs each batch together while preserving result order. Named sessions admit turns in FIFO order; different sessions and explicitly delegated tasks can also run concurrently. Configuration overrides compose as a right-biased monoid before being resolved.
 
 The following contracts govern execution:
 
-- Tools requested in one model reply execute in their declared order. Use `delegate_task` for explicit concurrency.
+- Tools requested in one model reply execute concurrently; results retain the declared call order. Dependent operations require separate model replies.
 - Integer settings reject fractions and overflow. Permission regular expressions compile during configuration loading, and malformed tool-name arrays are rejected.
 - Memory keys are accepted unchanged or rejected when invalid.
 - Background delegates cannot use `queue_attachment` or emit turn-local progress notifications; return artifact paths in the task result. Synchronous delegates retain those capabilities.

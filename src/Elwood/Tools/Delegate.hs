@@ -21,8 +21,8 @@ import Elwood.Claude.Observer (ToolUseCallback)
 import Elwood.Claude.Types
 import Elwood.Config (PruningConfig)
 import Elwood.Exception (catchSync)
-import Elwood.Logging (Logger)
-import Elwood.Metrics (MetricsStore, metricsObserver)
+import Elwood.Logging (Logger, logInfo)
+import Elwood.Metrics (MetricsStore, estimateTextTokens, estimateToolTokens, metricsObserver)
 import Elwood.Notify (truncateText)
 import Elwood.Positive (literal, positive)
 import Elwood.Prompt (PromptInput (InlineText), assemblePrompt)
@@ -80,13 +80,19 @@ mkDelegateTaskTool logger client registry approve parent pruning workspace image
                   isCancelled = maybe (pure False) isTurnCancelled store
                 }
             run = runAgentTurn config [] (ClaudeMessage User [TextBlock input.task]) `catchSync` \(e :: SomeException) -> pure (AgentError (taggedError Unexpected (T.pack (show e))))
-            bounded duration = fromMaybe (AgentError (taggedError Timeout "Delegate task timed out")) <$> timeout duration run
+            schemas = toolSchemas tools
+            eager = maybe schemas (\names -> filter (\schema -> Set.member schema.name names) schemas) config.toolSearch
+            estimatedTokens = maybe 0 estimateTextTokens prompt + estimateTextTokens input.task + sum (map estimateToolTokens eager)
+            catalog = T.pack (show (length schemas)) <> " tools (" <> T.pack (show (length eager)) <> " upfront); approximately " <> T.pack (show estimatedTokens) <> " initial input tokens"
+            timedOut = "Delegate task timed out; " <> catalog <> ". Omit tools to use the agent preset, or pass a smaller tools array."
+            bounded duration = fromMaybe (AgentError (taggedError Timeout timedOut)) <$> timeout duration run
+        logInfo logger "Starting delegate" [("model", profile.model.model), ("catalog", catalog)]
         case (input.background, store) of
           (True, Just tasks) -> do
             key <- TaskId . UUID.toText <$> UUID.nextRandom
             let limit = maybe 3600 fromIntegral input.seconds
             startTask tasks key taskLabel (bounded (toMicroseconds limit))
-            pure (toolSuccess ("Task started: " <> key.unTaskId <> " (" <> taskLabel <> ")"))
+            pure (toolSuccess ("Task started: " <> key.unTaskId <> " (" <> taskLabel <> "); " <> catalog))
           _ -> resultTool <$> maybe run (bounded . (* 1000000)) input.seconds
   where
     description = "Delegate an isolated conversation sharing the workspace and non-delegating tools. Background tasks return an ID; use await_task or check_task to observe results. Background tasks cannot queue attachments or send progress notifications; return artifact paths in their result. " <> fromMaybe "" preset.description
@@ -96,11 +102,11 @@ mkDelegateTaskTool logger client registry approve parent pruning workspace image
             ("thinking", B.field "object" "Thinking configuration: enable and mode"),
             ("max_iterations", B.field "integer" "Model requests, 1–50"),
             ("system_prompt", B.field "string" "Override system prompt"),
-            ("output_schema", B.field "object" "JSON schema constraining final output"),
+            ("output_schema", B.field "object" "JSON schema using Anthropic structured-output constraints. Object schemas default additionalProperties to false; other constraints are preserved."),
             ("async", B.field "boolean" "Run in background"),
             ("label", B.field "string" "Task label"),
             ("timeout_seconds", B.field "integer" "Positive execution timeout; background default 3600 seconds"),
-            ("tools", object ["description" .= ("Tool names, or all" :: Text), "anyOf" .= [B.field "array" "Tool names", B.field "string" "all"]])
+            ("tools", object ["description" .= ("Tool names as a JSON array. Omit to use the agent preset. The string all overrides the preset with the full catalog, which can be expensive; prefer only the tools needed." :: Text), "anyOf" .= [object ["type" .= ("array" :: Text), "items" .= object ["type" .= ("string" :: Text)]], object ["type" .= ("string" :: Text), "enum" .= ["all" :: Text]]]])
           ]
             <> enumField "model" "Allowed model" models
             <> enumField "agent" (T.intercalate ", " [name <> maybe "" (\d -> " (" <> d <> ")") p.description | (name, p) <- Map.toAscList presets]) (Map.keys presets)
@@ -146,7 +152,8 @@ parseInput models agents = withObject "delegate_task" $ \value -> do
       >>= traverse
         ( \case
             String "all" -> pure AllTools
-            input -> OnlyTools . Set.fromList . map ToolName <$> parseJSON @[Text] input
+            input@(Array _) -> parseJSON input
+            _ -> fail "tools must be an array of tool names or the string \"all\"; JSON-encoded array strings are not accepted"
         )
   let overrides = (mempty :: AgentOverrides) {Override.model = ModelRefOverrides mempty (Last model), Override.thinking = thinking, Override.maxIterations = Last iterations, Override.systemPrompt = Last system, Override.toolFilter = Last tools}
   pure Input {task, agent, overrides, outputSchema = output, background, label, seconds}

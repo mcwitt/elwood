@@ -9,6 +9,7 @@ module Elwood.Metrics
     InputTokenType (..),
     estimateTextTokens,
     estimateJsonTokens,
+    estimateToolTokens,
     metricsObserver,
     metricsSource,
     renderMetrics,
@@ -95,6 +96,9 @@ estimateTextTokens = (`div` 4) . fromIntegral . T.length
 estimateJsonTokens :: Value -> Int64
 estimateJsonTokens = (`div` 4) . LBS.length . encode
 
+estimateToolTokens :: C.ToolSchema -> Int64
+estimateToolTokens s = estimateTextTokens s.name.unToolName + estimateTextTokens s.description + estimateJsonTokens s.inputSchema
+
 estimateSample :: Text -> Text -> InputTokenType -> Text -> Sample
 estimateSample model source typ tool = ("estimated_input_tokens_total", labels model source <> [("type", inputTokenTypeLabel typ)] <> [("tool", tool) | not (T.null tool)])
 
@@ -104,11 +108,10 @@ recordInputBreakdown store model source system search messages schemas =
     store
     [(estimateSample model source typ tool, n) | (typ, tool, n) <- parts]
   where
-    schemaTokens s = estimateTextTokens s.name.unToolName + estimateTextTokens s.description + estimateJsonTokens s.inputSchema
     schemaMap = Map.fromList [(s.name, s) | s <- schemas]
     nonDeferred = fromMaybe (Map.keysSet schemaMap) search
     names = Map.fromList [(tid, name.unToolName) | C.ClaudeMessage C.Assistant blocks <- messages, C.ToolUseBlock tid name _ <- blocks]
-    upfront = sum [schemaTokens s | s <- schemas, Set.member s.name nonDeferred]
+    upfront = sum [estimateToolTokens s | s <- schemas, Set.member s.name nonDeferred]
     parts =
       [(ItSystemPrompt, "", estimateTextTokens t) | t <- maybe [] pure system]
         <> [(ItToolSchemas, "", upfront) | upfront > 0]
@@ -119,7 +122,7 @@ recordInputBreakdown store model source system search messages schemas =
     block _ (C.ToolUseBlock _ name input) = [(ItToolUse, name.unToolName, estimateJsonTokens input)]
     block _ (C.ToolResultBlock tid content _) = [(ItToolResult, Map.findWithDefault "unknown" tid names, estimateTextTokens (C.toolResultText content))]
     block _ (C.ToolSearchResultBlock _ value) =
-      [(ItToolSchemas, "", schemaTokens s) | name <- references value, not (Set.member name nonDeferred), Just s <- [Map.lookup name schemaMap]]
+      [(ItToolSchemas, "", estimateToolTokens s) | name <- references value, not (Set.member name nonDeferred), Just s <- [Map.lookup name schemaMap]]
     block _ _ = []
     references value =
       fromMaybe [] $
