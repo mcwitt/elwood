@@ -42,4 +42,8 @@ Due callbacks are removed from persistent pending work before dispatch. This pro
 
 `Event.Runner` and the webhook handle separate admission from execution and delivery. Suppression controls ordinary narration, final text and attachments independently of delivery destination. Scheduled callbacks capture that destination. Explicit `send_message` calls deliver immediately.
 
+Every ordinary assistant text block is delivered in content order, including text followed by more tool calls. With immediate delivery, each reply's narration is sent before its tools execute; completion sends only the terminal reply, so earlier narration is not repeated. Tool-notification settings do not control narration.
+
+Fable's between-tool narration travels in thinking blocks. Set `thinking.mode.adaptive.display: updates` to request it; the provider's default returns empty blocks, so no delivery strategy can recover the omitted text. Only explicitly requested updates are rendered as narration. Reasoning summaries and signed thinking remain in the replay trace without being sent to Telegram.
+
 The boundary handles follow the [handle pattern](https://jaspervdj.be/posts/2018-03-08-handle-pattern.html): keep pure logic outside IO, pass small dependencies explicitly, and bracket resource lifetimes. Tests specify protocol decisions, algebraic laws, persistence, cancellation, process lifetimes and adapter behavior.

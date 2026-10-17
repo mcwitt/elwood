@@ -8,6 +8,7 @@ import Control.Exception (bracket, finally)
 import Control.Monad (replicateM)
 import Data.Aeson (Value (..), decode, encode, object, (.=))
 import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString qualified as BS
 import Data.IORef
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
@@ -27,11 +28,12 @@ import Elwood.Scheduler (newCallbackStore)
 import Elwood.Scheduler qualified as Scheduler
 import Elwood.Session (newSessionLocks)
 import Elwood.Telegram.Client qualified as Telegram
+import Elwood.Thinking (ThinkingDisplay (..), ThinkingMode (..))
 import Elwood.Tools qualified as Tools
 import Elwood.Tools.AsyncTask (closeTaskStore)
 import Elwood.Workers qualified as Workers
 import Network.HTTP.Types.Status (status200)
-import Network.Wai (pathInfo, responseLBS, strictRequestBody)
+import Network.Wai (pathInfo, requestHeaders, responseLBS, strictRequestBody)
 import Network.Wai.Handler.Warp (testWithApplication)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Timeout (timeout)
@@ -137,34 +139,66 @@ deliveryTests :: TestTree
 deliveryTests =
   testGroup
     "turn delivery contract"
-    [ testCase "suppression retains history and allows explicit send_message" $ withDeliveryFixture $ \env event delivered -> do
+    [ testCase "suppression retains history and allows explicit send_message" $ withDeliveryFixture Nothing suppressionReplies $ \env event delivered -> do
         handleEventWith env (SuppressContaining "SKIP") event >>= (@?= Right "SKIP")
         texts <- readIORef delivered
         length texts @?= 1
         assertBool "explicit message reached the transport" ("explicit" `T.isInfixOf` T.concat texts)
         history <- env.conversations.getConversation "session"
         length history.messages @?= 4,
-      testCase "buffered delivery preserves ordinary output order when not suppressed" $ withDeliveryFixture $ \env event delivered -> do
+      testCase "buffered delivery preserves ordinary output order when not suppressed" $ withDeliveryFixture Nothing suppressionReplies $ \env event delivered -> do
         handleEventWith env (SuppressContaining "absent") event >>= (@?= Right "SKIP")
         texts <- readIORef delivered
         length texts @?= 3
-        map T.strip texts @?= ["explicit", "narration", "SKIP"]
+        map T.strip texts @?= ["explicit", "narration", "SKIP"],
+      testCase "all interleaved text reaches Telegram once, before the following tools" $
+        withDeliveryFixture Nothing (interleaved Claude.TextBlock) $ \env event delivered -> do
+          handleEventWith env Immediate event >>= (@?= Right "Finished")
+          readIORef delivered >>= (@?= ["First answer", "explicit", "explicit", "Second answer", "explicit", "Finished"]) . map T.strip,
+      testCase "requested Fable progress reaches Telegram in order through multiple tool rounds" $
+        withDeliveryFixture (Just DisplayUpdates) (interleaved (`Claude.ThinkingBlock` "signature")) $ \env event delivered -> do
+          handleEventWith env Immediate event >>= (@?= Right "Finished")
+          readIORef delivered >>= (@?= ["First answer", "explicit", "explicit", "Second answer", "explicit", "Finished"]) . map T.strip,
+      testCase "reasoning summaries stay private while ordinary text is delivered" $
+        withDeliveryFixture (Just DisplaySummarized) [[Claude.ThinkingBlock "Private reasoning" "signature", Claude.TextBlock "Answer", sendCall], [Claude.TextBlock "Finished"]] $ \env event delivered -> do
+          handleEventWith env Immediate event >>= (@?= Right "Finished")
+          readIORef delivered >>= (@?= ["Answer", "explicit", "Finished"]) . map T.strip
     ]
   where
-    withDeliveryFixture action = withSystemTempDirectory "event-delivery" $ \directory -> do
+    displayText :: ThinkingDisplay -> T.Text
+    displayText DisplayUpdates = "updates"
+    displayText DisplaySummarized = "summarized"
+    displayText DisplayOmitted = "omitted"
+    sendCall = Claude.ToolUseBlock (Claude.ToolUseId "call") "send_message" (object ["message" .= ("explicit" :: T.Text)])
+    suppressionReplies = [[Claude.TextBlock "narration", sendCall], [Claude.TextBlock "SKIP"]]
+    interleaved block = [[block "First answer", sendCall], [sendCall], [block "Second answer", sendCall], [Claude.TextBlock "Finished"]]
+    withDeliveryFixture display replies action = withSystemTempDirectory "event-delivery" $ \directory -> do
       count <- newIORef (0 :: Int)
       delivered <- newIORef []
-      let text value = object ["type" .= ("text" :: T.Text), "text" .= (value :: T.Text)]
-          application request respond = do
+      let application request respond = do
             result <- case pathInfo request of
               ["v1", "messages"] -> do
+                body <- strictRequestBody request
+                case display of
+                  Just DisplayUpdates ->
+                    assertBool "progress updates beta requested" (maybe False (BS.isInfixOf "thinking-display-updates-2026-08-18") (lookup "anthropic-beta" (requestHeaders request)))
+                  _ -> pure ()
+                case decode body of
+                  Just (Object fields) ->
+                    KM.lookup "thinking" fields @?= case display of
+                      Nothing -> Nothing
+                      Just mode -> Just (object ["type" .= ("adaptive" :: T.Text), "display" .= displayText mode])
+                  _ -> assertFailure "invalid provider request"
                 iteration <- atomicModifyIORef' count (\n -> (n + 1, n))
+                blocks <- case drop iteration replies of
+                  next : _ -> pure next
+                  [] -> assertFailure "unexpected provider request" >> pure []
                 pure $
                   object
                     [ "id" .= ("reply" :: T.Text),
-                      "stop_reason" .= (if iteration == 0 then "tool_use" else "end_turn" :: T.Text),
+                      "stop_reason" .= (if iteration < length replies - 1 then "tool_use" else "end_turn" :: T.Text),
                       "usage" .= object ["input_tokens" .= (1 :: Int), "output_tokens" .= (1 :: Int)],
-                      "content" .= if iteration == 0 then [text "narration", object ["type" .= ("tool_use" :: T.Text), "id" .= ("call" :: T.Text), "name" .= ("send_message" :: T.Text), "input" .= object ["message" .= ("explicit" :: T.Text)]]] else [text "SKIP"]
+                      "content" .= blocks
                     ]
               ["sendMessage"] -> do
                 body <- strictRequestBody request
@@ -187,7 +221,7 @@ deliveryTests =
         callbacks <- newCallbackStore logger directory
         now <- getCurrentTime
         bracket (Tools.newAsyncTaskStore 3600) closeTaskStore $ \tasks -> do
-          let profile = (Settings.resolveProfile mempty) {Profile.model = Settings.ModelRef "mock" "model", Profile.systemPrompt = []}
+          let profile = (Settings.resolveProfile mempty) {Profile.model = Settings.ModelRef "mock" "model", Profile.systemPrompt = [], Profile.thinking = Adaptive Nothing . Just <$> display}
               env =
                 AppEnv
                   logger
