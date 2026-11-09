@@ -247,6 +247,8 @@ tool_use_messages: false
 # Context compaction settings
 # When conversation history exceeds the token threshold, older messages
 # are summarized using a fast model to stay within context limits.
+# Compaction drops the thinking blocks of the turns it keeps: they would follow
+# a changed prefix, which the API's thinking-block prefix check rejects.
 compaction:
   # enable: true                      # default: true — set to false to disable compaction entirely
   token_threshold: 50000             # default: 50000
@@ -265,6 +267,9 @@ compaction:
 # When the Anthropic cache TTL expires, tool results before the horizon are
 # soft-pruned: head and tail are kept with an indicator in between. Recent
 # turns are protected from pruning entirely.
+# Whenever pruning changes a message that a turn was sent with, the next turn
+# also drops the thinking blocks of all earlier turns, including protected
+# ones, so no thinking block follows an edited message.
 pruning:
   # enable: true                      # default: true — set to false to disable all pruning
   strategy:                 # global default retention strategy (default: { keep_turns: 3 })

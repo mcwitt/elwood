@@ -2,11 +2,17 @@ module Elwood.Claude.Pruning
   ( pruneToolResults,
     pruneThinkingBlocks,
     pruneToolInputs,
+    pruneTranscript,
     softPrune,
     protectedBoundary,
     PruneHorizons,
     newPruneHorizons,
     getAndUpdateHorizon,
+    PrefixContext (..),
+    SentPrefix (..),
+    nextThinkingCut,
+    getAndUpdateThinkingCut,
+    dropThinkingBefore,
   )
 where
 
@@ -16,11 +22,12 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import Data.Set (Set)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
 import Elwood.Claude.Types
-import Elwood.Config (PruningStrategy (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
+import Elwood.Config (PruningConfig (..), PruningStrategy (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
 
 softPrune :: Int -> Int -> Text -> Maybe Text
 softPrune headChars tailChars text
@@ -70,7 +77,18 @@ pruneToolInputs config horizon = before config.input.strategy horizon $ \case
 
 pruneThinkingBlocks :: Maybe ThinkingPruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
 pruneThinkingBlocks Nothing _ = id
-pruneThinkingBlocks (Just config) horizon = before config.strategy horizon $ \case
+pruneThinkingBlocks (Just config) horizon = before config.strategy horizon withoutThinking
+
+-- | The request projection of a transcript: tool pruning, then thinking pruning.
+pruneTranscript :: Maybe PruningConfig -> Int -> [ClaudeMessage] -> [ClaudeMessage]
+pruneTranscript Nothing _ transcript = transcript
+pruneTranscript (Just config) horizon transcript =
+  pruneThinkingBlocks config.thinking horizon $ case config.tools of
+    Nothing -> transcript
+    Just tools -> pruneToolInputs tools horizon (pruneToolResults tools horizon transcript)
+
+withoutThinking :: ClaudeMessage -> ClaudeMessage
+withoutThinking = \case
   ClaudeMessage Assistant blocks -> ClaudeMessage Assistant (filter keep blocks)
   message -> message
   where
@@ -78,14 +96,75 @@ pruneThinkingBlocks (Just config) horizon = before config.strategy horizon $ \ca
     keep (RedactedThinkingBlock {}) = False
     keep _ = True
 
-newtype PruneHorizons = PruneHorizons (TVar (Map Text Int))
+-- | Remove thinking blocks from the messages before an index. Removing thinking
+-- from the start of the history is the one history change the API's
+-- thinking-block prefix check accepts.
+dropThinkingBefore :: Int -> [ClaudeMessage] -> [ClaudeMessage]
+dropThinkingBefore cut messages = map withoutThinking prefix <> suffix
+  where
+    (prefix, suffix) = splitAt cut messages
+
+-- | Request fields outside @messages@ that a thinking block is bound to: the
+-- @system@ prompt and the @tools@ (with their deferral), plus the model and
+-- provider, since thinking blocks are model-bound and providers project
+-- messages differently.
+data PrefixContext = PrefixContext
+  { provider :: Text,
+    model :: Text,
+    system :: Maybe Text,
+    tools :: [ToolSchema],
+    toolSearch :: Maybe (Set ToolName)
+  }
+  deriving stock (Show, Eq)
+
+-- | What a session sent at the start of its latest turn: the context and the
+-- projected history without thinking blocks, the raw history length, and the
+-- thinking cut that request used.
+data SentPrefix = SentPrefix
+  { context :: PrefixContext,
+    historyLength :: Int,
+    projected :: [ClaudeMessage],
+    cut :: Int
+  }
+  deriving stock (Show, Eq)
+
+-- | Every thinking block must be sent after exactly the prefix (system, tools
+-- and earlier messages, ignoring thinking) under which the model produced it.
+-- A turn's messages are sent unpruned within the turn, so the prefix that the
+-- history's thinking blocks were produced under is the previous turn's
+-- projected history followed by that turn's raw messages. If the current
+-- projection differs in any way (pruning advanced, compaction, a new system
+-- prompt or tool set, another model, an unknown previous state after a
+-- restart), every thinking block in the history is dropped. The cut never
+-- moves backwards within a history, so a dropped block is never sent again.
+nextThinkingCut :: Maybe SentPrefix -> PrefixContext -> [ClaudeMessage] -> [ClaudeMessage] -> SentPrefix
+nextThinkingCut previous context history projectedHistory = SentPrefix context (length history) current cut
+  where
+    current = map withoutThinking projectedHistory
+    cut = case previous of
+      Just sent
+        | sent.context == context,
+          sent.projected <> map withoutThinking (drop sent.historyLength history) == current ->
+            sent.cut
+      _ -> length history
+
+data PruneHorizons = PruneHorizons (TVar (Map Text Int)) (TVar (Map Text SentPrefix))
 
 newPruneHorizons :: IO PruneHorizons
-newPruneHorizons = PruneHorizons <$> newTVarIO Map.empty
+newPruneHorizons = PruneHorizons <$> newTVarIO Map.empty <*> newTVarIO Map.empty
 
 getAndUpdateHorizon :: PruneHorizons -> Text -> Int -> Bool -> IO Int
-getAndUpdateHorizon (PruneHorizons state) session count expired = atomically $ do
+getAndUpdateHorizon (PruneHorizons state _) session count expired = atomically $ do
   horizons <- readTVar state
   let horizon = if expired then count else min count (Map.findWithDefault 0 session horizons)
   writeTVar state (Map.insert session horizon horizons)
   pure horizon
+
+-- | Record the start of a session's turn and return the index before which its
+-- requests must drop thinking blocks. See 'nextThinkingCut'.
+getAndUpdateThinkingCut :: PruneHorizons -> Text -> PrefixContext -> [ClaudeMessage] -> [ClaudeMessage] -> IO Int
+getAndUpdateThinkingCut (PruneHorizons _ state) session context history projectedHistory = atomically $ do
+  sent <- readTVar state
+  let next = nextThinkingCut (Map.lookup session sent) context history projectedHistory
+  writeTVar state (Map.insert session next sent)
+  pure next.cut

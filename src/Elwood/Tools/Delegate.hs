@@ -75,6 +75,7 @@ mkDelegateTaskTool logger client registry approve parent pruning workspace image
                     ToolSearchEnabled names -> Just (Set.fromList (map ToolName names)),
                   pruningConfig = pruning,
                   pruneHorizon = 0,
+                  thinkingCut = 0,
                   outputFormat = jsonSchemaFormat <$> input.outputSchema,
                   maxImageDimension = imageDimension,
                   isCancelled = maybe (pure False) isTurnCancelled store

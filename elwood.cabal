@@ -175,6 +175,7 @@ test-suite elwood-test
     Test.Elwood.Telegram.Markdown
     Test.Elwood.Telegram.ToolUse
     Test.Elwood.TestImage
+    Test.Elwood.ThinkingPrefix
     Test.Elwood.Tools.AsyncTask
     Test.Elwood.Tools.Delegate
     Test.Elwood.Tools.Registry

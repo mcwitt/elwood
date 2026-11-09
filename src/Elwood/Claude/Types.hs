@@ -215,7 +215,10 @@ data MessagesRequest = MessagesRequest
     thinking :: Maybe ThinkingConfig,
     cacheControl :: Maybe CacheTtl,
     toolSearch :: Maybe (Set ToolName),
-    outputFormat :: Maybe OutputFormat
+    outputFormat :: Maybe OutputFormat,
+    -- | Ask the API to drop thinking blocks whose prefix changed instead of
+    -- rejecting the request. Applies to adaptive thinking only; needs a beta.
+    dropMismatchedThinking :: Bool
   }
   deriving stock (Show)
 
@@ -240,7 +243,10 @@ instance ToJSON MessagesRequest where
             : [object ["name" .= tool.name, "description" .= tool.description, "input_schema" .= tool.inputSchema, "defer_loading" .= Set.notMember tool.name immediate] | tool <- req.tools]
       thinkingValue Nothing = Nothing
       thinkingValue (Just (ThinkingConfigBudget tokens)) = Just (blockObject "enabled" ["budget_tokens" .= tokens])
-      thinkingValue (Just (ThinkingConfigAdaptive _ display)) = Just (blockObject "adaptive" ["display" .= displayText d | Just d <- [display]])
+      thinkingValue (Just (ThinkingConfigAdaptive _ display)) =
+        Just . blockObject "adaptive" $
+          ["display" .= displayText d | Just d <- [display]]
+            <> ["block_binding" .= object ["prefix_mismatch_behavior" .= ("drop_block" :: Text)] | req.dropMismatchedThinking]
       output =
         ["format" .= format | Just format <- [req.outputFormat]]
           <> ["effort" .= effortText effort | Just (ThinkingConfigAdaptive (Just effort) _) <- [req.thinking]]

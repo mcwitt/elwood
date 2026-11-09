@@ -55,7 +55,8 @@ mkBetaRequest thk ttl =
       thinking = thk,
       cacheControl = ttl,
       toolSearch = Nothing,
-      outputFormat = Nothing
+      outputFormat = Nothing,
+      dropMismatchedThinking = False
     }
 
 -- | Tests for the beta flags derived from a request
@@ -76,7 +77,12 @@ betaTests =
       assertEqual
         "betas"
         ["extended-cache-ttl-2025-04-11", "thinking-display-updates-2026-08-18"]
-        (requestBetas (mkBetaRequest (Just (ThinkingConfigAdaptive Nothing (Just DisplayUpdates))) (Just CacheTtl1Hour)))
+        (requestBetas (mkBetaRequest (Just (ThinkingConfigAdaptive Nothing (Just DisplayUpdates))) (Just CacheTtl1Hour))),
+    testCase "dropping mismatched thinking needs the thinking-binding-controls beta" $
+      assertEqual
+        "betas"
+        ["thinking-binding-controls-2026-08-01"]
+        (requestBetas (mkBetaRequest (Just (ThinkingConfigAdaptive Nothing Nothing)) Nothing) {dropMismatchedThinking = True})
   ]
 
 -- | Tests for the tool-result image hoisting transform

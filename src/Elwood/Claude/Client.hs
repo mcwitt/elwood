@@ -85,6 +85,7 @@ requestBetas :: MessagesRequest -> [Text]
 requestBetas request =
   ["extended-cache-ttl-2025-04-11" | Just CacheTtl1Hour <- [request.cacheControl]]
     <> ["thinking-display-updates-2026-08-18" | Just (ThinkingConfigAdaptive _ (Just DisplayUpdates)) <- [request.thinking]]
+    <> ["thinking-binding-controls-2026-08-01" | request.dropMismatchedThinking, Just (ThinkingConfigAdaptive {}) <- [request.thinking]]
 
 decodeResponse :: Int -> LBS.ByteString -> Maybe Int -> Either ClaudeError MessagesResponse
 decodeResponse status body retryAfter = case status of

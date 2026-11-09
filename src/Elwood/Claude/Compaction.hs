@@ -18,6 +18,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Elwood.AgentSettings (ModelRef (..))
 import Elwood.Claude.Client (ClaudeClient, sendMessages)
+import Elwood.Claude.Pruning (dropThinkingBefore)
 import Elwood.Claude.Turn qualified as Turn
 import Elwood.Claude.Types
 import Elwood.Config (CompactionConfig (..), CompactionStrategy (..))
@@ -50,7 +51,7 @@ compactMessages logger client config notify observe persist messages = case stra
   Just (old, recent) -> do
     notify
     let input = ClaudeMessage User [TextBlock (fromMaybe defaultCompactionPrompt config.prompt <> "\nConversation:\n" <> formatMessagesForSummary old)]
-        request = MessagesRequest config.model.model 2048 (Just "Summarize conversations concisely.") [input] [] Nothing Nothing Nothing Nothing
+        request = MessagesRequest config.model.model 2048 (Just "Summarize conversations concisely.") [input] [] Nothing Nothing Nothing Nothing False
     response <- sendMessages client config.model.provider request
     summary <- case response of
       Left err -> pure (Left (T.pack (show err)))
@@ -62,7 +63,9 @@ compactMessages logger client config notify observe persist messages = case stra
     case summary of
       Left err -> logWarn logger "Compaction failed; retaining conversation" [("error", err)] >> pure messages
       Right text -> do
-        let replacement = ClaudeMessage User [TextBlock ("[Previous conversation summary]\n\n" <> text)] : recent
+        -- The summary replaces earlier messages, so no retained thinking block
+        -- would still follow the prefix it was produced under.
+        let replacement = ClaudeMessage User [TextBlock ("[Previous conversation summary]\n\n" <> text)] : dropThinkingBefore (length recent) recent
         persist replacement
         pure replacement
 

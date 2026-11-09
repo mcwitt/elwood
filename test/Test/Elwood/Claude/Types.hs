@@ -364,7 +364,8 @@ mkRequest thk fmt =
       thinking = thk,
       cacheControl = Nothing,
       toolSearch = Nothing,
-      outputFormat = fmt
+      outputFormat = fmt,
+      dropMismatchedThinking = False
     }
 
 -- | Look up a key in the encoded JSON of a MessagesRequest
@@ -384,6 +385,16 @@ thinkingFieldTests =
         let req = mkRequest (Just (ThinkingConfigAdaptive Nothing (Just DisplayUpdates))) Nothing
         lookupField "thinking" req
           @?= Just (Aeson.object ["type" Aeson..= ("adaptive" :: String), "display" Aeson..= ("updates" :: String)]),
+      testCase "dropping mismatched thinking -> block_binding" $ do
+        let req = (mkRequest (Just (ThinkingConfigAdaptive Nothing (Just DisplaySummarized))) Nothing) {dropMismatchedThinking = True}
+        lookupField "thinking" req
+          @?= Just
+            ( Aeson.object
+                [ "type" Aeson..= ("adaptive" :: String),
+                  "display" Aeson..= ("summarized" :: String),
+                  "block_binding" Aeson..= Aeson.object ["prefix_mismatch_behavior" Aeson..= ("drop_block" :: String)]
+                ]
+            ),
       testCase "adaptive with display summarized -> display field" $ do
         let req = mkRequest (Just (ThinkingConfigAdaptive Nothing (Just DisplaySummarized))) Nothing
         lookupField "thinking" req

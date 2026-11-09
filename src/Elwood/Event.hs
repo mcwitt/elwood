@@ -28,7 +28,7 @@ import Data.Time (UTCTime, getCurrentTime)
 import Elwood.AgentSettings (AgentOverrides, AgentPreset, AgentProfile (..), ModelRef (..), ToolSearchConfig (..), resolveProfile, toOverrides)
 import Elwood.Claude qualified as Claude
 import Elwood.Claude.Compaction (compactIfNeeded)
-import Elwood.Claude.Pruning (PruneHorizons, getAndUpdateHorizon)
+import Elwood.Claude.Pruning (PruneHorizons, getAndUpdateHorizon, getAndUpdateThinkingCut, pruneTranscript)
 import Elwood.Config (CompactionConfig, PruningConfig, TelegramChatConfig (..))
 import Elwood.Event.Types
 import Elwood.Exception (catchSync)
@@ -254,13 +254,19 @@ runTurn env event attachments narrate emit = do
             toolSearch = case profile.toolSearch of ToolSearchDisabled -> Nothing; ToolSearchEnabled names -> Just (Set.fromList (map Claude.ToolName names)),
             pruningConfig = env.pruning,
             pruneHorizon = horizon,
+            thinkingCut = 0,
             outputFormat = Nothing,
             maxImageDimension = env.maxImageDimension,
             isCancelled = maybe (pure False) readTVarIO cancellation
           }
       images = [Claude.ImageBlock img.mediaType.unMediaType img.base64Data.unBase64Data | img <- maybe [] pure event.image]
       input = Claude.ClaudeMessage Claude.User (images <> [Claude.TextBlock (attachPromptNote event.prompt event.attachments)])
-  Claude.runAgentTurn config history input
+      -- The history as the turn's first request projects it.
+      projected = take (length history) (pruneTranscript env.pruning horizon (history <> [input]))
+  cut <- case sessionToConversationId event.session of
+    Nothing -> pure 0
+    Just cid -> getAndUpdateThinkingCut env.pruneHorizons cid (Claude.prefixContext config) history projected
+  Claude.runAgentTurn config {Claude.thinkingCut = cut} history input
 
 lookupToolUseMessages :: AppEnv -> Int64 -> STM Bool
 lookupToolUseMessages env chat = Map.findWithDefault env.toolUseMessages chat <$> readTVar env.toolUseMessagesOverrides

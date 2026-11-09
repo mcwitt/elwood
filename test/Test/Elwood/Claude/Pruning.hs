@@ -2,8 +2,8 @@ module Test.Elwood.Claude.Pruning (tests) where
 
 import Data.Aeson qualified as Aeson
 import Data.Text qualified as T
-import Elwood.Claude.Pruning (getAndUpdateHorizon, newPruneHorizons, protectedBoundary, pruneThinkingBlocks, pruneToolInputs, pruneToolResults, softPrune)
-import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolResultPart (..), ToolUseId (..))
+import Elwood.Claude.Pruning (PrefixContext (..), SentPrefix (..), dropThinkingBefore, getAndUpdateHorizon, newPruneHorizons, nextThinkingCut, protectedBoundary, pruneThinkingBlocks, pruneToolInputs, pruneToolResults, softPrune)
+import Elwood.Claude.Types (ClaudeMessage (..), ContentBlock (..), Role (..), ToolName (..), ToolResultPart (..), ToolSchema (..), ToolUseId (..))
 import Elwood.Config (PruningStrategy (..), ThinkingPruningConfig (..), ToolDirectionConfig (..), ToolPruningConfig (..))
 import Numeric.Natural (Natural)
 import Test.Tasty
@@ -39,6 +39,7 @@ tests =
         protectedBoundary (KeepTurns 18446744073709551615) [ClaudeMessage User [TextBlock "keep"]] @?= 0,
       testCase "huge character limits never overflow" $
         softPrune maxBound maxBound "keep" @?= Nothing,
+      thinkingCutTests,
       softPruneShortContent,
       softPruneLongContent,
       softPruneIdempotent,
@@ -122,6 +123,53 @@ softPruneIdempotent =
       Just once -> softPrune 10 10 once @?= Nothing
 
 -- ---------------------------------------------------------------------------
+
+-- | Thinking blocks may only follow the exact prefix they were produced under,
+-- and once dropped stay dropped: removing them from the start of the history is
+-- the one change the API accepts.
+thinkingCutTests :: TestTree
+thinkingCutTests =
+  testGroup
+    "thinking cut"
+    [ testCase "dropThinkingBefore strips only earlier messages" $
+        dropThinkingBefore 2 turnOne
+          @?= [ClaudeMessage User [TextBlock "one"], ClaudeMessage Assistant [ToolUseBlock (ToolUseId "one") (ToolName "fetch") (Aeson.object [])], turnOne !! 2, turnOne !! 3],
+      testCase "an unknown previous request drops all history thinking" $
+        (nextThinkingCut Nothing context turnOne turnOne).cut @?= 4,
+      testCase "an extended, unchanged history keeps the cut" $
+        (nextThinkingCut (Just (first 0)) context history history).cut @?= 0,
+      testCase "removing thinking keeps the cut" $
+        (nextThinkingCut (Just (first 0)) context history (dropThinkingBefore 4 history)).cut @?= 0,
+      testCase "a later cut is never moved back" $
+        (nextThinkingCut (Just (first 3)) context history history).cut @?= 3,
+      testCase "editing an earlier message drops all history thinking" $
+        (nextThinkingCut (Just (first 0)) context history (edit 2 history)).cut @?= length history,
+      testCase "editing a message of the previous turn drops all history thinking" $
+        (nextThinkingCut (Just (first 0)) context history (edit 6 history)).cut @?= length history,
+      testCase "a new system prompt drops all history thinking" $
+        (nextThinkingCut (Just (first 0)) context {system = Just "new"} history history).cut @?= length history,
+      testCase "a new tool set drops all history thinking" $
+        (nextThinkingCut (Just (first 0)) context {tools = []} history history).cut @?= length history,
+      testCase "another model drops all history thinking" $
+        (nextThinkingCut (Just (first 0)) context {model = "claude-opus-5-5"} history history).cut @?= length history,
+      testCase "a replaced history drops all thinking" $ do
+        let compacted = ClaudeMessage User [TextBlock "summary"] : drop 4 history
+        (nextThinkingCut (Just (first 0)) context compacted compacted).cut @?= length compacted
+    ]
+  where
+    context = PrefixContext "anthropic" "claude-fable-5-2" (Just "system") [ToolSchema (ToolName "fetch") "Fetch" (Aeson.object [])] Nothing
+    turn n =
+      [ ClaudeMessage User [TextBlock n],
+        ClaudeMessage Assistant [ThinkingBlock "think" ("sig-" <> n), ToolUseBlock (ToolUseId n) (ToolName "fetch") (Aeson.object [])],
+        ClaudeMessage User [ToolResultBlock (ToolUseId n) [ToolResultText ("result " <> n)] False],
+        ClaudeMessage Assistant [ThinkingBlock "think" ("sig-" <> n <> "-final"), TextBlock "done"]
+      ]
+    turnOne = turn "one"
+    history = turnOne <> turn "two"
+    -- The record of turn two's start, with turn one projected unchanged.
+    first cut = (nextThinkingCut Nothing context turnOne turnOne) {cut = cut}
+    edit index messages = [if i == index then ClaudeMessage message.role [TextBlock "pruned"] else message | (i, message) <- zip [0 :: Int ..] messages]
+
 -- protectedBoundary tests
 -- ---------------------------------------------------------------------------
 

@@ -1,6 +1,7 @@
 module Elwood.Claude.AgentLoop
   ( runAgentTurn,
     AgentConfig (..),
+    prefixContext,
     AgentResult (..),
     ExhaustionInfo (..),
     formatExhaustion,
@@ -26,10 +27,10 @@ import Elwood.Claude.Observer
 import Elwood.Claude.Pruning
 import Elwood.Claude.Turn qualified as Turn
 import Elwood.Claude.Types
-import Elwood.Config (PruningConfig (..))
+import Elwood.Config (PruningConfig)
 import Elwood.Exception (catchSync)
 import Elwood.Image (perceiveImageBytes)
-import Elwood.Logging (Logger)
+import Elwood.Logging (Logger, logWarn)
 import Elwood.Permissions (ToolPolicy (..), getToolPolicy)
 import Elwood.Positive (Positive (getPositive))
 import Elwood.Thinking (ThinkingMode (..), progressUpdatesEnabled)
@@ -63,6 +64,9 @@ data AgentConfig = AgentConfig
     toolSearch :: Maybe (Set ToolName),
     pruningConfig :: Maybe PruningConfig,
     pruneHorizon :: Int,
+    -- | Requests drop thinking blocks from history messages before this index
+    -- (see 'Elwood.Claude.Pruning.nextThinkingCut'); 0 keeps them all.
+    thinkingCut :: Int,
     outputFormat :: Maybe OutputFormat,
     maxImageDimension :: Maybe Int,
     isCancelled :: IO Bool
@@ -71,13 +75,13 @@ data AgentConfig = AgentConfig
 -- | The interpreter carries only this turn's immutable progress. Historical
 -- messages are an input to requests, never part of turn accounting.
 runAgentTurn :: AgentConfig -> [ClaudeMessage] -> ClaudeMessage -> IO AgentResult
-runAgentTurn cfg history input = loop 0 (Turn.begin input)
+runAgentTurn cfg history input = loop 0 False (Turn.begin input)
   where
     profile = cfg.agentProfile
     updates = progressUpdatesEnabled profile.thinking
     schemas = toolSchemas cfg.registry
     stopped = cfg.isCancelled
-    loop requests progress = do
+    loop requests dropping progress = do
       cancelled <- stopped
       if cancelled
         then pure AgentCancelled
@@ -85,7 +89,7 @@ runAgentTurn cfg history input = loop 0 (Turn.begin input)
           if requests >= profile.maxIterations.getPositive
             then pure (AgentExhausted (ExhaustionInfo (lastText progress) requests (Turn.callsMade progress) (Turn.messages progress)))
             else do
-              let transcript = prune (history <> Turn.messages progress)
+              let transcript = dropThinkingBefore cfg.thinkingCut (pruneTranscript cfg.pruningConfig cfg.pruneHorizon (history <> Turn.messages progress))
                   request =
                     MessagesRequest
                       profile.model.model
@@ -97,10 +101,11 @@ runAgentTurn cfg history input = loop 0 (Turn.begin input)
                       profile.cache
                       cfg.toolSearch
                       cfg.outputFormat
+                      dropping
                   retry = defaultRetryConfig {onRetry = Just (\attemptNumber seconds _ -> mapM_ (\notify -> notify attemptNumber seconds) cfg.onRateLimit)}
               cfg.observer.onInputEstimate cfg.systemPrompt cfg.toolSearch transcript schemas
               sequence_ cfg.onBeforeApiCall
-              response <- retryWithBackoff retry (attempt request) (pause . (* 10))
+              (dropped, response) <- send retry request
               cancelledAfterRequest <- stopped
               if cancelledAfterRequest
                 then pure AgentCancelled
@@ -122,7 +127,20 @@ runAgentTurn cfg history input = loop 0 (Turn.begin input)
                         exchange <- race awaitCancellation (runConcurrently (Turn.complete (Concurrently . execute) pending))
                         case exchange of
                           Left () -> pure AgentCancelled
-                          Right completed -> loop (requests + 1) (Turn.append completed progress)
+                          Right completed -> loop (requests + 1) dropped (Turn.append completed progress)
+    -- Elwood never knowingly sends a thinking block whose prefix changed. If
+    -- the API still reports one, retry once letting the API drop it, and keep
+    -- doing so for the rest of the turn rather than failing every request.
+    send retry request = do
+      response <- retryWithBackoff retry (attempt request) (pause . (* 10))
+      case response of
+        Left (ClaudeApiError _ message)
+          | "bound to a different conversation" `T.isInfixOf` message,
+            not request.dropMismatchedThinking,
+            Just (ThinkingConfigAdaptive {}) <- request.thinking -> do
+              logWarn cfg.logger "Thinking block prefix mismatch; retrying with drop_block" [("error", message)]
+              (True,) <$> retryWithBackoff retry (attempt request {dropMismatchedThinking = True}) (pause . (* 10))
+        _ -> pure (request.dropMismatchedThinking, response)
     attempt request = do
       cancelled <- stopped
       if cancelled then pure (Right Nothing) else fmap Just <$> sendMessages cfg.client profile.model.provider request
@@ -133,11 +151,6 @@ runAgentTurn cfg history input = loop 0 (Turn.begin input)
     lastText progress = case [Turn.outputText updates message | message <- reverse (Turn.messages progress), message.role == Assistant] of
       text : _ -> text
       [] -> ""
-    prune transcript = case cfg.pruningConfig of
-      Nothing -> transcript
-      Just p -> pruneThinkingBlocks p.thinking cfg.pruneHorizon $ case p.tools of
-        Nothing -> transcript
-        Just t -> pruneToolInputs t cfg.pruneHorizon (pruneToolResults t cfg.pruneHorizon transcript)
     awaitCancellation = do
       cancelled <- stopped
       unless cancelled (threadDelay 100000 >> awaitCancellation)
@@ -166,6 +179,17 @@ runAgentTurn cfg history input = loop 0 (Turn.begin input)
     thinking = fmap $ \case
       Adaptive effort display -> ThinkingConfigAdaptive effort display
       Budget tokens -> ThinkingConfigBudget tokens.getPositive
+
+-- | The request fields besides messages that the turn's thinking blocks are bound to.
+prefixContext :: AgentConfig -> PrefixContext
+prefixContext cfg =
+  PrefixContext
+    { provider = cfg.agentProfile.model.provider,
+      model = cfg.agentProfile.model.model,
+      system = cfg.systemPrompt,
+      tools = toolSchemas cfg.registry,
+      toolSearch = cfg.toolSearch
+    }
 
 formatExhaustion :: ExhaustionInfo -> Text
 formatExhaustion info =

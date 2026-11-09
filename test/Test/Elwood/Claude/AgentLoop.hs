@@ -477,6 +477,7 @@ mkTestConfigWith baseUrl thinkingMode isCancelled = do
         toolSearch = Nothing,
         pruningConfig = Nothing,
         pruneHorizon = 0,
+        thinkingCut = 0,
         outputFormat = Nothing,
         maxImageDimension = Nothing,
         isCancelled = isCancelled
