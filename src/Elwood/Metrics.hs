@@ -229,6 +229,7 @@ pricingTable =
     ("claude-sonnet-5", ModelPricing 2 10 2.50 4 0.20),
     ("claude-sonnet-4", ModelPricing 3 15 3.75 6 0.30),
     ("claude-sonnet-3", ModelPricing 3 15 3.75 6 0.30),
+    ("claude-haiku-5-5", ModelPricing 0.10 0.50 0.125 0.20 0.01),
     ("claude-haiku-4", ModelPricing 1 5 1.25 2 0.10),
     ("claude-3-5-haiku", ModelPricing 1 5 1.25 2 0.10),
     ("claude-3-5-sonnet", ModelPricing 3 15 3.75 6 0.30),

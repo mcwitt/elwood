@@ -162,6 +162,24 @@ renderingTests =
         assertBool
           "one million tokens of each priced type cost $74.20"
           ("elwood_cost_dollars{model=\"claude-fable-5-2\",source=\"telegram\"} 74.200000" `isIn` s),
+      testCase "Claude Haiku 5.5 uses its short-prompt pricing" $ do
+        store <- newMetricsStore
+        let usage =
+              Usage
+                { inputTokens = 1000000,
+                  outputTokens = 1000000,
+                  cacheCreationInputTokens = 2000000,
+                  cacheReadInputTokens = 1000000,
+                  cacheCreation5mTokens = 1000000,
+                  cacheCreation1hTokens = 1000000
+                }
+        recordApiResponse store "claude-haiku-5-5" "telegram" EndTurn usage
+        convStore <- newInMemoryConversationStore
+        output <- renderMetrics store convStore newToolRegistry
+        let s = LBS8.unpack output
+        assertBool
+          "one million tokens of each priced type cost $0.935"
+          ("elwood_cost_dollars{model=\"claude-haiku-5-5\",source=\"telegram\"} 0.935000" `isIn` s),
       testCase "Claude Opus 5 uses current pricing" $ do
         store <- newMetricsStore
         let usage =
